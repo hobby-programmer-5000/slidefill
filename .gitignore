@@ -1,0 +1,22 @@
+# user data saved next to the executable
+SlideFill.json
+SlideFill.json.tmp
+SlideFill.json.broken
+SlideFill.insights.json
+SlideFill.insights.json.tmp
+SlideFill.insights.json.broken
+data/
+
+# agent notes kept local (accounts, local paths, progress)
+CLAUDE.local.md
+PROGRESS.md
+
+# build output
+build/
+dist/
+*.spec
+
+# Python
+.venv/
+__pycache__/
+*.pyc
