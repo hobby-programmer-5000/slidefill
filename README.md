@@ -177,8 +177,8 @@ samples/            made-up example files
 
 ## Contributors
 
-- **hobby programmer**: idea, requirements, testing
-- **Claude**: design and implementation
+- [@hobby-programmer-5000](https://github.com/hobby-programmer-5000): idea, requirements, testing
+- **Claude** (Anthropic): design and implementation, pair-programmed in [Claude Code](https://claude.com/claude-code)
 
 ## License
 

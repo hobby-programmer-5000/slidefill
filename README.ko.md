@@ -175,8 +175,8 @@ samples/            직접 만든 예시 파일
 
 ## 기여자
 
-- **hobby programmer**: 아이디어, 요구사항, 테스트
-- **Claude**: 설계와 구현
+- [@hobby-programmer-5000](https://github.com/hobby-programmer-5000): 아이디어, 요구사항, 테스트
+- **Claude** (Anthropic): 설계와 구현, [Claude Code](https://claude.com/claude-code)로 함께 작업
 
 ## 라이선스
 
