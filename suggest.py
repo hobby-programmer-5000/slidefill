@@ -600,6 +600,21 @@ def first_choice(source, title=None, lang="ko"):
     return None, None, []
 
 
+def describe(shape, value):
+    """Which figure was taken, in words a person can check against the workbook."""
+    name = value.name if value and not (value.every_row or value.counted) else ""
+    return " · ".join(part for part in (shape.sheet, name) if part)
+
+
+def labels(found):
+    """What each suggestion is called, by the key the report lists it under, so the list can be read without the notation."""
+    named = {}
+    for item in found:
+        marker = core.MARKER.fullmatch(item.typed) if item.place == "alt" else None
+        named[(marker.group(2) if marker else item.key).casefold()] = item.code
+    return named
+
+
 def starter_path(folder, excel):
     """A new file beside the workbook. Nothing is ever overwritten."""
     stem = os.path.splitext(os.path.basename(excel))[0]
@@ -619,10 +634,10 @@ def make_starter(path, title, found):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _text(slide, 0.5, 0.35, 12.3, 0.8, title, 28)
     y = 1.4
-    for code in ("latest", "top", "note", "reading", "by_item"):
-        if code in by_code:
-            _text(slide, 0.5, y, 12.3, 1.2, by_code[code].typed, 24 if code in ("latest", "top") else 16)
-            y += 1.0 if code in ("latest", "top") else 1.35
+    sentences = [code for code in ("note", "reading", "by_item") if code in by_code] or [code for code in ("latest", "top") if code in by_code]  # a bare figure says nothing the sentence does not
+    for number, code in enumerate(sentences):
+        _text(slide, 0.5, y, 12.3, 1.2, by_code[code].typed, 24 if number == 0 else 18)
+        y += 1.6 if number == 0 else 1.35
     table = by_code.get("table") or by_code.get("table_share") or by_code.get("table_top")
     chart = by_code.get("chart") or by_code.get("chart_top")
     if table or chart:

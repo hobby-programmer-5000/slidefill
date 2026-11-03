@@ -2029,12 +2029,13 @@ def open_template(path):
         raise SlideFillError("file_unreadable", path=path, detail=str(exc))
 
 
-def run(template, excel, output=None, insights=None):
+def run(template, excel, output=None, insights=None, source=None):
     """Fill the template. Without output this is the preview: same work, nothing written.
 
     insights holds sentences a person chose earlier. No model is called here, so preview and report always agree.
+    source is a workbook already read from excel, so a large one need not be read twice in a row.
     """
-    source = ExcelSource(excel)
+    source = source if source is not None else ExcelSource(excel)
     prs = open_template(template)
     work = _Run(source, prs, insights)
     work.walk()

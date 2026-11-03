@@ -1750,6 +1750,31 @@ class Suggestions(Base):
         self.assertTrue(any(shape.has_chart for shape in slides[1].shapes))
         self.assertTrue(any(shape.has_table for shape in slides[1].shapes))
 
+    def test_a_report_from_the_workbook_alone_reads_the_same_as_one_read_afresh(self):
+        rows = [["월", "매출"]] + [[dt.datetime(2025 + m // 12, m % 12 + 1, 1), 100 + m] for m in range(14)]
+        excel = self.book("엑셀만.xlsx", 월별=rows)
+        source = core.ExcelSource(excel)
+        shape, base, found = suggest.first_choice(source)
+        path = os.path.join(self.dir, "엑셀만.pptx")
+        suggest.make_starter(path, "엑셀만", found)
+        reused = core.run(path, excel, source=source)
+        fresh = core.run(path, excel)
+        seen = lambda report: [(i.kind, i.key, i.value, i.status, i.source, i.wheres) for i in report.items]
+        self.assertEqual(seen(reused), seen(fresh))
+        self.assertEqual(suggest.describe(shape, suggest.default_value(base)), "월별 · 매출")
+
+    def test_everything_a_laid_out_report_lists_has_a_plain_name(self):
+        rows = [["월", "매출"]] + [[dt.datetime(2025 + m // 12, m % 12 + 1, 1), 100 + m] for m in range(14)]
+        excel = self.book("이름.xlsx", 월별=rows)
+        _shape, _base, found = suggest.first_choice(core.ExcelSource(excel))
+        path = os.path.join(self.dir, "이름.pptx")
+        suggest.make_starter(path, "이름", found)
+        named = suggest.labels(found)
+        report = core.run(path, excel)
+        self.assertTrue(report.items)
+        for item in report.items:
+            self.assertIn(item.key.casefold(), named)
+
     def test_english_words_follow_the_language(self):
         source = core.ExcelSource(self.book("en.xlsx", Daily=[["Date", "Sales"]] + [[dt.datetime(2026, 1, d), d] for d in range(1, 15)]))
         _shape, _base, found = suggest.first_choice(source, lang="en")

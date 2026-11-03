@@ -296,18 +296,87 @@ def main():
     shown = str(ui.tree.item(ui.tree.get_children()[0])["values"][2])
     check("a mistyped reference is listed with its message", "1X" in shown and ui.report.count("error") == 1, shown)
 
-    # The helper: from a workbook alone to a filled report, with nothing typed.
+    # A workbook alone: no template asked for, and a report comes out named after the workbook.
+    def settle(helper):
+        for _ in range(600):
+            root.update()
+            time.sleep(0.05)
+            if not helper.working and helper.found:
+                break
+
+    ui.own_template.set(False)
+    ui.show_template_row()
+    root.update()
+    check("the template row is hidden unless asked for", not any(w.winfo_ismapped() for w in ui.template_row))
     ui.vars["excel"].set(daily_book)
-    ui.vars["template"].set("")
+    ui.vars["output"].set(work)
+    press(root, "<F5>")
+    wait(root, ui)
+    check("a workbook alone gives a preview", ui.report is not None and ui.report.count("error") == 0 and ui.report.items, str(ui.report))
+    check("the status says what was chosen", ui.status[0] == "auto_ready" and "수송" in ui.status[1]["what"], str(ui.status))
+    listed = [str(ui.tree.item(row)["values"][1]) for row in ui.tree.get_children()]
+    check("the list has no notation in it", all("!" not in name and "{{" not in name for name in listed), str(listed))
+    check("the working template is not beside the workbook", os.path.dirname(ui.auto.path) != work, ui.auto.path)
+    shot(root, "workbook_only")
+    press(root, "<Control-g>")
+    wait(root, ui)
+    check("the report is named after the workbook", os.path.basename(ui.last_output).startswith("daily_") and os.path.exists(ui.last_output), ui.last_output)
+    words = " ".join(s.text_frame.text for s in Presentation(ui.last_output).slides[0].shapes if s.has_text_frame)
+    check("that report holds the newest value and no placeholder", "700" in words and "{{" not in words, words)
+    check("the choice to go without a template survives", core.load_settings(settings).get("use_template") is False)
+
     press(root, "<Control-r>")
     root.update()
     helper = ui.helper_window
-    check("Ctrl+R opens the helper", helper is not None and helper.window.winfo_exists())
-    for _ in range(600):
+    settle(helper)
+    check("with no template the helper hides the notation", helper.plain and str(helper.copy_button.winfo_ismapped()) == "0" and helper.tree["displaycolumns"] == ("what", "result"), str(helper.tree["displaycolumns"]))
+    shot(helper.window, "helper_plain")
+    helper.boxes["value"].current(1)
+    helper.changed("value")
+    for _ in range(200):
         root.update()
         time.sleep(0.05)
-        if not helper.working and helper.found:
+        if not helper.working:
             break
+    helper.use_button.invoke()
+    wait(root, ui)
+    words = [str(ui.tree.item(row)["values"][2]) for row in ui.tree.get_children()]
+    check("another figure from the helper goes into the report", ui.auto.chosen and any("승차 70" in w for w in words), str(words))
+    ui.lang = "en" if ui.lang == "ko" else "ko"
+    press(root, "<Control-l>")
+    wait(root, ui)
+    check("the person's choice survives a language switch", ui.auto.chosen and any("승차 70" in str(ui.tree.item(row)["values"][2]) for row in ui.tree.get_children()))
+
+    other = openpyxl.Workbook()
+    other.active.title = "메모"
+    other.active.append(["그냥 글자"])
+    other_book = os.path.join(work, "memo.xlsx")
+    other.save(other_book)
+    ui.vars["excel"].set(other_book)
+    asked.clear()
+    press(root, "<F5>")
+    wait(root, ui)
+    check("a workbook with nothing to read says so", len(asked) == 1 and asked[0][0] == "error" and "F1" in asked[0][1], str(asked))
+    ui.vars["excel"].set(EXCEL)
+    ui.preview()
+    ui.vars["excel"].set(daily_book)
+    ui.preview()
+    wait(root, ui)
+    wait(root, ui)
+    check("choosing a file while another is being read ends on the new one", ui.auto.excel == daily_book and not ui.again, ui.auto.excel)
+
+    # The helper with a template in play: the references, to copy into it.
+    ui.own_template.set(True)
+    ui.show_template_row()
+    root.update()
+    check("the template row comes back when asked for", all(w.winfo_ismapped() for w in ui.template_row))
+    ui.vars["excel"].set(daily_book)
+    ui.vars["template"].set(daily_template)
+    press(root, "<Control-r>")
+    root.update()
+    helper = ui.helper_window
+    check("Ctrl+R opens the helper", helper is not None and helper.window.winfo_exists() and not helper.plain)
+    settle(helper)
     check("the helper offers what works, with real results", any(item.code == "latest" and item.result == "700" for item in helper.found), str([(i.code, i.result) for i in helper.found]))
     check("the first row is selected and shows its reference", helper.key_var.get().startswith("{{"), helper.key_var.get())
     shot(helper.window, "helper")

@@ -3,7 +3,15 @@
 STRINGS = {
     "en": {
         "window_title": "SlideFill",
-        "tagline": "Fill a PowerPoint template from an Excel workbook.",
+        "tagline": "Choose an Excel workbook and get a PowerPoint report.",
+        "own_template": "Use my own PowerPoint template (optional)",
+        "auto_ready": "Read the workbook and chose the contents: {what}. Check the values, then create the report. To show something else, press Ctrl+R.",
+        "err_auto_nothing": "No dates or named figures could be read from this workbook, so SlideFill cannot lay out a report by itself.\n\nTick \"Use my own PowerPoint template\" to say what goes where. Press F1 to see how.",
+        "helper_button_auto": "Change contents (Ctrl+R)",
+        "helper_title_auto": "Change what the report shows",
+        "helper_intro_auto": "SlideFill read this workbook and worked these out. What you see is what the report will show. Change the sheet or the figure if it took the wrong one.",
+        "helper_use": "Use these contents",
+        "helper_starter_auto": "Save as a template I can edit",
         "template": "Template (.pptx)",
         "excel": "Workbook (.xlsx)",
         "output": "Save to folder",
@@ -36,7 +44,7 @@ STRINGS = {
         "where_master": "Master {n}",
         "where_layout": "Layout: {n}",
         "where_part": "{n}",
-        "start_hint": "Choose a template and a workbook to see what will be filled.",
+        "start_hint": "Choose a workbook to see what the report will show.",
         "working": "Reading files…",
         "generating": "Creating the report…",
         "summary": "Ready {ok} · Check {warn} · Problems {error}",
@@ -46,9 +54,13 @@ STRINGS = {
         "confirm_title": "Some items could not be filled",
         "confirm_body": "{count} item(s) have problems and will stay as {{{{placeholders}}}} in the report.\n\nCreate the report anyway?",
         "error_title": "SlideFill",
-        "missing_inputs": "Choose a template and a workbook first.",
+        "missing_inputs": "Choose a workbook first.",
         "help_title": "How SlideFill works",
-        "help_body": """1. In PowerPoint, type placeholders into your template.
+        "help_body": """Choosing a workbook is enough. SlideFill reads it, chooses the contents, and shows every value before you create the report. If it took the wrong figure, press Ctrl+R to change it.
+
+The rest of this page is for your own company template. Tick "Use my own PowerPoint template" and mark in it what goes where.
+
+1. In PowerPoint, type placeholders into your template.
 
 Text (anywhere: text boxes, table cells, notes, chart titles, slide master)
     {{Sales}}            a named cell in Excel (Formulas > Define Name)
@@ -210,7 +222,7 @@ Shortcuts
         "helper_copied": "Copied: {reference}",
         "helper_starter": "Save a starter template",
         "helper_starter_saved": "Saved and set as the template: {path}",
-        "helper_working": "Reading the workbook. A large one can take a minute.",
+        "helper_working": "Reading the workbook. A large one can take a few minutes.",
         "helper_pick_row": "Select a row to see where it goes.",
         "helper_nothing": "No dates or named figures could be read from this sheet. Try another sheet, or press F1 to write references by hand.",
         "helper_rate_needs_condition": "A share needs a condition. Choose which rows count under Only where.",
@@ -260,7 +272,15 @@ Shortcuts
     },
     "ko": {
         "window_title": "SlideFill",
-        "tagline": "엑셀 데이터로 PowerPoint 템플릿을 채웁니다.",
+        "tagline": "엑셀을 고르면 PowerPoint 보고서를 만듭니다.",
+        "own_template": "내 PowerPoint 템플릿 사용 (선택)",
+        "auto_ready": "엑셀을 읽고 내용을 골랐습니다: {what}. 값을 확인한 뒤 보고서를 만드세요. 다른 내용으로 바꾸려면 Ctrl+R을 누르세요.",
+        "err_auto_nothing": "이 엑셀에서 날짜나 이름 붙은 수치를 읽지 못해 보고서를 자동으로 구성할 수 없습니다.\n\n\"내 PowerPoint 템플릿 사용\"을 켜면 무엇을 어디에 넣을지 직접 정할 수 있습니다. F1을 눌러 방법을 확인하세요.",
+        "helper_button_auto": "내용 바꾸기 (Ctrl+R)",
+        "helper_title_auto": "보고서 내용 바꾸기",
+        "helper_intro_auto": "SlideFill이 이 엑셀을 읽고 아래 값을 계산했습니다. 보이는 값이 보고서에 들어갑니다. 시트나 수치를 잘못 골랐다면 바꾸세요.",
+        "helper_use": "이 내용으로 하기",
+        "helper_starter_auto": "수정할 수 있는 템플릿으로 저장",
         "template": "템플릿 (.pptx)",
         "excel": "엑셀 (.xlsx)",
         "output": "저장 폴더",
@@ -293,7 +313,7 @@ Shortcuts
         "where_master": "마스터 {n}",
         "where_layout": "레이아웃: {n}",
         "where_part": "{n}",
-        "start_hint": "템플릿과 엑셀을 고르면 무엇이 채워질지 보여 줍니다.",
+        "start_hint": "엑셀을 고르면 보고서에 들어갈 내용을 보여 줍니다.",
         "working": "파일을 읽는 중…",
         "generating": "보고서를 만드는 중…",
         "summary": "정상 {ok} · 확인 {warn} · 문제 {error}",
@@ -303,9 +323,13 @@ Shortcuts
         "confirm_title": "채우지 못한 항목이 있습니다",
         "confirm_body": "{count}개 항목에 문제가 있어 보고서에 {{{{자리표시자}}}} 그대로 남습니다.\n\n그래도 만들까요?",
         "error_title": "SlideFill",
-        "missing_inputs": "템플릿과 엑셀을 먼저 고르세요.",
+        "missing_inputs": "엑셀을 먼저 고르세요.",
         "help_title": "SlideFill 사용법",
-        "help_body": """1. PowerPoint에서 템플릿에 자리표시자를 입력합니다.
+        "help_body": """엑셀만 고르면 됩니다. SlideFill이 파일을 읽고 내용을 골라, 보고서를 만들기 전에 모든 값을 보여 줍니다. 수치를 잘못 골랐다면 Ctrl+R을 눌러 바꾸세요.
+
+이 아래는 회사 템플릿을 쓸 때의 설명입니다. "내 PowerPoint 템플릿 사용"을 켜고, 템플릿에 무엇을 어디에 넣을지 표시합니다.
+
+1. PowerPoint에서 템플릿에 자리표시자를 입력합니다.
 
 텍스트 (텍스트 상자, 표 칸, 노트, 차트 제목, 슬라이드 마스터 어디든)
     {{매출}}              엑셀의 이름 정의 (수식 > 이름 정의)
@@ -467,7 +491,7 @@ SlideFill이 날짜 열과 값 열 하나로 직접 계산합니다:
         "helper_copied": "복사했습니다: {reference}",
         "helper_starter": "초안 템플릿 저장",
         "helper_starter_saved": "저장하고 템플릿으로 지정했습니다: {path}",
-        "helper_working": "엑셀을 읽는 중입니다. 큰 파일은 1분쯤 걸릴 수 있습니다.",
+        "helper_working": "엑셀을 읽는 중입니다. 큰 파일은 몇 분 걸릴 수 있습니다.",
         "helper_pick_row": "행을 고르면 넣는 곳을 알려 줍니다.",
         "helper_nothing": "이 시트에서 날짜나 이름 붙은 수치를 읽지 못했습니다. 다른 시트를 고르거나, F1을 눌러 직접 적으세요.",
         "helper_rate_needs_condition": "비율에는 조건이 필요합니다. 조건에서 어떤 행을 셀지 고르세요.",

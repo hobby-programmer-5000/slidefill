@@ -1,13 +1,17 @@
 """SlideFill window. UI only: all file work happens in core.py, on a worker thread."""
 
+import atexit
 import ctypes
 import os
 import queue
+import shutil
 import sys
+import tempfile
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
+from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox, ttk
 
 import core
@@ -37,6 +41,18 @@ def system_language():
         return "en"
 
 
+@dataclass
+class AutoReport:
+    """The report SlideFill laid out itself, for when the person brought only a workbook."""
+    excel: str
+    stamp: float
+    lang: str
+    path: str  # a working file in a temporary folder; the person only ever sees the report made from it
+    what: str
+    labels: dict = field(default_factory=dict)
+    chosen: bool = False  # the person picked these contents, so they stay until another workbook is chosen
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -48,9 +64,13 @@ class App:
         saved = core.load_settings(self.settings_file)
         self.lang = saved.get("lang") if saved.get("lang") in i18n.STRINGS else system_language()
         self.vars = {key: tk.StringVar(value=str(saved.get(key) or "")) for key in ("template", "excel", "output")}
+        self.own_template = tk.BooleanVar(value=bool(saved.get("use_template", saved.get("template"))))
+        self.auto = None
+        self.work_dir = None
         self.jobs = queue.Queue()
         self.job_id = 0
         self.busy = False
+        self.again = False
         self.report = None
         self.status = ("start_hint", {})
         self.last_output = ""
@@ -108,7 +128,7 @@ class App:
         files.columnconfigure(1, weight=1)
         self.file_labels, self.browse_buttons = {}, {}
         commands = {"template": self.pick_template, "excel": self.pick_excel, "output": self.pick_output}
-        for row, key in enumerate(("template", "excel", "output")):
+        for row, key in ((0, "excel"), (1, "output"), (3, "template")):
             label = ttk.Label(files)
             label.grid(row=row, column=0, sticky="w", padx=(0, self.px(10)), pady=self.px(3))
             entry = ttk.Entry(files, textvariable=self.vars[key])
@@ -118,6 +138,10 @@ class App:
             button = ttk.Button(files, command=commands[key])
             button.grid(row=row, column=2, padx=(self.px(6), 0), pady=self.px(3))
             self.file_labels[key], self.browse_buttons[key] = label, button
+            if key == "template":
+                self.template_row = (label, entry, button)
+        self.template_check = ttk.Checkbutton(files, variable=self.own_template, command=self.toggle_template)
+        self.template_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=self.px(3))
 
         actions = ttk.Frame(main)
         actions.grid(row=2, column=0, sticky="ew", pady=self.px(12))
@@ -185,10 +209,11 @@ class App:
         for key, label in self.file_labels.items():
             label.configure(text=self.t(key))
             self.browse_buttons[key].configure(text=self.t("browse"))
+        self.template_check.configure(text=self.t("own_template"))
         self.generate_button.configure(text=self.t("generate"))
         self.preview_button.configure(text=self.t("preview"))
         self.insight_button.configure(text=self.t("insight_button"))
-        self.helper_button.configure(text=self.t("helper_button"))
+        self.show_template_row()
         self.open_button.configure(text=self.t("open_result"))
         self.folder_button.configure(text=self.t("open_folder"))
         for col, key in (("status", "col_status"), ("item", "col_item"), ("value", "col_value"),
@@ -203,6 +228,8 @@ class App:
         self.lang = "en" if self.lang == "ko" else "ko"
         self.save_settings()
         self.apply_language()
+        if self.report and self.auto and not self.auto.chosen and not self.template_path():
+            self.preview()  # the sentences SlideFill laid out are in the language they were made in
 
     def set_status(self, key, **params):
         self.status = (key, params)
@@ -229,6 +256,9 @@ class App:
         for item in sorted(report.items, key=lambda i: STATUS_ORDER[i.status]):
             value = self.issue_text(item.issues[0]) if item.issues and (item.status == "error" or not item.value) else item.value
             label = item.key if item.kind == "text" else f"{self.t('kind_' + item.kind)}: {item.key}"
+            code = self.auto.labels.get(item.key.casefold()) if self.auto and not self.template_path() else None
+            if code:
+                label = self.t("suggest_" + code)
             row = self.tree.insert("", "end", tags=(item.status,), values=(
                 self.t("status_" + item.status), label, value, item.source, self.where_text(item.wheres)))
             self.tree_items[row] = item
@@ -263,6 +293,8 @@ class App:
             self.vars["template"].set(path)
             if not self.vars["output"].get() or os.path.normcase(self.vars["output"].get()) == os.path.normcase(old_dir):
                 self.vars["output"].set(os.path.dirname(path))
+            self.own_template.set(True)
+            self.show_template_row()
             self.after_pick()
 
     def pick_excel(self):
@@ -270,8 +302,34 @@ class App:
             title=self.t("pick_excel"), initialdir=self.start_dir("excel"),
             filetypes=[(self.t("filetype_excel"), "*.xlsx *.xlsm")])
         if path:
-            self.vars["excel"].set(os.path.normpath(path))
+            old_dir = os.path.dirname(self.vars["excel"].get())
+            path = os.path.normpath(path)
+            self.vars["excel"].set(path)
+            if not self.vars["output"].get() or os.path.normcase(self.vars["output"].get()) == os.path.normcase(old_dir):
+                self.vars["output"].set(os.path.dirname(path))
             self.after_pick()
+
+    def toggle_template(self):
+        if self.own_template.get() and not self.vars["template"].get().strip():
+            self.pick_template()
+            if not self.vars["template"].get().strip():  # the person changed their mind in the file dialog
+                self.own_template.set(False)
+            return
+        self.show_template_row()
+        self.after_pick()
+
+    def show_template_row(self):
+        """A template is for those who have one. Everyone else should not have to wonder about it."""
+        for widget in self.template_row:
+            if self.own_template.get():
+                widget.grid()
+            else:
+                widget.grid_remove()
+        self.helper_button.configure(text=self.t("helper_button" if self.own_template.get() else "helper_button_auto"))
+
+    def template_path(self):
+        """The person's own template, or nothing when SlideFill is to lay out the report itself."""
+        return self.vars["template"].get().strip() if self.own_template.get() else ""
 
     def pick_output(self):
         path = filedialog.askdirectory(title=self.t("pick_output"), initialdir=self.vars["output"].get() or None)
@@ -288,11 +346,12 @@ class App:
             self.preview()
 
     def ready(self):
-        return bool(self.vars["template"].get().strip() and self.vars["excel"].get().strip())
+        return bool(self.vars["excel"].get().strip())
 
     def save_settings(self):
         data = {key: self.vars[key].get().strip() for key in ("template", "excel", "output")}
         data["lang"] = self.lang
+        data["use_template"] = self.own_template.get()
         try:
             core.save_settings(self.settings_file, data)
         except OSError:
@@ -325,6 +384,9 @@ class App:
                     on_done(result, error)
         except queue.Empty:
             pass
+        if self.again and not self.busy:  # a file was chosen while another was still being read
+            self.again = False
+            self.preview()
         self.root.after(50, self.poll)
 
     def set_busy(self, busy):
@@ -335,16 +397,54 @@ class App:
         usable = not busy and self.report is not None and self.report.requests
         self.insight_button.configure(state="normal" if usable else "disabled")
 
+    def auto_template(self, excel, lang):
+        """(working template, workbook already read or None). Runs on the worker: choosing what to show means reading the workbook."""
+        known = self.auto
+        stamp = os.path.getmtime(excel) if os.path.exists(excel) else 0
+        if known and known.excel == excel and (known.chosen or (known.stamp, known.lang) == (stamp, lang)):
+            return known.path, None
+        source = core.ExcelSource(excel)
+        shape, base, found = suggest.first_choice(source, lang=lang)
+        if shape is None:
+            raise core.SlideFillError("auto_nothing")
+        path = self.auto_path(excel)
+        suggest.make_starter(path, self.report_title(excel), found)
+        self.auto = AutoReport(excel, stamp, lang, path, suggest.describe(shape, suggest.default_value(base)), suggest.labels(found))
+        return path, source
+
+    def auto_path(self, excel):
+        if self.work_dir is None:
+            self.work_dir = tempfile.mkdtemp(prefix="SlideFill-")
+            atexit.register(shutil.rmtree, self.work_dir, ignore_errors=True)
+        return os.path.join(self.work_dir, self.report_title(excel) + ".pptx")  # the report is named after this file
+
+    @staticmethod
+    def report_title(excel):
+        return os.path.splitext(os.path.basename(excel))[0]
+
+    def use_contents(self, excel, found, what):
+        """The person chose what the report shows, in the helper."""
+        path = self.auto_path(excel)
+        suggest.make_starter(path, self.report_title(excel), found)
+        self.auto = AutoReport(excel, 0, self.lang, path, what, suggest.labels(found), chosen=True)
+        self.preview()
+
     def preview(self):
         if self.busy:
+            self.again = True
             return
         if not self.ready():
             self.set_status("missing_inputs")
             return
-        template, excel = self.vars["template"].get().strip(), self.vars["excel"].get().strip()
+        template, excel, lang = self.template_path(), self.vars["excel"].get().strip(), self.lang
         self.save_settings()
         insights = dict(self.insights)
-        self.start(lambda: core.run(template, excel, insights=insights), self.preview_done, "working")
+
+        def work():
+            path, source = (template, None) if template else self.auto_template(excel, lang)
+            return core.run(path, excel, insights=insights, source=source)
+
+        self.start(work, self.preview_done, "working" if template else "helper_working")
 
     def preview_done(self, report, error):
         if error:
@@ -355,6 +455,9 @@ class App:
             return
         self.report = report
         self.render_report()
+        if not self.template_path():
+            self.set_status("auto_ready", what=self.auto.what)
+            return
         self.set_status("select_hint" if report.items else "no_placeholders")
 
     def generate(self):
@@ -363,27 +466,27 @@ class App:
         if not self.ready():
             self.set_status("missing_inputs")
             return
-        template, excel = self.vars["template"].get().strip(), self.vars["excel"].get().strip()
-        folder = self.vars["output"].get().strip() or os.path.dirname(template)
+        template, excel, lang = self.template_path(), self.vars["excel"].get().strip(), self.lang
+        folder = self.vars["output"].get().strip() or os.path.dirname(template or excel)
         self.save_settings()
         insights = dict(self.insights)
 
         def work():
-            preview = core.run(template, excel, insights=insights)
+            path, source = (template, None) if template else self.auto_template(excel, lang)
+            preview = core.run(path, excel, insights=insights, source=source)
             problems = preview.count("error")
             if problems:
-                return preview, None
-            return preview, core.run(template, excel, core.output_path(folder, template), insights)
+                return path, preview, None
+            return path, preview, core.run(path, excel, core.output_path(folder, path), insights)
 
-        self.start(work, lambda result, error: self.generate_checked(result, error, template, excel, folder),
-                   "generating")
+        self.start(work, lambda result, error: self.generate_checked(result, error, excel, folder), "generating")
 
-    def generate_checked(self, result, error, template, excel, folder):
+    def generate_checked(self, result, error, excel, folder):
         if error:
             self.show_error(error)
             self.set_status("start_hint")
             return
-        preview, made = result
+        template, preview, made = result
         if made is None:
             self.report = preview
             self.render_report()
@@ -448,16 +551,21 @@ class App:
         if not excel:
             self.set_status("helper_no_excel")
             return
+        plain = not self.template_path()
         if self.helper_window and self.helper_window.window.winfo_exists():
-            self.helper_window.window.lift()
-            return
-        self.helper_window = HelperWindow(self, excel)
+            if (self.helper_window.excel, self.helper_window.plain) == (excel, plain):
+                self.helper_window.window.lift()
+                return
+            self.helper_window.window.destroy()  # it was reading another workbook, or speaking to someone with a template
+        self.helper_window = HelperWindow(self, excel, plain)
 
     def use_template(self, path):
         """The starter template has just been made from this workbook, so a report can follow at once."""
         self.vars["template"].set(path)
         if not self.vars["output"].get():
             self.vars["output"].set(os.path.dirname(path))
+        self.own_template.set(True)
+        self.show_template_row()
         self.after_pick()
 
     def show_help(self):
@@ -636,8 +744,9 @@ class HelperWindow:
 
     HOWS = ("plain", "sum", "mean", "count", "rate")
 
-    def __init__(self, app, excel):
+    def __init__(self, app, excel, plain=False):
         self.app, self.excel = app, excel
+        self.plain = plain  # no template in play: choosing what the report shows, with no notation in sight
         self.source = None
         self.shape = None
         self.found = []
@@ -647,7 +756,7 @@ class HelperWindow:
         self.sheets = []
         self.bases = []
         window = self.window = tk.Toplevel(app.root)
-        window.title(app.t("helper_title"))
+        window.title(app.t("helper_title_auto" if plain else "helper_title"))
         window.geometry(f"{app.px(960)}x{app.px(640)}")
         window.transient(app.root)
         body = ttk.Frame(window, padding=app.px(12))
@@ -656,7 +765,7 @@ class HelperWindow:
         body.rowconfigure(3, weight=1)
         small = app.px(4)
 
-        ttk.Label(body, text=app.t("helper_intro"), style="Muted.TLabel", wraplength=app.px(920), justify="left").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text=app.t("helper_intro_auto" if plain else "helper_intro"), style="Muted.TLabel", wraplength=app.px(920), justify="left").grid(row=0, column=0, sticky="w")
 
         picks = ttk.Frame(body)
         picks.grid(row=1, column=0, sticky="ew", pady=(app.px(8), small))
@@ -683,6 +792,8 @@ class HelperWindow:
         for column, width in (("what", 180), ("result", 520), ("place", 180)):
             self.tree.heading(column, text=app.t("helper_col_" + column), anchor="w")
             self.tree.column(column, width=app.px(width), stretch=column == "result", anchor="w")
+        if plain:
+            self.tree.configure(displaycolumns=("what", "result"))
         for status, color in STATUS_COLOR.items():
             self.tree.tag_configure(status, foreground=color if status != "ok" else "")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -693,15 +804,20 @@ class HelperWindow:
         self.tree.bind("<Double-Button-1>", lambda _e: self.copy())
 
         self.key_var = tk.StringVar()
-        ttk.Entry(body, textvariable=self.key_var, state="readonly").grid(row=4, column=0, sticky="ew", pady=(app.px(8), small))
+        if not plain:
+            ttk.Entry(body, textvariable=self.key_var, state="readonly").grid(row=4, column=0, sticky="ew", pady=(app.px(8), small))
         self.detail = ttk.Label(body, wraplength=app.px(920), justify="left")
-        self.detail.grid(row=5, column=0, sticky="w")
+        self.detail.grid(row=5, column=0, sticky="w", pady=(app.px(8) if plain else 0, 0))
 
         foot = ttk.Frame(body)
         foot.grid(row=6, column=0, sticky="e", pady=(small, 0))
         self.copy_button = ttk.Button(foot, text=app.t("helper_copy"), command=self.copy, state="disabled")
-        self.copy_button.pack(side="left")
-        self.starter_button = ttk.Button(foot, text=app.t("helper_starter"), style="Accent.TButton", command=self.make_starter, state="disabled")
+        self.use_button = ttk.Button(foot, text=app.t("helper_use"), style="Accent.TButton", command=self.use_contents, state="disabled")
+        self.starter_button = ttk.Button(foot, text=app.t("helper_starter_auto" if plain else "helper_starter"), style="TButton" if plain else "Accent.TButton", command=self.make_starter, state="disabled")
+        if plain:
+            self.use_button.pack(side="left")
+        else:
+            self.copy_button.pack(side="left")
         self.starter_button.pack(side="left", padx=small)
         ttk.Button(foot, text=app.t("insight_close"), command=window.destroy).pack(side="left")
         window.bind("<Escape>", lambda _e: window.destroy())
@@ -874,9 +990,10 @@ class HelperWindow:
             self.tree.insert("", "end", iid=str(number), tags=(item.status,), values=(self.app.t("suggest_" + item.code), result, place))
         works = any(item.status != "error" for item in found)
         self.starter_button.configure(state="normal" if works else "disabled")
+        self.use_button.configure(state="normal" if works else "disabled")
         self.copy_button.configure(state="disabled")
         self.key_var.set("")
-        self.detail.configure(text=self.app.t("helper_pick_row") if works else self.app.t("helper_nothing"))
+        self.detail.configure(text=self.app.t("select_hint" if self.plain else "helper_pick_row") if works else self.app.t("helper_nothing"))
         if found and works:
             first = next(i for i, item in enumerate(found) if item.status != "error")
             self.tree.selection_set(str(first))
@@ -891,7 +1008,7 @@ class HelperWindow:
             return
         self.key_var.set(item.typed)
         self.copy_button.configure(state="normal" if item.status != "error" else "disabled")
-        lines = [self.app.t("helper_where_" + item.place)]
+        lines = [] if self.plain else [self.app.t("helper_where_" + item.place)]
         if item.place == "text":
             lines.append(item.result)
         lines += [self.app.issue_text(issue) for issue in item.issues[:3]]
@@ -899,12 +1016,20 @@ class HelperWindow:
 
     def copy(self):
         item = self.picked()
-        if item is None or item.status == "error":
+        if self.plain or item is None or item.status == "error":
             return
         self.window.clipboard_clear()
         self.window.clipboard_append(item.typed)
         self.window.update()
         self.detail.configure(text=self.app.t("helper_copied", reference=item.typed) + "\n" + self.app.t("helper_where_" + item.place))
+
+    def use_contents(self):
+        if self.app.busy:
+            self.detail.configure(text=self.app.t("helper_working"))
+            return
+        value = self.base().values[self.boxes["value"].current()] if self.base().values else None
+        self.app.use_contents(self.excel, self.found, suggest.describe(self.shape, value))
+        self.window.destroy()
 
     def make_starter(self):
         folder = self.app.vars["output"].get().strip() or os.path.dirname(self.excel)
@@ -917,6 +1042,7 @@ class HelperWindow:
             return
         self.app.use_template(path)
         self.detail.configure(text=self.app.t("helper_starter_saved", path=path))
+        self.use_button.configure(state="disabled")  # the report now follows that template
 
 
 def smoke_insight(template, excel, output):

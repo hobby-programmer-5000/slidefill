@@ -2,7 +2,7 @@
 
 # SlideFill
 
-Fills a PowerPoint template from an Excel workbook, so a weekly or monthly report takes one key press instead of an hour of copy and paste.
+Choose an Excel workbook and get a PowerPoint report, or fill your own company template from it, so a weekly or monthly report takes one key press instead of an hour of copy and paste.
 
 ![SlideFill window showing each value before the report is created](doc/images/screenshot.png)
 
@@ -12,6 +12,7 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 
 ## Features
 
+- **A report from the workbook alone**: choose a file and SlideFill reads the sheet, chooses the contents, and shows the real values first. If it took the wrong figure, change it with Ctrl+R. This is an automatic judgement, so check the values before you create the report.
 - **Text**: `{{Sales}}` or `{{Summary!B3}}` anywhere: text boxes, table cells, groups, notes, chart titles, slide masters. Your fonts and colors stay.
 - **Tables**: fills a PowerPoint table from a range, adding or removing rows to fit. Total rows stay at the bottom.
 - **Charts**: replaces chart data and keeps the chart's style. "Edit Data" in PowerPoint shows the new numbers.
@@ -42,6 +43,20 @@ build.bat
 `build.bat` runs the unit tests, builds `dist\SlideFill.exe`, then runs that exe on the sample files. Any failure stops it.
 
 ## Usage
+
+### With a workbook alone
+
+**1. Choose a workbook.** SlideFill reads it, chooses the contents, and lists the values that will go in. A large file can take a few minutes.
+
+**2. Check the values.** The bottom of the window says which sheet and figure it took. To show something else, press **Ctrl+R** and change the sheet, figure or conditions.
+
+**3. Press Ctrl+G.** A new `<workbook name>_<date>.pptx` appears beside the workbook. Next month: open the app, press Ctrl+G.
+
+For now this builds on one figure from one sheet: a slide of sentences and a slide with a table and a chart. If your slides are already laid out, use a template as below.
+
+### With your own template
+
+Tick **Use my own PowerPoint template** and a template field appears.
 
 **1. Mark your template in PowerPoint.**
 
