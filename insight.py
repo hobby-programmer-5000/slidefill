@@ -66,6 +66,8 @@ PLAIN_MEASURE = re.compile(r"항목|items?|rows?|sheet|all|값", re.I)
 # A period that had not ended when the file was saved. -88% is mostly the months still to come, so it may only be said with that said.
 UNFINISHED_LEAD = re.compile(r"끝나지 않은|had not ended")
 SAYS_UNFINISHED = re.compile(r"끝나지 않|아직|덜 쌓|잠정|현재까지|not ended|not over|incomplete|so far|to date|partial", re.I)
+RISING_OR_RUN_WORD = re.compile(r"연속|최고|가장 높|증가|상승|늘었|\b(?:in a row|highest|above|higher|rose|risen|rises|rise|up|increased?)\b", re.I)
+SIGN_BEFORE_WORD = re.compile(r"[+-](\d[\d,]*(?:\.\d+)?\s*%)(?=\s*(?:above|below|higher|lower|more|less|up\b|down\b|높|낮|많|적|증가|감소|상승|하락))", re.I)
 FALLING_WORD = re.compile(r"최저|가장 낮|감소|하락|낮습|줄었|\b(?:lowest|below|lower|fell|fallen|falls|fall|down|decreased?)\b", re.I)
 ITEM_FACT = re.compile(r"(?:^|_)item_\d+$")
 ITEM_NAME = re.compile(r"(?:\d+위|number \d+)\s+(.+?)\s+[\d,.-]+(?:,|$)")
@@ -274,7 +276,12 @@ def _reads_unfinished_as_finished(text, pack):
     """A change, or a low, in a period the program said had not ended, with nothing to say so."""
     if not any(fact.id.endswith("read_lead") and UNFINISHED_LEAD.search(fact.text) for fact in pack) or SAYS_UNFINISHED.search(text):
         return False
-    return PERCENT.search(text) is not None or FALLING_WORD.search(text) is not None
+    return PERCENT.search(text) is not None or FALLING_WORD.search(text) is not None or RISING_OR_RUN_WORD.search(text) is not None
+
+
+def _plain_sign(text):
+    """-2.6% below says the fall twice, and read strictly it is a rise. The word says which way, and the checks still hold the word against the fact."""
+    return SIGN_BEFORE_WORD.sub(r"\1", text)
 
 
 def _known_words(pack):
@@ -551,7 +558,7 @@ def make_candidates(pack, lang, runs=RUNS, first_seed=0, on_run=None):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            item["statement"] = CITATION_TEXT.sub("", str(item.get("statement", ""))).strip()
+            item["statement"] = _plain_sign(CITATION_TEXT.sub("", str(item.get("statement", ""))).strip())
             if check(item, pack, lang):
                 result.rejected += 1
                 continue

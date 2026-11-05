@@ -105,7 +105,9 @@ Warnings appear only in the app's list. So where a figure must be read different
 - **Newest values that are words** (`(결측)`, `집계중`): it says how many periods were passed over and which value was used.
 - **A period not over when the file was saved**: stated first, and not compared with other periods. The reading comes from the periods that have ended, since three months set against whole years reads as a collapse however well warned. If the file gives a date such as `Data as at 30-Sep-2025` and it falls within that period, that date is used instead of the day it was saved.
 - **A day cut short, a 0 filled in ahead**: stated first. `학년도` and `회계연도` are not calendar years, so they are not called unfinished.
-- **Financial years** (`2025-26`) are read as the ending year only for sorting. A sentence says them as the sheet does.
+- **Financial years** (`2025-26`) are read as the ending year only for sorting. A sentence says them as the sheet does. Financial quarters such as `Q1 12/13`, `Q1 FY24` and `FY24 Q1` are taken to start in July for sorting, and written as the sheet writes them. The file does not say when its year starts, so calling a period unfinished can be a few months off.
+- **Prices per item**: a heading ending in `수수료`, `요금`, `가격`, `단가`, `price` or `fee` is ranked, not added. `수수료 수입` and `총수수료` are money taken, so they add up. Writing `합계( )` adds them anyway.
+- **Period columns it cannot read**: with four or more columns differing only in their digits, such as `H1 21/22`, choosing the first asks before making the report, since it may not be the newest.
 - **Values that cannot be added**: a name meaning a level, such as a heating value, a concentration or a temperature, is averaged rather than added. A column of kinds, such as 항목 or type, narrows it to one kind first.
 - **A sheet in per cent**: if it says so, as `Per cent` under `Unit:` or `(단위: %)`, values are written in per cent, changes in points, and no shares are given. A % merely somewhere on the sheet is asked about.
 - **A figure that stops early**: if the first choice has no value for the sheet's newest period, the largest total that does is used.

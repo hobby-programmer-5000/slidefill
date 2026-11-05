@@ -75,6 +75,8 @@ KOREAN_SHORT_MONTH = re.compile(r"(\d{2})\s*년\s*(\d{1,2})\s*월")
 QUARTER_YEAR_FIRST = re.compile(r"(\d{4})\s*(?:년\s*)?[-.]?\s*Q?([1-4])(?:\s*분기|(?<=Q[1-4]))", re.I)
 QUARTER_Q_FIRST = re.compile(r"Q([1-4])\s*[-.']?\s*(\d{4}|\d{2})", re.I)
 QUARTER_Q_AFTER = re.compile(r"([1-4])Q\s*[-.']?\s*(\d{4}|\d{2})", re.I)
+FISCAL_QUARTER_SPAN = re.compile(r"Q([1-4])\s*[-.' ]?\s*(\d{4}|\d{2})\s*[/–—-]\s*(\d{2})", re.I)
+FISCAL_QUARTER_FY = re.compile(r"Q([1-4])\s*[-.' ]?\s*FY\s*'?(\d{4}|\d{2})|FY\s*'?(\d{4}|\d{2})\s*[-.' ]?\s*Q([1-4])", re.I)
 DAY_MONTH_YEAR = re.compile(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})")
 MONTH_DAY_YEAR = re.compile(r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),\s*(\d{4})")
 MONTH_QUARTER = re.compile(r"([A-Za-z]{3,9})\s+quarter\s+(\d{4})", re.I)
@@ -107,6 +109,9 @@ HEADING_LOOK_AHEAD = 30
 PIVOT_HEADING = re.compile(r"column labels|row labels|values|열 레이블|행 레이블|값", re.I)
 GRAND_TOTAL = re.compile(r"(?:grand\s+)?total|총합계|합계|총계|전체", re.I)
 UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(（\[]\s*units?\b", re.I)  # not 유통단계별단위명, which is only a column's name
+YEAR_LINE = re.compile(r"연간|연평균|연계|연합계|년간|annual|yearly|full\s*year", re.I)
+MONTH_LINE = re.compile(r"(?:0?[1-9]|1[0-2])\s*월|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?", re.I)
+MIN_MONTH_LINES = 6
 EARLIER_NAME = re.compile(r"전년|전월|전기|전분기|작년|지난|이전|직전|prior|previous|last\s+(?:year|month|quarter)", re.I)
 UNIT_NOTE_LENGTH = 40
 UNIT_WORD_LENGTH = 20
@@ -287,7 +292,27 @@ def _month_or_quarter(raw):
         if match:
             year = int(match.group(year_at))
             return dt.datetime(year if year > 99 else 2000 + year, (int(match.group(quarter_at)) - 1) * 3 + 1, 1)
-    return None
+    return _fiscal_quarter(raw)
+
+
+def _fiscal_quarter(raw):
+    """Q1 12/13, Q1 FY24 and FY24 Q1: a quarter of a year that spans two. Read as starting in July only to put them in order: a sentence says them as the sheet does."""
+    match = FISCAL_QUARTER_SPAN.fullmatch(raw)
+    if match:
+        start, end = int(match.group(2)), int(match.group(3))
+        if (start + 1) % 100 != end % 100:
+            return None
+        ending = (start if start > 99 else 2000 + start) + 1
+        quarter = int(match.group(1))
+    else:
+        match = FISCAL_QUARTER_FY.fullmatch(raw)
+        if not match:
+            return None
+        year = int(match.group(2) or match.group(3))
+        ending = year if year > 99 else 2000 + year
+        quarter = int(match.group(1) or match.group(4))
+    month = 7 + (quarter - 1) * 3
+    return dt.datetime(ending - 1, month, 1) if month <= 12 else dt.datetime(ending, month - 12, 1)
 
 
 def as_month(raw):
@@ -601,6 +626,14 @@ def unit_note(ws, rows, columns):
                 if words and len(words) <= UNIT_WORD_LENGTH:
                     return f"{text} {words}", words
     return "", ""
+
+
+def _year_beside_months(labels):
+    """The one line for the whole year among lines for its months. Beside anything else, 연간 may be an item of its own, such as a yearly plan beside a monthly one."""
+    names = [label for label in labels if isinstance(label, str)]
+    years = [label for label in names if YEAR_LINE.fullmatch(label.strip())]
+    months = sum(MONTH_LINE.fullmatch(label.strip()) is not None for label in names)
+    return years[0] if len(years) == 1 and months >= MIN_MONTH_LINES else None
 
 
 def _reads_backwards(first, second):
@@ -1396,10 +1429,15 @@ class ExcelSource:
         return found
 
     def _with_period_names(self, points, ref):
-        """A financial year is read as a date so that it can be sorted, but a sentence must call it what the sheet does."""
-        if not points or ref.date_parts or not self._fiscal_years(ref.sheets[points[0].sheet], ref):
+        """A financial year or its quarter is read as a date so that it can be sorted, but a sentence must call it what the sheet does."""
+        if not points or ref.date_parts:
             return points
-        return [replace(point, label=f"{point.date.year - 1}-{point.date.year % 100:02d}") for point in points]
+        if self._fiscal_years(ref.sheets[points[0].sheet], ref):
+            return [replace(point, label=f"{point.date.year - 1}-{point.date.year % 100:02d}") for point in points]
+        raws = [ref.sheets[point.sheet].cell(*ref.at(point.row, ref.date)).value for point in points]
+        if all(isinstance(raw, str) and _fiscal_quarter(DATE_MARK.sub("", raw.strip())) for raw in raws):
+            return [replace(point, label=" ".join(raw.split())) for point, raw in zip(points, raws)]
+        return points
 
     def _summed_series(self, ref):
         """Rows added up per calendar day: the person asked for this by writing 합계( ) or 건수( ). Nothing is summed unasked."""
@@ -1498,10 +1536,13 @@ class ExcelSource:
         head = f"{facts.point_text(now.date, points, lang)} {label} {show(now.value)}."
         last = f"{facts.point_text(ended[-1].date, points, lang)} {show(ended[-1].value)}"
         settled = f"끝난 기간 중 가장 최근은 {last}입니다." if ko else f"The latest period that has ended is {last}."
-        read = [facts.Fact("read_lead", lead, tuple(facts.NUMBER.findall(lead))), facts.Fact("read_ended", settled, tuple(facts.NUMBER.findall(settled)))]
-        read += facts.rate_readings(ended, show, lang, found.scale) if found.rate else facts.readings(ended, show, lang)
+        earlier = facts.rate_readings(ended, show, lang, found.scale) if found.rate else facts.readings(ended, show, lang)
+        # One statement: apart, -25.1% against the year before reads as being about the period still running.
+        words = " ".join([settled] + [fact.text for fact in earlier])
+        reading = facts.Fact("read_ended", words, tuple(facts.NUMBER.findall(words)))
+        warning = facts.Fact("read_lead", lead, tuple(facts.NUMBER.findall(lead)))
         value = facts.Fact("value", f"{facts.point_text(now.date, points, lang)} {label}: {show(now.value)}", tuple(facts.NUMBER.findall(show(now.value))))
-        return f"{lead} {head}", read[1:], read + [value]
+        return f"{lead} {head}", [reading], [warning, reading, value]
 
     def _stated_as_of(self):
         """The date a workbook says its data runs to, on any sheet: Data as at 30-Sep-2025. None when it does not say."""
@@ -1649,6 +1690,10 @@ class ExcelSource:
         for key in order:  # a mean or a rate is worked out once every row of the item is in
             items[key] = [value / count if value is not None and isinstance(spec, Aggregate) and spec.kind in ("mean", "rate") else value
                           for value, count, spec in zip(items[key], counts[key], specs)]
+        year_line = _year_beside_months(order)
+        if year_line:  # 1월 to 12월 and 연간: the year is their whole, not a thirteenth month to rank them against
+            order.remove(year_line)
+            totals.append(items[year_line])
         if len(order) < 2:
             raise IssueError("cross_no_items", sheet=ws.title, column=_line_name(ref, labels[0]))
         rows = [facts.Item(key if isinstance(key, str) else key[0], items[key][-1], items[key][0] if len(specs) == 2 else None) for key in order]
@@ -1657,12 +1702,13 @@ class ExcelSource:
         fmt_cell = ws.cell(*ref.at(first or ref.start, first_line))
         fmt = self._cell_format(fmt_cell)
         last_spec = specs[-1]
+        priced = facts.is_price(header) and not (isinstance(last_spec, Aggregate) and last_spec.kind == "sum")  # each row's fee: 합계( ) written out asks to add them anyway
         is_rate_kind = isinstance(last_spec, Aggregate) and last_spec.kind == "rate"
         if isinstance(last_spec, Aggregate) and (last_spec.kind in ("mean", "rate", "count") or last_spec.filters):
             header = _aggregate_name(last_spec, [header])
         if is_rate_kind:
             fmt = "0.0%"
-        issues = []
+        issues = [Issue("cross_total_found", {"label": year_line})] if year_line else []
         if len(specs) == 2:
             first_name = self._header(ws, ref, first or ref.start, specs[0].lines[0] if isinstance(specs[0], Aggregate) else specs[0])
             second_name = self._header(ws, ref, first or ref.start, first_line)
@@ -1680,7 +1726,7 @@ class ExcelSource:
                 stated = [largest.before, largest.value] if len(specs) == 2 else [largest.value]
                 issues.append(Issue("cross_total_found", {"label": largest.label}))
         per_cent = not is_rate_kind and in_per_cent(ws)
-        rate = is_rate_kind or per_cent or (isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)
+        rate = is_rate_kind or per_cent or priced or (isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)
         levels = facts.top_level(rows)
         if levels:  # 자산 and its parts, numbered by level: only the top level can stand side by side, and none of it adds up to a whole
             rows = levels
@@ -1689,7 +1735,7 @@ class ExcelSource:
         if nested:  # a row that is the sum of the rows under it: they are its parts, not its rivals
             rows = nested
             issues.append(Issue("cross_nested", {"count": len(rows)}))
-        additive = not levels and not per_cent and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
+        additive = not levels and not per_cent and not priced and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
         total = before_total = None
         added = sum(item.value for item in rows)
         has_total = False

@@ -39,6 +39,8 @@ SNAKE_NAME = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)
 NAME_UNITS = {"kg": "kg", "g": "g", "mj": "MJ", "kj": "kJ", "kcal": "kcal", "km": "km", "m2": "m²", "m3": "m³", "kwh": "kWh", "mwh": "MWh", "usd": "USD", "aud": "AUD", "krw": "KRW", "pct": "%", "percent": "%"}
 LEGEND_MARK = re.compile(r"(?<=[^\s(])\([A-Z]\)(?=\s|$)")  # 제주(A) and 한국(B) point to a formula in a table's footnote, which a slide does not have
 COUNT_MARK = re.compile(r"^\s*#\s+")
+KOREAN_UNIT_MARK = re.compile(r"(?<=[가-힣])_(원|천원|만원|백만원|억원|명|건|톤|개|회)$")  # 수수료_원
+PRICE_NAME = re.compile(r"^(?!.*(?:총|합계|누계|\b(?:total|sum)\b))(?=.*(?:수수료|요금|가격|단가|이용료|사용료|입장료|참가비|회비|\b(?:price|fee|tariff)s?\b)\s*[_( ]?\s*(?:원|천원|만원|달러|krw|usd|aud|\$)?\s*\)?\s*$)", re.I)
 MIN_NESTED_PARENT = 100  # among hospitals with 1, 2 or 3 doctors, 2 = 1 + 1 says nothing: it took 38 doctors out of a list of 127
 MAX_NESTED_ITEMS = 100  # among thousands of companies, one is bound to equal the sum of the next few by chance, and they are not its parts
 CLOSE_SECOND = 1.1  # the first is less than this many times the second: a multiple like 1.0 says nothing
@@ -83,7 +85,7 @@ class Fact:
 def readable_name(name):
     """A heading as a report should say it: Retained catch (kg) for RETAINED_CATCH_KG, 제주 for 제주(A), EAF Items for # EAF Items. Only the marks of a machine or of a table's own footnotes go; the words stay the sheet's."""
     text = LEGEND_MARK.sub("", COUNT_MARK.sub("", name or ""))
-    return SNAKE_NAME.sub(_words_of_snake, text)
+    return KOREAN_UNIT_MARK.sub(r"(\1)", SNAKE_NAME.sub(_words_of_snake, text))
 
 
 def _words_of_snake(match):
@@ -669,6 +671,11 @@ def ranked_items(items):
 def is_rate(header, fmt=""):
     """True for a rate, a score, an index or a mean, judged from its heading and format: a change in one is not a share of anything."""
     return RATE_WORD.search(header or "") is not None or "%" in (fmt or "")
+
+
+def is_price(header):
+    """The price of one thing per row: a fee list's 수수료_원, not 수수료 수입 or 총수수료, which are money taken and do add up."""
+    return PRICE_NAME.search(header or "") is not None
 
 
 def is_additive(header, fmt, values):

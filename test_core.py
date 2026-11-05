@@ -2883,6 +2883,100 @@ class TriedReports(Base):
         self.assertEqual(core._period_in("2021년 8월", "en"), "Aug 2021")
         self.assertEqual(core._period_in("2024-25", "ko"), "2024-25")
 
+    def test_the_reading_of_a_running_period_says_whose_change_it_is(self):
+        rows = [["연도", "수"]] + [[year, 100 + (year - 2015) ** 2] for year in range(2015, dt.date.today().year + 1)]
+        source = core.ExcelSource(self.book("진행중.xlsx", 표=rows))
+        request = source.insight_request("통찰:표!A,B")[0]
+        by_id = {fact.id: fact for fact in request.facts}
+        self.assertNotIn("read_prev_year", by_id)  # alone it would read as being about the running year
+        self.assertIn("끝난 기간 중 가장 최근은", by_id["read_ended"].text)
+        self.assertIn("대비", by_id["read_ended"].text)
+        self.assertNotIn("prev", by_id)
+        self.assertIsNone(core._lead_change(request, "ko")[0])  # so it is left out of what several files are compared on
+        for candidate in insight.calculated_candidates(request.facts, request.lang):
+            if "대비" in candidate.statement:
+                self.assertIn("끝난 기간 중 가장 최근은", candidate.statement)
+
+    def test_a_model_sentence_about_a_running_period_must_say_so(self):
+        pack = (facts.Fact("read_lead", "2025 had not ended when the file was saved on 2025-12-15.", ()), facts.Fact("read_ended", "It has risen 2 years in a row.", ("2",)))
+        item = {"statement": "Victim Reports has risen 2 years in a row.", "fact_ids": ["read_ended"]}
+        self.assertIn("unfinished", insight.check(item, pack, "en"))
+        item = {"statement": "Up to the last period that has ended it has risen 2 years in a row, and 2025 had not ended.", "fact_ids": ["read_ended"]}
+        self.assertNotIn("unfinished", insight.check(item, pack, "en"))
+
+    def test_a_sign_beside_a_word_for_the_direction_is_dropped(self):
+        self.assertEqual(insight._plain_sign("Grand Total was -2.6% below 2023-24."), "Grand Total was 2.6% below 2023-24.")
+        self.assertEqual(insight._plain_sign("was +7.3% above the value"), "was 7.3% above the value")
+        self.assertEqual(insight._plain_sign("전년 대비 -0.5% 낮습니다."), "전년 대비 0.5% 낮습니다.")
+        self.assertEqual(insight._plain_sign("직전 해 대비 +1.8%입니다."), "직전 해 대비 +1.8%입니다.")  # with no word, the sign is all that says it
+
+    def test_a_dropped_sign_does_not_hide_a_wrong_direction(self):
+        pack = (facts.Fact("read_prev_year", "+7.3% against the year before.", ("7.3",)),)
+        item = {"statement": insight._plain_sign("It was +7.3% below the year before."), "fact_ids": ["read_prev_year"]}
+        self.assertIn("direction", insight.check(item, pack, "en"))
+
+    def test_the_year_beside_its_months_is_their_whole(self):
+        rows = [["월", "유입"]] + [[f"{m}월", 100 + m * m] for m in range(1, 13)] + [["연간", sum(100 + m * m for m in range(1, 13))]]
+        text, _where, issues = core.ExcelSource(self.book("월.xlsx", 표=rows)).text_value("읽는법:표!A,B")
+        self.assertIn("항목 12개", text)
+        self.assertIn("전체 1,850", text)
+        self.assertIn("12월(244)", text)
+        self.assertIn("cross_total_found", [issue.code for issue in issues])
+
+    def test_a_year_beside_something_else_stays_an_item(self):
+        rows = [["요금제", "가입"], ["월간", 120], ["연간", 300], ["평생", 45], ["체험", 70]]
+        self.assertIn("연간(300)", core.ExcelSource(self.book("요금.xlsx", 표=rows)).text_value("읽는법:표!A,B")[0])
+
+    def test_a_fiscal_quarter_is_a_date_and_keeps_its_name(self):
+        self.assertEqual(core.as_date("Q1 12/13"), dt.datetime(2012, 7, 1))
+        self.assertEqual(core.as_date("Q4 25/26"), dt.datetime(2026, 4, 1))
+        self.assertEqual(core.as_date("Q2 FY24"), dt.datetime(2023, 10, 1))
+        self.assertEqual(core.as_date("FY2024 Q3"), dt.datetime(2024, 1, 1))
+        self.assertIsNone(core.as_date("Q1 12/15"))  # not one year running into the next
+        self.assertEqual(core.as_date("Q3 2026"), dt.datetime(2026, 7, 1))  # a plain quarter is still a calendar one
+        quarters = [f"Q{q} {y}/{y + 1}" for y in range(12, 15) for q in range(1, 5)]
+        rows = [["사용량"] + quarters, ["Total Consumption"] + [100 + n * 7 % 23 for n in range(12)], ["주거용"] + [50 + n for n in range(12)]]
+        section = suggest.plan_report(core.ExcelSource(self.book("물.xlsx", 표=rows))).sections[0]
+        note = self.note(section)
+        self.assertTrue(note.startswith("Q4 14/15 "), note)  # the newest, not the first column
+        self.assertIn("Q4 13/14", " ".join(item.result for item in section.sentences))
+
+    def test_columns_of_periods_it_cannot_read_are_asked_about(self):
+        rows = [["항목"] + [f"H{h} {y}/{y + 1}" for y in range(20, 23) for h in (1, 2)]] + [[f"항목{n}"] + [100 + n * c * c for c in range(6)] for n in range(5)]
+        plan = suggest.plan_report(core.ExcelSource(self.book("반기.xlsx", 표=rows)))
+        self.assertIn("period_columns", [code for code, _params in plan.doubts])
+        rows = [["지역", "매출", "비용", "이익"]] + [[f"지역{n}", 100 + n * n, 50 + n, 20 + n * 3] for n in range(5)]
+        self.assertEqual(suggest.plan_report(core.ExcelSource(self.book("보통.xlsx", 표=rows))).doubts, [])
+
+    def test_a_fee_list_ranks_its_fees_and_does_not_add_them(self):
+        rows = [["시험항목", "수수료_원"]] + [[name, fee] for name, fee in (("벤젠", 47300), ("황", 33000), ("시안", 30100), ("소음", 3400), ("진동", 3500))]
+        source = core.ExcelSource(self.book("수수료.xlsx", 표=rows))
+        section = suggest.plan_report(source).sections[0]
+        text = " ".join(item.result for item in section.sentences)
+        self.assertNotRegex(text, "합계|전체|%")
+        self.assertIn("수수료(원)", text)
+        self.assertIn("벤젠(47,300)", text)
+        self.assertIn("소음(3,400)", text)
+
+    def test_money_taken_as_fees_still_adds_up(self):
+        for name in ("수수료 수입", "총수수료", "Fee income", "수수료 합계"):
+            self.assertFalse(facts.is_price(name), name)
+        for name in ("수수료_원", "이용요금(원)", "판매가격", "입장료", "Unit price", "Annual fee ($)"):
+            self.assertTrue(facts.is_price(name), name)
+        rows = [["지점", "수수료 수입"], ["가", 310], ["나", 205], ["다", 97], ["라", 50]]
+        self.assertIn("항목 합계 662", core.ExcelSource(self.book("수입.xlsx", 표=rows)).text_value("읽는법:표!A,B")[0])
+
+    def test_asking_for_a_sum_of_fees_outright_is_honoured(self):
+        rows = [["구분", "품목", "수수료_원"], ["가", "벤젠", 100], ["가", "황", 200], ["나", "시안", 300], ["나", "소음", 50]]
+        self.assertIn("항목 합계 650", core.ExcelSource(self.book("합.xlsx", 표=rows)).text_value("읽는법:표!B,합계(C)")[0])
+
+    def test_a_list_of_records_with_ids_and_coordinates_makes_no_figures(self):
+        rows = [["ProjectCode", "TrialManagerId", "TrialName", "TrialLatitude", "TrialLongitude", "TrialId", "TrialNumber"]] + [["P1", 2, f"Trial {n}", -35.1, 147.3, 3400 + n, n] for n in range(4)]
+        plan = suggest.plan_report(core.ExcelSource(self.book("목록.xlsx", Export=rows)))
+        names = [figure.name for section in plan.sections for figure in section.figures] if plan else []
+        for word in ("TrialManagerId", "TrialLatitude", "TrialLongitude", "TrialId", "TrialNumber"):
+            self.assertNotIn(word, names)
+
     def test_machine_names_and_footnote_marks_read_as_words(self):
         self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")
         self.assertEqual(facts.readable_name("합계 RETAINED_CATCH_KG"), "합계 Retained catch (kg)")

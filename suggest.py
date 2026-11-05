@@ -46,7 +46,8 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns")
+PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
 LEVEL_MIN_ROWS = 10
@@ -293,7 +294,8 @@ def _long_identifiers(numbers):
 
 def _names_a_figure(name):
     """Not a code or a place in an order by its name, and a name at all: a heading of - says nothing about what the numbers are."""
-    return not ID_NAME.search(name) and not NOT_A_FIGURE_NAME.search(name) and re.search(r"\w", name) is not None
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)  # TrialManagerId and TrialLatitude are an ID and a latitude
+    return not ID_NAME.search(spaced) and not NOT_A_FIGURE_NAME.search(spaced) and re.search(r"\w", name) is not None
 
 
 def _unlike_things(numbers):
@@ -688,7 +690,7 @@ def default_how(base, value):
         return "mean"
     if value is not None and NEVER_ADDED_NAME.search(value.name):
         return "count" if base.kind == "name" else "mean"
-    if value is not None and _is_level(value.name):
+    if value is not None and (_is_level(value.name) or facts.is_price(value.name)):
         return "mean"
     # Rows of named things, such as staff by department: the column could be anything, an age or a salary, so it is only added if it says it is an amount.
     if base.kind == "name" and not (value is not None and AMOUNT_NAME.search(value.name)) and not _splits_by_group(base):
@@ -1003,10 +1005,21 @@ def find_doubts(source, shape, base, value, found):
     last_row, last_column = min(ws.max_row, SAMPLE_ROWS), min(ws.max_column, TITLE_COLUMNS)  # each asks every cell on the sheet, so once only
     if sum(isinstance(ws.cell(row, column).value, str) and TABLE_LINE.match(ws.cell(row, column).value.strip()) is not None for row in range(1, last_row + 1) for column in range(1, last_column + 1)) >= 2:
         add("several_tables")
+    if _first_of_period_columns(base, value):
+        add("period_columns")
     codes = {issue.code for item in found for issue in item.issues}
     if "cross_total_differs" in codes:
         add("total_differs")
     return doubts
+
+
+def _first_of_period_columns(base, value):
+    """H1 21/22, H2 21/22, H1 22/23: columns that differ only in their digits, not read as dates, with the first chosen. It may be years old, and nothing else would say so."""
+    if base.kind != "name" or not value.spec.isalpha() or not re.search(r"\d", value.name or ""):
+        return False
+    shapes = Counter(re.sub(r"\d+", "#", v.name or "") for v in base.values)
+    same = shapes[re.sub(r"\d+", "#", value.name)]
+    return same >= PERIOD_COLUMNS_MIN and value is next(v for v in base.values if re.sub(r"\d+", "#", v.name or "") == re.sub(r"\d+", "#", value.name))
 
 
 def _figure_rows(ws, value):

@@ -54,6 +54,10 @@ build.bat
 
 **3. Press Ctrl+G.** A new `<workbook name>_<date>.pptx` appears beside the workbook. Next month: open the app, press Ctrl+G.
 
+If there are signs it chose wrongly, it shows why and asks first. If you choose **Create it as it is**, the slide says the value was not confirmed.
+
+![The window asking you to check a figure](doc/images/doubt.png)
+
 **Insight sentences (optional):** select a figure in the list and press **Ctrl+I**. A model on this PC suggests sentences from the calculated results. The one you choose takes the place of that figure's "how to read it". If you choose none, the calculated sentence stays.
 
 Each sheet gets one slide: sentences on the left, a chart and a table on the right. What goes in:

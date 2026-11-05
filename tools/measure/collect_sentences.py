@@ -76,7 +76,7 @@ def one_case(base, case, output):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            statement = insight.CITATION_TEXT.sub("", str(item.get("statement", ""))).strip()
+            statement = insight._plain_sign(insight.CITATION_TEXT.sub("", str(item.get("statement", ""))).strip())
             if statement not in seen:
                 seen.add(statement)
                 item["statement"] = statement
