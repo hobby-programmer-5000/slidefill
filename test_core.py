@@ -3195,6 +3195,120 @@ class TriedReports(Base):
         text = core.ExcelSource(path).text_value("해설:표!A,평균(C)")[0]
         self.assertIn("+1.0", text)
 
+    def doubts(self, path):
+        return [code for code, _params in suggest.plan_report(core.ExcelSource(path)).doubts]
+
+    def test_a_subtotal_under_a_merged_date_is_not_added_again(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        ws.append(["일자", "지점", "매출"])
+        for i in range(8):
+            top = ws.max_row + 1
+            for name, value in (("서울", 50 + i), ("부산", 100 + i), ("소계", 150 + 2 * i)):
+                ws.append([f"2025-{i + 1:02d}" if name == "서울" else None, name, value])
+            ws.merge_cells(f"A{top}:A{top + 2}")
+        path = os.path.join(self.dir, "소계.xlsx")
+        wb.save(path)
+        note = self.note(suggest.plan_report(core.ExcelSource(path)).sections[0])
+        self.assertIn("164", note)  # 57 + 107 is the 소계 itself, not 328 with it added in
+        self.assertNotIn("328", note)
+
+    def test_a_table_beside_another_keeps_its_own_figures(self):
+        rows = [["지점", "매출", None, "제품", "수량"], ["서울", 100, None, "사과", 7], ["부산", 200, None, "배", 90], ["대구", 300, None, "귤", 3], ["인천", 150, None, "감", 1]]
+        source = core.ExcelSource(self.book("옆표.xlsx", 표=rows))
+        shape = suggest.read_shape(source, "표")
+        figures = {base.name: [value.name for value in base.values] for base in shape.bases}
+        self.assertEqual(figures, {"지점": ["매출"], "제품": ["수량"]})
+        text = " ".join(item.result for section in suggest.plan_report(source).sections for item in section.sentences)
+        self.assertNotIn("부산 89.1%", text)
+        spaced = [["지점", "1월", None, "2월"], ["서울", 100, None, 110], ["부산", 200, None, 190], ["대구", 300, None, 310]]  # a spacer column inside one table
+        self.assertEqual([value.name for value in suggest.read_shape(core.ExcelSource(self.book("띄운표.xlsx", 표=spaced)), "표").bases[0].values], ["1월", "2월"])
+        words_between = [["구분", None, "업소수", "규모", "홀", "보험"], ["골프장", None, 3, "홀수", 45, 3], ["스키장", None, 1, "슬로프", 7, 1], ["경주장", None, 2, "트랙", 2, 2]]  # a spacer, then words among the figures: still one table
+        self.assertEqual([value.name for value in suggest.read_shape(core.ExcelSource(self.book("글자열.xlsx", 표=words_between)), "표").bases[0].values], ["업소수", "홀", "보험"])
+
+    def test_a_different_table_stacked_below_is_not_mixed_in(self):
+        rows = [["지점", "매출(백만원)"], ["서울", 300], ["부산", 250], ["대구", 180], [None], ["제품", "수량(개)"], ["사과", 7000], ["배", 40], ["귤", 16]]
+        path = self.book("쌓인표.xlsx", 표=rows)
+        note = self.note(suggest.plan_report(core.ExcelSource(path)).sections[0])
+        self.assertIn("730", note)
+        self.assertNotIn("사과", note)
+        self.assertIn("first_table", self.doubts(path))  # the first table only, and a person is asked
+
+    def test_rows_that_add_up_by_chance_are_asked_about(self):
+        rows = [["지점", "매출"], ["서울", 300], ["부산", 100], ["대구", 200], ["인천", 50], ["광주", 60]]
+        self.assertIn("parts_by_sum", self.doubts(self.book("우연.xlsx", 표=rows)))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        for row in rows:
+            ws.append(row)
+        for row in (3, 4):
+            ws.cell(row, 1).alignment = openpyxl.styles.Alignment(indent=1)  # the sheet shows them as parts
+        path = os.path.join(self.dir, "들여씀.xlsx")
+        wb.save(path)
+        self.assertNotIn("parts_by_sum", self.doubts(path))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        for row in rows:
+            ws.append(row)
+        ws.cell(2, 1).font = openpyxl.styles.Font(bold=True)
+        path = os.path.join(self.dir, "굵게.xlsx")
+        wb.save(path)
+        self.assertNotIn("parts_by_sum", self.doubts(path))
+
+    def test_ordinary_numbers_in_the_years_range_are_not_dates(self):
+        self.assertIsNone(core.as_date("1001.5"))
+        self.assertIsNone(core.as_date("10010501"))
+        self.assertEqual(core.as_date("2025.5"), dt.datetime(2025, 5, 1))
+        rows = [["지점", "건수", "금액"]] + [[f"지점{n}", 1987 + n * 7, 5000 + n * 500] for n in range(8)]
+        plan = suggest.plan_report(core.ExcelSource(self.book("건수.xlsx", 표=rows)))
+        text = " ".join(item.result for item in plan.sections[0].sentences)
+        self.assertNotIn("1월 1일", text)
+        self.assertIn("건수 항목 합계 16,092", text)
+        for heading, years in (("연도", range(2000, 2030, 5)), (None, range(2015, 2025)), ("구분", range(2015, 2025))):
+            rows = ([[heading, "매출"]] if heading else []) + [[year, 100 + year % 7] for year in years]
+            base = suggest.read_shape(core.ExcelSource(self.book("연도.xlsx", 표=rows)), "표").bases[0]
+            self.assertEqual(base.kind, "date", heading)
+
+    def test_this_years_figure_is_chosen_over_last_years(self):
+        rows = [["지점", "전년 실적", "당년 실적", "증감", "증감률", "비중"]] + [[f"지점{n}", 100 + n * 17, 120 + n * 19, 20 + 2 * n, 0.2, 0.1] for n in range(6)]
+        self.assertEqual(suggest.plan_report(core.ExcelSource(self.book("전년.xlsx", 표=rows))).sections[0].figures[0].name, "당년 실적")
+        for name in ("전년 실적", "전년도 매출", "Prior year", "PY Sales", "전월"):
+            self.assertTrue(suggest.PREVIOUS_NAME.search(name), name)
+        for name in ("전년 대비", "전년비", "전년동월비", "prior year change", "전기요금", "당년 실적"):
+            self.assertFalse(suggest.PREVIOUS_NAME.search(name), name)
+
+    def test_a_format_far_below_the_data_is_not_read_as_rows(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        ws.append(["월", "매출"])
+        for m in range(1, 13):
+            ws.append([f"2025-{m:02d}", 100 + m])
+        ws.cell(1048576, 3).number_format = "0.00"
+        ws["A15"] = "주석"
+        ws.merge_cells("A15:B17")
+        path = os.path.join(self.dir, "서식.xlsx")
+        wb.save(path)
+        source = core.ExcelSource(path)
+        self.assertEqual((source.wb["표"].max_row, source.wb["표"].max_column), (17, 2))  # a merged note reaches as far as it is drawn
+        self.assertIn("2025년 12월", self.note(suggest.plan_report(source).sections[0]))
+
+    def test_rows_under_a_date_are_read_up_to_the_next(self):
+        class Sheet:
+            def __init__(self, filled):
+                self.filled = filled
+
+            def cell(self, row, column):
+                return type("C", (), {"value": "x" if row in self.filled else None})()
+
+        ref = type("R", (), {"date": 1, "at": staticmethod(lambda position, line: (position, line))})()
+        self.assertEqual(suggest._rows_under(Sheet({1, 4, 7}), ref, [1, 4, 7], [1, 4, 7]), [2, 3, 5, 6, 8, 9])
+        self.assertEqual(suggest._rows_under(Sheet({1, 2, 3}), ref, [1, 2, 3], [1, 2, 3]), [])
+        self.assertEqual(suggest._rows_under(Sheet({1, 40}), ref, [1, 40], [1, 40]), [2, 41])  # far apart: only the row right under, as before
+
     def test_machine_names_and_footnote_marks_read_as_words(self):
         self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")
         self.assertEqual(facts.readable_name("합계 RETAINED_CATCH_KG"), "합계 Retained catch (kg)")

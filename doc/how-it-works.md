@@ -74,7 +74,7 @@ A cell such as `362(37%)`, `1,234` written as text, or `15건` gives its leading
 
 When summing:
 
-- **A date on the first row of a group** covers the rows below it, until the next date or a row such as `Total`.
+- **A date on the first row of a group** covers the rows below it, until the next date or a row such as `Total`. When `서울`, `부산` and `소계` sit under a merged date, the automatic choice uses only the `소계` line: adding all three would count everything twice.
 - **The same date on two sheets** is refused, because it would count twice.
 - **A line headed differently on another sheet** is refused, because row 7 may be something else there.
 - **Warnings:** the newest date has a different number of rows than usual, or its last time of day is over an hour earlier than usual. Times need the date cell to hold them.
@@ -86,7 +86,9 @@ For a table with no dates:
 - **Rates, indexes and means** get no shares. This is judged from headings and the sheet's name, so a column with no such word can still be added wrongly.
 - **`소계`** rows are left out of the items, and a catch-all such as `기타` is ranked last. Closing lines merged in from the left column, such as `유료` and `무료`, count as subtotals too.
 - **In a table with a kind on each row**, if the kind column has a line meaning all of them (`FY Subtotal`, `00:소계`, `5합계`), only that line is used. A line with another name counts too if its value equals the other lines added up, date after date (within 2%, at least 90% of the time). The line chosen is written beside the figure's name. Adding the parts to the whole would double the value. When kinds split each name (`월계` and `누계`, `건수` and `연면적`), only the first is used. A column headed `지표` or `Measures` holds different units, so it is split in tables by date as well.
-- **Tables stacked on one sheet** (the same heading and names coming back further down): only the first is read. **Lines indented as in a pivot table** are parts of the line above, so only the outermost level is compared.
+- **Tables stacked on one sheet** (the same heading and names coming back further down, or a table with headings of its own starting under a blank row): only the first is read, and it asks before making the report. **Lines indented as in a pivot table** are parts of the line above, so only the outermost level is compared.
+- **A table beyond an empty column**: when a column of names of its own stands beyond the gap, its figures belong to that table (`수량` beside `제품` is not a figure of `지점`). An empty column with no names beyond it is read as one table.
+- **A row equal to the sum of the rows under it** takes them as its parts and leaves them out of the comparison. When the sheet does not mark them as parts, by indenting, a leading space or bold, the sum may match by chance (300 = 100 + 200), so it asks first.
 - **An average over time for an amount**, such as `분기별 평균 수출금액`, adds up across items. `평균 단가` and `평균 점수` are averaged.
 - **Identifiers and codes** are not chosen as figures: columns whose name says so (`ABN`, `ISBN`, `FILE NUMBER`, postcodes, latitude), columns that repeat one to one with the words beside them (a species code, an area repeated for each region), and whole numbers of nine or more digits that are all different. Neither are places in an order (`발생차수`, rank, a running number that starts again), dates stored as numbers (`Group End Date`), columns where every line is a year, or lists that mix 0.003 with 6,378,137 in one column. Ages are not added; people are counted instead. If no figure is left, rows are counted or the file is said to be unreadable. This is judged from names and contents, so it can miss one or drop the wrong one, and the window says which figure was taken.
 - **A heading that repeats** takes the merged heading right above it (`일반수출신고 건수`), so a figure for one part does not read as the whole.
@@ -108,6 +110,9 @@ Warnings appear only in the app's list. So where a figure must be read different
 - **Financial years** (`2025-26`) are read as the ending year only for sorting. A sentence says them as the sheet does. Financial quarters such as `Q1 12/13`, `Q1 FY24` and `FY24 Q1` are taken to start in July for sorting, and written as the sheet writes them. The file does not say when its year starts, so calling a period unfinished can be a few months off.
 - **Different kinds in one column**: if the value's name says nothing, such as `값` or `value`, and a column of kinds such as 항목 or 구분 sits beside it, only the first kind is used. A named figure whose kinds differ in size by over 100 times is asked about.
 - **A number column beside a year**: it reads as months only if its heading says 월, 기간 or month, and as quarters if it says 분기 or quarter or holds `Q4` or `4분기`. A heading naming something else, such as a branch number, is not part of a date.
+- **Numbers that look like years**: a column of numbers such as 1987 reads as years only under a heading such as 연도, year or period, under no heading, or when they run a year at a time. 1987 to 2036 under `건수` are counts. A date written as text or digits is read only for the years 1800 to 2199, so `1001.5` is not a date.
+- **Last year and this year**: with `전년 실적` beside `당년 실적`, this year's is chosen. `전년 대비` and `전년비` are changes up to now, so they stay.
+- **Blank cells with only a format** past the last value are not read, such as the one a format given to a whole column leaves on row 1,048,576. A merged cell keeps the area it is drawn over.
 - **`률` and `율`**: only at the end of a word do they mean a rate. `법률상담건수` is not one.
 - **Prices per item**: a heading ending in `수수료`, `요금`, `가격`, `단가`, `price` or `fee` is ranked, not added. `수수료 수입` and `총수수료` are money taken, so they add up. Writing `합계( )` adds them anyway.
 - **Period columns it cannot read**: with four or more columns differing only in their digits, such as `H1 21/22`, choosing the first asks before making the report, since it may not be the newest.

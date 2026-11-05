@@ -63,6 +63,8 @@ LATEST_COLUMNS = re.compile(r"[A-Za-z]{1,3}(\s*:\s*[A-Za-z]{1,3})?")
 DATE_TEXT = re.compile(r"(\d{4})\s*[-/.년]\s*(\d{1,2})\s*(?:[-/.월]\s*(\d{1,2})\s*[.일]?)?\s*[월.]?\s*(?:\(\w+\))?"
                        r"\s*(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?")
 DATE_DIGITS = re.compile(r"(\d{4})(\d{2})(\d{2})")
+EMPTY_EDGE_ROWS, EMPTY_EDGE_COLUMNS = 1000, 100  # cells with only a format this far past the last value are dropped on loading
+DATE_YEARS = (1800, 2199)  # the years a date written as text or digits may have
 YEAR_TEXT = re.compile(r"((?:19|20)\d\d)\s*(?:년도?)?")
 DATE_MARK = re.compile(r"\s*(?:\((?:p|r|e|est)\)|\*+)\s*$", re.I)  # Jul. 2026(p): preliminary and revised marks
 MONTH_WORDS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january", "february", "march", "april", "june",
@@ -260,6 +262,8 @@ def as_date(raw):
     match = DATE_TEXT.fullmatch(raw) or DATE_DIGITS.fullmatch(raw)
     if match:
         year, month, day, *clock = list(match.groups()) + [None] * 3
+        if not DATE_YEARS[0] <= int(year) <= DATE_YEARS[1]:
+            return None  # 1001.5 written as text is a figure, not May of the year 1001
         try:
             return dt.datetime(int(year), int(month), int(day or 1), *(int(part or 0) for part in clock[:3]))
         except ValueError:
@@ -777,6 +781,25 @@ def _rows_indented_under_others(ws, ref, labels, figures):
     return frozenset(position for position, indent in indents.items() if indent > outermost)
 
 
+def _parts_set_apart(ws, ref, labels, parts, kept):
+    """True when the sheet itself marks the rows taken as parts: indented further, written after a space or a bullet, or the rows kept in bold while the parts are not. Rows that only add up may do so by chance, as 300 = 100 + 200, and then a person is asked."""
+    def look(position):
+        cell = next((found for line in labels if position is not None and (found := ws._cells.get(ref.at(position, line))) is not None and found.value not in (None, "")), None)
+        if cell is None:
+            return 0, False, False
+        text = cell.value if isinstance(cell.value, str) else ""
+        return cell.alignment.indent or 0, text[:1].isspace() or facts.PART_MARK.match(text.strip()) is not None, bool(cell.font is not None and cell.font.b)
+
+    part_looks, kept_looks = [look(position) for position in parts], [look(position) for position in kept]
+    if not part_looks:
+        return True
+    if max(indent for indent, _spaced, _bold in part_looks) > min(indent for indent, _spaced, _bold in kept_looks or [(0, False, False)]):
+        return True
+    if any(spaced for _indent, spaced, _bold in part_looks) and not all(spaced for _indent, spaced, _bold in kept_looks):
+        return True
+    return any(bold for _indent, _spaced, bold in kept_looks) and not any(bold for _indent, _spaced, bold in part_looks)
+
+
 def _exact_exists(ws, ref, line, wanted):
     """True when some cell of the line is exactly this word, so 쌀 does not also take in 찹쌀. Otherwise a part is enough: nidirect finds nidirect Contact Centre calls."""
     known = ws.__dict__.setdefault("_exact_words", {})
@@ -883,6 +906,26 @@ def is_insight_key(key):
     return INSIGHT.fullmatch(key) is not None
 
 
+def _without_empty_edges(wb):
+    """The workbook without cells far past the last value that hold only a format. A format given to a whole column leaves one on row 1,048,576, and every line read up to the sheet's last row would then run a million times.
+    Only far past: a column of formulas Excel never worked out has no values either, and right beside the figures it must still be seen and warned about."""
+    for ws in wb.worksheets:
+        cells = getattr(ws, "_cells", None)
+        if not cells:
+            continue
+        filled = {key for key, cell in cells.items() if cell.value is not None}
+        last_row = max((row for row, _column in filled), default=0)
+        last_column = max((column for _row, column in filled), default=0)
+        for merged in ws.merged_cells.ranges:  # a merged heading reaches as far as it is drawn
+            if (merged.min_row, merged.min_col) in filled:
+                last_row, last_column = max(last_row, merged.max_row), max(last_column, merged.max_col)
+        far_row = last_row + EMPTY_EDGE_ROWS if ws.max_row > last_row + EMPTY_EDGE_ROWS else ws.max_row
+        far_column = last_column + EMPTY_EDGE_COLUMNS if ws.max_column > last_column + EMPTY_EDGE_COLUMNS else ws.max_column
+        for key in [key for key in cells if key[0] > far_row or key[1] > far_column]:
+            del cells[key]
+    return wb
+
+
 class ExcelSource:
     """Read-only view of a workbook: resolves keys and renders cells as Excel displays them."""
 
@@ -907,7 +950,7 @@ class ExcelSource:
                 if self._converted is None:  # no formulas to tell apart from their values, so once will do
                     self._converted = readers.load(self.path)
                 return self._converted
-            return openpyxl.load_workbook(self.path, data_only=data_only)
+            return _without_empty_edges(openpyxl.load_workbook(self.path, data_only=data_only))
         except PermissionError:
             raise SlideFillError("file_locked", path=self.path)
         except readers.Protected:
@@ -1309,8 +1352,14 @@ class ExcelSource:
 
     def _header(self, ws, ref, top, line):
         """The nearest filled cell before the first data row or column, or the line's name when the sheet has no header."""
-        names = [(position, _clean_label(text)) for position in range(top - 1, 0, -1)
-                 if (text := self.read(ws, *ref.at(position, line))[1]) and "," not in text.replace(", ", "")[:6] and (as_number(ws.cell(*ref.at(position, line)).value) is None or as_year(ws.cell(*ref.at(position, line)).value))]
+        found = ((position, _clean_label(text)) for position in range(top - 1, 0, -1)
+                 if (text := self.read(ws, *ref.at(position, line))[1]) and "," not in text.replace(", ", "")[:6] and (as_number(ws.cell(*ref.at(position, line)).value) is None or as_year(ws.cell(*ref.at(position, line)).value)))
+        names, useful_seen = [], 0
+        for place, text in found:  # the nearest and two that are not codes are all it uses: a table that starts on row 5,000 need not read every row above
+            names.append((place, text))
+            useful_seen += not ID_CODE.fullmatch(text)
+            if useful_seen >= 2:
+                break
         if not names:
             return _line_name(ref, line)
         position, name = names[0]
@@ -1607,8 +1656,9 @@ class ExcelSource:
         if not hasattr(self, "_as_at"):
             self._as_at = None
             for ws in self.wb.worksheets:
+                columns = min(ws.max_column, AS_AT_COLUMNS)
                 for row in range(1, min(ws.max_row, AS_AT_ROWS) + 1):
-                    for column in range(1, min(ws.max_column, AS_AT_COLUMNS) + 1):
+                    for column in range(1, columns + 1):
                         cell = ws._cells.get((row, column))
                         text = cell.value if cell is not None and isinstance(cell.value, str) else ""
                         match = AS_AT.search(text) if len(text) <= AS_AT_LENGTH else None
@@ -1711,7 +1761,7 @@ class ExcelSource:
         labels, specs = ref.label_lines, ref.specs
         lower = min(spec.lines[0] if isinstance(spec, Aggregate) else spec for spec in specs)
         items, counts, order, totals, unlabeled, from_text, first = {}, {}, [], [], 0, [], None
-        unread = []
+        unread, places = [], {}
         heading = self._heading_row(ws, ref, labels, specs)
         outer = _rows_of_an_outer_level(ws, ref, labels)
         chosen = {line for spec in specs if isinstance(spec, Aggregate) for line, _word in spec.filters}
@@ -1725,9 +1775,9 @@ class ExcelSource:
                 wanted = [line for spec in specs for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]
                 unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in wanted) if _unread_figure(raw)]
                 continue
-            if first is None and _years_only(ws, ref, position, specs):
+            if first is None and _years_only(ws, ref, position, specs) and not _years_only(ws, ref, position + 1, specs):
                 del from_text[texts_so_far:]
-                continue  # 2023, 2024 heading the value columns, not an item
+                continue  # 2023, 2024 heading the value columns, not an item. 1987 and 1994 under 건수 on row after row are counts
             first = first or position
             kind = _total_kind(ws, ref, position, lower, chosen)
             if kind == "total":
@@ -1740,10 +1790,12 @@ class ExcelSource:
                 unlabeled += 1
                 continue
             if any(isinstance(spec, Aggregate) for spec in specs) and label in items:
+                places.setdefault(label, position)
                 items[label] = [(a or 0) + (b or 0) if a is not None or b is not None else None for a, b in zip(items[label], numbers)]
                 counts[label] = [c + (b is not None) for c, b in zip(counts[label], numbers)]
             else:
                 key = label if label not in items else (label, position)
+                places[key] = position
                 items[key] = numbers
                 counts[key] = [int(b is not None) for b in numbers]
                 order.append(key)
@@ -1758,6 +1810,7 @@ class ExcelSource:
         if len(order) < 2:
             raise IssueError("cross_no_items", sheet=ws.title, column=_line_name(ref, labels[0]))
         rows = [facts.Item(key if isinstance(key, str) else key[0], items[key][-1], items[key][0] if len(specs) == 2 else None) for key in order]
+        row_of = {id(item): places.get(key) for item, key in zip(rows, order)}
         first_line = specs[-1].lines[0] if isinstance(specs[-1], Aggregate) else specs[-1]
         header = self._header(ws, ref, first or ref.start, first_line)
         fmt_cell = ws.cell(*ref.at(first or ref.start, first_line))
@@ -1797,8 +1850,10 @@ class ExcelSource:
             issues.append(Issue("cross_outline", {"count": len(rows)}))
         nested = facts.without_parts(rows) if not levels else None
         if nested:  # a row that is the sum of the rows under it: they are its parts, not its rivals
+            kept = {id(item) for item in nested}
+            marked = _parts_set_apart(ws, ref, labels, [row_of.get(id(item)) for item in rows if id(item) not in kept], [row_of.get(id(item)) for item in nested])
             rows = nested
-            issues.append(Issue("cross_nested", {"count": len(rows)}))
+            issues.append(Issue("cross_nested", {"count": len(rows), "by_sum": not marked}))
         additive = not levels and not per_cent and not priced and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
         total = before_total = None
         added = sum(item.value for item in rows)

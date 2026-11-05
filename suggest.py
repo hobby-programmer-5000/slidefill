@@ -29,6 +29,7 @@ SAMPLE_ROWS = 3000  # enough to tell what a column holds; a sheet of a million r
 SAMPLE_COLUMNS = 60
 HEAD_ROWS = 25  # periods laid out across a row are near the top
 MAX_GROUP_VALUES = 200
+UNDER_ROWS = 12  # rows read under one merged date, as 서울, 부산 and 소계 under each month
 MAX_NAME_BASES = 6  # a sheet of many text columns need not be tried in full
 HEADING_LEVELS = 4  # rows of headings looked for under periods laid across
 NESTED = object()  # periods laid across with more than one level of headings under them
@@ -46,7 +47,7 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum")
 PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
@@ -80,9 +81,11 @@ MEAN_NAME = re.compile(facts.RATE_SYLLABLE + r"|평균|가격|단가|점수|\b(?
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
+YEAR_COLUMN_HEADING = re.compile(r"연도|년도|년|year|\byrs?\b|\bfy\b|기간|시점|시기|기준|구분|일자|날짜|회계|period|date|time|season", re.I)  # what a column of years is headed
 MONTH_HEADING = re.compile(r"월|달|기간|month|mth|\bmm\b|period", re.I)
 GENERIC_VALUE = re.compile(r"값|수치|데이터|실적값|values?|data|figures?|amount", re.I)  # says nothing of what is measured, so a column beside it must
 MIXED_SIZE = 100  # one kind this many times another: 매출액 beside 직원수. At 34 times, 외국인 beside 재외국민 is only a small part
+PREVIOUS_NAME = re.compile(r"(?:전년|작년|전월|전분기|전년도|전년동월|전년동기)(?!\s*(?:대비|동월비|동기비|비|比|증감))|\b(?:prior|previous|last)\s+(?:year|month|quarter|period)\b(?!\s*(?:change|growth|on|vs))|\bpy\b", re.I)  # last year's figure, not a change from it: 전년 대비 and 전년비 are about now. 전기 is also electricity
 TARGET_NAME = re.compile(r"목표|계획|예산|전망|예상|추정|\b(?:target|plan|budget|forecast|goal)s?\b", re.I)
 KIND_COLUMN = re.compile(r"항목|종류|구분|측정|분류|parameter|measures?\b|metric|indicator|\b(?:type|kind)\b", re.I)  # what the rows are measurements of, not who or where
 PERIOD_IN_TITLE = re.compile(r"(?:19|20)\d\d\s*년(?:\s*\d{1,2}\s*월)?(?:\s*\d\s*분기)?|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d\d\b", re.I)
@@ -239,7 +242,8 @@ def data_sheets(source):
     def holds_figures(ws):
         if ws.max_row < 2 or NOT_DATA_SHEET.search(ws.title) or _titled_as_contents(ws):
             return False
-        cells = [ws.cell(r, c).value for r in range(1, min(ws.max_row, 60) + 1) for c in range(1, min(ws.max_column, SAMPLE_COLUMNS) + 1)]
+        columns = min(ws.max_column, SAMPLE_COLUMNS)  # once: openpyxl counts every cell to find it
+        cells = [ws.cell(r, c).value for r in range(1, min(ws.max_row, 60) + 1) for c in range(1, columns + 1)]
         return sum(core.as_number(v) is not None for v in cells) >= 3
 
     # What someone hid is not what they mean to report, and they could not see it to check it. Only when nothing else holds figures is it read.
@@ -251,8 +255,9 @@ def data_sheets(source):
 
 def _titled_as_contents(ws):
     """A sheet named Companies whose title says it only lists where things are: its numbers are places in other tables."""
+    columns = min(ws.max_column, TITLE_COLUMNS)
     for row in range(1, min(ws.max_row, TITLE_ROWS) + 1):
-        for column in range(1, min(ws.max_column, TITLE_COLUMNS) + 1):
+        for column in range(1, columns + 1):
             raw = ws.cell(row, column).value
             if isinstance(raw, str) and CONTENTS_TITLE.search(raw):
                 return True
@@ -349,6 +354,9 @@ def _date_candidates(ws):
         filled = p["filled"]
         if not filled:
             continue
+        if p["year"] and not _can_be_years(ws, c, limit):
+            p = p.copy()
+            p["number"] += p.pop("year")
         if p["year"] >= 3 and p["year"] >= filled * 0.8:
             for other in range(c + 1, min(c + 3, columns) + 1):
                 q = profiles[other]
@@ -365,6 +373,19 @@ def _date_candidates(ws):
             found.append((size, str(r), True))
     found.sort(key=lambda item: -item[0])
     return [(spec, by_row) for _size, spec, by_row in found[:6]]
+
+
+def _can_be_years(ws, column, limit):
+    """1987 to 2036 under 건수 are counts, not years. Bare numbers are years only under a heading that says so, under no heading, or when they run in order a year at a time. 2021년 says it itself."""
+    cells = [cell.value for cell in (ws._cells.get((row, column)) for row in range(1, limit + 1)) if cell is not None and cell.value not in (None, "")]
+    bare = [int(float(raw)) for raw in cells if not isinstance(raw, bool) and core.as_year(raw) is not None and (isinstance(raw, (int, float)) or raw.strip().isdigit())]
+    if not bare:
+        return True
+    words = [raw.strip() for raw in cells if isinstance(raw, str) and raw.strip() and core.as_year(raw) is None and core.as_date(raw) is None]
+    if not words or YEAR_COLUMN_HEADING.search(words[0]):
+        return True
+    steps = [later - earlier for earlier, later in zip(bare, bare[1:]) if later != earlier]
+    return not steps or all(step == 1 for step in steps) or all(step == -1 for step in steps)  # 회계연도 2025 on every line is a year too
 
 
 def _can_be_months(ws, column, limit):
@@ -435,7 +456,8 @@ def _read_date_base(source, ws, spec, by_row, codes):
     notes, used = [], spec
     span = None
     base_name = source._date_header(ws, ref, positions[0])
-    repeated = [date for date, times in Counter(dates).items() if times > 1]
+    times = Counter(dates)
+    repeated = [date for date, count in times.items() if count > 1]
     if repeated:
         runs = _blocks(positions)
         by_position = dict((position, date) for date, position in dated)
@@ -444,7 +466,7 @@ def _read_date_base(source, ws, spec, by_row, codes):
             span = (runs[0][0], runs[0][-1])
             notes.append(("note_first_table", {"count": len(runs)}))
         elif len(set(dates)) >= len(dates) * MANY_ROWS:  # a stray repeat, perhaps a typing slip: read only what comes after it
-            second = max(p for p in positions if dates.count(by_position[p]) > 1)
+            second = max(p for p in positions if times[by_position[p]] > 1)
             after = [p for p in positions if p > second]
             if len(after) >= 3:
                 span = (after[0], after[-1])
@@ -466,8 +488,7 @@ def _read_date_base(source, ws, spec, by_row, codes):
     other_count = ws.max_row if by_row else min(ws.max_column, SAMPLE_COLUMNS)
     stepping = []  # 1, 2, 3 is most likely a running number, but it may be all the sheet has
     sample = positions[:SAMPLE_ROWS] if not many else positions[:SAMPLE_ROWS]
-    # Rows under a date with no date of their own belong to it, as with merged cells.
-    under = [p + 1 for p in sample if p + 1 not in set(positions) and ws.cell(*ref.at(p + 1, ref.date)).value in (None, "")]
+    under = _rows_under(ws, ref, positions, sample)
     for line in range(ref.date + 1 if by_row else 1, other_count + 1):
         if line in lines:
             continue
@@ -517,6 +538,24 @@ def _read_date_base(source, ws, spec, by_row, codes):
     return base
 
 
+def _rows_under(ws, ref, positions, sample):
+    """Rows under a date with no date of their own, up to the next date: they belong to it, as with merged cells. All of them, so 소계 on the third row under each month is seen and not added in with 서울 and 부산."""
+    dated = set(positions)
+    following = dict(zip(positions, positions[1:]))
+    under, gap = [], 2
+    for position in sample:
+        end = following.get(position, position + gap)  # the last date takes as many rows as the one before it
+        if end - position > UNDER_ROWS:
+            end = position + 2  # far apart: what follows is more likely another table than rows of this date
+        else:
+            gap = end - position
+        for row in range(position + 1, end):
+            if row in dated or ws.cell(*ref.at(row, ref.date)).value not in (None, ""):
+                break
+            under.append(row)
+    return under
+
+
 def _levels_under(ws, ref, positions):
     """The rows of headings between periods laid across and the figures below, as when each year spans 사고건수, 사망자수 and more. Those cannot be added together."""
     step = positions[-1] - positions[-2] if len(positions) >= 2 else 1
@@ -542,11 +581,12 @@ def _read_name_bases(source, ws, codes):
     limit = min(ws.max_row, SAMPLE_ROWS)
     columns = min(ws.max_column, SAMPLE_COLUMNS)
     profiles = {c: _profile(ws, c, False, limit) for c in range(1, columns + 1)}
-    numeric = [c for c, (p, _d) in profiles.items() if p["number"] + p["year"] >= max(p["filled"] * 0.5, 2) and p["number"] >= 2]
+    numeric = [c for c, (p, _d) in profiles.items() if p["number"] + p["year"] >= max(p["filled"] * 0.5, 2) and (p["number"] >= 2 or p["year"] >= 2 and not _can_be_years(ws, c, limit))]
     words = [c for c, (p, d) in profiles.items() if p["text"] + p["month"] >= 2 and c not in numeric and any(core.as_date(ws.cell(r, c).value) is None for r in range(1, 3))]
     if not numeric or not words:
         return []
     data_rows = [r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None]
+    empty = {c for c, (p, _d) in profiles.items() if not p["filled"]}
     bases = []
     for c in words[:MAX_NAME_BASES]:
         p, d = profiles[c]
@@ -557,7 +597,7 @@ def _read_name_bases(source, ws, codes):
         ref = source._parse_ref(f"{ws.title}!{get_column_letter(c)}", "x")
         first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None), 2)
         name = source._header(ws, ref, first_filled, c)
-        stacked = _first_stacked_table(ws, c, limit, numeric)
+        stacked = _first_stacked_table(ws, c, limit, numeric) or _first_of_unlike_tables(ws, c, limit, [n for n in numeric if not _beside_another_table(c, n, empty, words)])
         if stacked:
             d = Counter(str(core._merged_value(ws, r, c)).strip() for r in data_rows if stacked[0] <= r <= stacked[1] and core._merged_value(ws, r, c) not in (None, "") and core.as_number(core._merged_value(ws, r, c)) is None)
         repeats = sum(d.values()) > len(d) * 1.5
@@ -589,7 +629,10 @@ def _read_name_bases(source, ws, codes):
         out.append((order, base))
     ordered = [base for _o, base in sorted(out, key=lambda item: (item[0] if isinstance(item[0], tuple) else (-1, 0)))]
     for base in ordered:
+        own = core.column_index_from_string(base.spec.split(":")[-1] if re.fullmatch(r"[A-Z]+:[A-Z]+", base.spec) else _name_line(base.spec))  # A:C, labels spread across columns, ends at C
         for c in numeric:
+            if _beside_another_table(own, c, empty, words):
+                continue
             ref = source._parse_ref(f"{ws.title}!{_name_line(base.spec)}", "x")
             first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, c).value) is not None), 2)
             name = source._header(ws, ref, first_filled, c)
@@ -597,7 +640,7 @@ def _read_name_bases(source, ws, codes):
             years = [ws.cell(r, c).value for r in data_rows if ws.cell(r, c).value not in (None, "")]
             if c in codes or not _names_a_figure(name) or _steps_by_one(numbers) or _long_identifiers(numbers) or _unlike_things(numbers):
                 continue
-            if years and all(core.as_year(raw) is not None for raw in years):  # 회계연도 2025 on every line of a budget
+            if years and all(core.as_year(raw) is not None for raw in years) and _can_be_years(ws, c, limit):  # 회계연도 2025 on every line of a budget, but not 1987 to 2036 under 건수
                 continue
             base.values.append(Value(get_column_letter(c), name))
         for c, other, p, d in bases:
@@ -605,6 +648,45 @@ def _read_name_bases(source, ws, codes):
                 base.groups.append(Group(_name_line(other.spec), other.name, list(d)))
         _newest_period_first(ws, base)
     return ordered
+
+
+def _beside_another_table(names, figures, empty, words):
+    """True when the figures belong to a table beside this one: an empty column stands between, and right after it a column of names of their own. 수량 beside 제품 is not a figure of 지점.
+    A column of words further on, such as 면적 등 between the figures, is part of the same table: only what starts right after the gap begins another."""
+    low, high = sorted((names, figures))
+    gaps = [column for column in range(low + 1, high) if column in empty]
+    if not gaps:
+        return False
+    if figures < names:
+        return True
+    for gap in gaps:
+        after = next((column for column in range(gap + 1, figures) if column not in empty), None)
+        if after is not None and after in words:
+            return True
+    return False
+
+
+def _first_of_unlike_tables(ws, column, limit, numeric):
+    """(first row, last row) of the first table when another with headings of its own starts under a blank row: 제품 and 수량(개) under 지점 and 매출 begin another table, and its rows are not more 지점."""
+    def value(row, line):
+        cell = ws._cells.get((row, line))
+        return None if cell is None else cell.value
+
+    if not numeric:
+        return None
+    figure_rows = [row for row in range(1, limit + 1) if any(core.as_number(value(row, line)) is not None for line in numeric)]
+    figured = set(figure_rows)
+    for row in range(figure_rows[0] + 1, figure_rows[-1]) if len(figure_rows) >= 4 else ():
+        name, heads = value(row, column), [value(row, line) for line in numeric]
+        if row in figured or not (isinstance(name, str) and name.strip()):
+            continue
+        if not any(isinstance(head, str) and re.search(r"[^\W\d]", head) for head in heads):
+            continue
+        blank = any(all(value(above, line) in (None, "") for line in (column, *numeric)) for above in range(max(row - 3, 1), row))
+        before, after = [r for r in figure_rows if r < row], [r for r in figure_rows if r > row]
+        if blank and len(before) >= 2 and len(after) >= 2:
+            return before[0], before[-1]
+    return None
 
 
 def _newest_period_first(ws, base):
@@ -688,6 +770,7 @@ def default_value(base):
     if every_row:
         return every_row
     plain = [v for v in plain if not TARGET_NAME.search(v.name or "")] or plain  # what happened, ahead of what was planned
+    plain = [v for v in plain if not PREVIOUS_NAME.search(v.name or "")] or plain  # 당년 실적 ahead of 전년 실적 beside it
     named_total = [v for v in plain if TOTAL_NAME.search(v.name)]
     ends_as_total = [v for v in named_total if ENDS_AS_TOTAL.search(v.name)]
     chosen = next(iter(ends_as_total), None) or next(iter(named_total), None) or plain[0]
@@ -1045,6 +1128,8 @@ def find_doubts(source, shape, base, value, found):
         add("total_differs")
     if "figures_not_read" in codes:
         add("figures_not_read")
+    if any(issue.code == "cross_nested" and issue.params.get("by_sum") for item in found for issue in item.issues):
+        add("parts_by_sum")
     return doubts
 
 
@@ -1119,7 +1204,8 @@ def _figures_without_dates(source, ws, shape, base, numbers):
 
 
 def _says_per_cent(ws):
-    return any(isinstance(ws.cell(row, column).value, str) and PER_CENT_NOTE.fullmatch(ws.cell(row, column).value.strip()) is not None for row in range(1, min(ws.max_row, HEAD_ROWS) + 1) for column in range(1, min(ws.max_column, TITLE_COLUMNS) + 1))
+    columns = min(ws.max_column, TITLE_COLUMNS)
+    return any(isinstance(ws.cell(row, column).value, str) and PER_CENT_NOTE.fullmatch(ws.cell(row, column).value.strip()) is not None for row in range(1, min(ws.max_row, HEAD_ROWS) + 1) for column in range(1, columns + 1))
 
 
 def _added_or_shown(base, figures):
@@ -1173,8 +1259,9 @@ def _unit_words(ws):
     note = core.unit_note(ws, UNIT_ROWS, UNIT_COLUMNS)[0]
     if note:
         return [note]
+    columns = min(ws.max_column, UNIT_COLUMNS)
     for row in range(1, min(ws.max_row, UNIT_ROWS) + 1):
-        for column in range(1, min(ws.max_column, UNIT_COLUMNS) + 1):
+        for column in range(1, columns + 1):
             raw = ws.cell(row, column).value
             if not isinstance(raw, str):
                 continue

@@ -61,7 +61,7 @@ if sys.argv[1] == "--one":
     one(*sys.argv[2:5])
     sys.exit(0)
 
-code, output, folders = sys.argv[1], sys.argv[2], sys.argv[3:]
+code, output, folders = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2]), [os.path.abspath(folder) for folder in sys.argv[3:]]  # each file runs from the output's folder, so a relative path would find nothing
 paths = []
 for folder in folders:
     for path in sorted(glob.glob(os.path.join(folder, "**", "*"), recursive=True)):

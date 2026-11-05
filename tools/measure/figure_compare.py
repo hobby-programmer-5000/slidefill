@@ -16,6 +16,10 @@ print("files", len(before), "same", same, "changed", len(changed))
 print("slower by >20s", [(os.path.basename(os.path.dirname(p)), before[p]["seconds"], after[p]["seconds"]) for p in before if p in after and after[p]["seconds"] - before[p]["seconds"] > 20])
 print("errors before", sum("error" in v for v in before.values()), "after", sum("error" in v for v in after.values()))
 print("none before", sum("none" in v for v in before.values()), "after", sum("none" in v for v in after.values()))
+read = [sum("error" not in v for v in snapshot.values()) for snapshot in (before, after)]
+if not before or 0 in read:  # a comparison of nothing is not a pass
+    print("NOTHING READ: before", read[0], "after", read[1])
+    sys.exit(1)
 
 
 def show(entry):

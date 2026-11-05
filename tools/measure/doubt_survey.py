@@ -44,7 +44,7 @@ if sys.argv[1] == "--one":
     one(sys.argv[2], sys.argv[3])
     sys.exit(0)
 
-output, folders = sys.argv[1], sys.argv[2:]
+output, folders = os.path.abspath(sys.argv[1]), [os.path.abspath(folder) for folder in sys.argv[2:]]  # each file runs from the output's folder, so a relative path would find nothing
 paths = [p for folder in folders for p in sorted(glob.glob(os.path.join(folder, "*", "*.xlsx"))) if os.path.getsize(p) <= 15_000_000]
 results, piece = {}, output + ".piece"
 for path in paths:
@@ -59,3 +59,6 @@ for path in paths:
     print(os.path.basename(os.path.dirname(path))[:34].ljust(36), "|", str(entry.get("doubts", entry.get("error", "none"))), "|", str(entry.get("what", ""))[:60], flush=True)
 json.dump(results, open(output, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 print("DONE", flush=True)
+if not paths or all("error" in entry for entry in results.values()):
+    print("NOTHING READ: no file found, or every file failed", flush=True)
+    sys.exit(1)
