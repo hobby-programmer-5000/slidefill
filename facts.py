@@ -49,7 +49,8 @@ OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]
 SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
 MAX_LISTED = 6
 SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
-RATE_WORD = re.compile(r"율|률|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
+RATE_SYLLABLE = r"(?<![법규자])[율률](?![가-힣])"  # 달성률 and 환율, not 법률상담건수 or 자율주행
+RATE_WORD = re.compile(RATE_SYLLABLE + r"|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
 WEEKDAYS = {"ko": ["월", "화", "수", "목", "금", "토", "일"], "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
 WEEKDAY_PLURALS = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -183,7 +184,8 @@ def same_weekday(points, weeks=8):
     if len(earlier) < 3:
         return None
     level = median(earlier)
-    return level, max(1.4826 * median(abs(value - level) for value in earlier), abs(level) * 0.01), len(earlier)
+    spread = max(1.4826 * median(abs(value - level) for value in earlier), abs(level) * 0.01)
+    return (level, spread, len(earlier)) if spread else None  # every Sunday 0, closed: there is no usual range to stand outside
 
 
 def rank(points, count=30):
@@ -408,6 +410,10 @@ def readings(points, show, lang="ko", limit=3):
     months = partial_year(points)
     if months:
         per_month = ratio(newest.value / months, before.value / 12)
+        if prev_change is None or per_month is None:  # a year of 0 before it: nothing to take a percentage of
+            found.append(("read_partial_year", f"{day(newest)} 값은 {months}개월치로 보입니다. 직전 {day(before)} 값이 {show(before.value)}이라 변화율을 낼 수 없습니다." if ko else
+                          f"{day(newest)} looks like {months} months. {day(before)} was {show(before.value)}, so no percentage can be given."))
+            return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found]
         found.append(("read_partial_year", (
             f"{day(newest)} 값은 {months}개월치로 보입니다. 12개월치인 {day(before)} {show(before.value)} 대비 {percent(prev_change)}는 기간이 달라 그대로 읽을 수 없고, 월평균으로 맞추면 {percent(per_month)}입니다." if ko else
             f"{day(newest)} looks like {months} months, so {percent(prev_change)} against the 12 months of {day(before)}, {show(before.value)}, cannot be read as it stands. Per month it is {percent(per_month)}.")))
@@ -502,7 +508,7 @@ def readings(points, show, lang="ko", limit=3):
         trusted = week_change
         if week_was_odd and usual:
             trusted = ratio(newest.value, usual[0])
-            if trusted is not None:
+            if trusted is not None and week_change is not None:  # a holiday's 0 last week gives no change to set this against
                 found.append(("read_week_odd", f"전주 같은 요일 {day(week)} {show(week.value)}가 그 요일 평소보다 {_size(week_was_odd[1])} {low_high(week_was_odd[1])}았으니, 전주 대비 {percent(week_change)} 대신 평소 {name}요일 중앙값 대비 {percent(trusted)}로 읽으세요." if ko else
                               f"Last week's {day(week)}, {show(week.value)}, was itself {_size(week_was_odd[1])} {low_high(week_was_odd[1])} usual for that weekday. Read {percent(trusted)} against the usual {name} rather than {percent(week_change)} against last week."))
         by_same_day = "같은 요일 기준" if not week_was_odd else "평소 같은 요일 기준"

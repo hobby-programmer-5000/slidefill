@@ -184,6 +184,8 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - Reads `.xlsx .xlsm .xltx .xltm .xls .xlsb .ods .csv .tsv .txt`. Macros never run. A file named `.xls` that is really an HTML table or an `.xlsx` is read too.
 - `.xlsb` and `.ods` give values only, without number formats or merged cells, so 85% shows as 0.85. Save as `.xlsx` if the display matters.
 - `.ppt` is not supported.
+- Hidden sheets are left out of the automatic choice, and read only when no other sheet holds figures. A sheet named as a forecast, plan or budget is not joined to the actuals.
+- `△500` and `(300)` read as negatives. Digits it cannot read, such as `▲500`, are left out, so it asks first.
 - Placeholders inside SmartArt cannot be filled. They are reported, with the slide they are on.
 - A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
 - Dynamic names such as `OFFSET(...)` cannot be resolved. Use an Excel table instead.

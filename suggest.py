@@ -46,7 +46,7 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read")
 PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
@@ -76,10 +76,13 @@ WHOLE_SHARE = 0.9
 WHOLE_MIN_GROUPS = 3  # dates or names: with fewer, a match could be chance
 WHOLE_MIN_VALUES = 3  # the whole and at least two parts: 남 and 여 of much the same size are not a whole and a part
 EVERY_ROW_MIN = 20  # so many rows each with a figure are items of one kind; a few are more likely different measures
-MEAN_NAME = re.compile(r"평균|가격|단가|율|률|점수|\b(?:price|rate|ratio|average|mean|score)\b", re.I)
+MEAN_NAME = re.compile(facts.RATE_SYLLABLE + r"|평균|가격|단가|점수|\b(?:price|rate|ratio|average|mean|score)\b", re.I)
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
+MONTH_HEADING = re.compile(r"월|달|기간|month|mth|\bmm\b|period", re.I)
+GENERIC_VALUE = re.compile(r"값|수치|데이터|실적값|values?|data|figures?|amount", re.I)  # says nothing of what is measured, so a column beside it must
+MIXED_SIZE = 100  # one kind this many times another: 매출액 beside 직원수. At 34 times, 외국인 beside 재외국민 is only a small part
 TARGET_NAME = re.compile(r"목표|계획|예산|전망|예상|추정|\b(?:target|plan|budget|forecast|goal)s?\b", re.I)
 KIND_COLUMN = re.compile(r"항목|종류|구분|측정|분류|parameter|measures?\b|metric|indicator|\b(?:type|kind)\b", re.I)  # what the rows are measurements of, not who or where
 PERIOD_IN_TITLE = re.compile(r"(?:19|20)\d\d\s*년(?:\s*\d{1,2}\s*월)?(?:\s*\d\s*분기)?|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d\d\b", re.I)
@@ -233,16 +236,17 @@ class Plan:
 
 def data_sheets(source):
     """The sheets worth offering, best first: the newest by the year in its name, or the one the workbook opens on."""
-    found = []
-    for ws in source.wb.worksheets:
+    def holds_figures(ws):
         if ws.max_row < 2 or NOT_DATA_SHEET.search(ws.title) or _titled_as_contents(ws):
-            continue
+            return False
         cells = [ws.cell(r, c).value for r in range(1, min(ws.max_row, 60) + 1) for c in range(1, min(ws.max_column, SAMPLE_COLUMNS) + 1)]
-        if sum(core.as_number(v) is not None for v in cells) >= 3:
-            found.append(ws)
+        return sum(core.as_number(v) is not None for v in cells) >= 3
+
+    # What someone hid is not what they mean to report, and they could not see it to check it. Only when nothing else holds figures is it read.
+    found = [ws for ws in source.wb.worksheets if ws.sheet_state == "visible" and holds_figures(ws)] or [ws for ws in source.wb.worksheets if holds_figures(ws)]
     active = source.wb.active
     years = {ws.title: max((int(y) for y in YEAR_IN_NAME.findall(ws.title)), default=0) for ws in found}
-    return sorted(found, key=lambda ws: (-years[ws.title], ws is not active, source.wb.worksheets.index(ws)))
+    return sorted(found, key=lambda ws: (TARGET_NAME.search(ws.title) is not None, -years[ws.title], ws is not active, source.wb.worksheets.index(ws)))  # 2027 사업계획 does not lead over what has happened
 
 
 def _titled_as_contents(ws):
@@ -348,7 +352,7 @@ def _date_candidates(ws):
         if p["year"] >= 3 and p["year"] >= filled * 0.8:
             for other in range(c + 1, min(c + 3, columns) + 1):
                 q = profiles[other]
-                if q["filled"] and q["monthish"] >= q["filled"] * 0.8 and q["number"] + q["month"] + q["text"] + q["year"] >= 2:
+                if q["filled"] and q["monthish"] >= q["filled"] * 0.8 and q["number"] + q["month"] + q["text"] + q["year"] >= 2 and _can_be_months(ws, other, limit):
                     found.append((p["year"] * 2, f"{get_column_letter(c)}+{get_column_letter(other)}", False))
                     break
         size = p["date"] + p["year"] + p["month"]
@@ -361,6 +365,14 @@ def _date_candidates(ws):
             found.append((size, str(r), True))
     found.sort(key=lambda item: -item[0])
     return [(spec, by_row) for _size, spec, by_row in found[:6]]
+
+
+def _can_be_months(ws, column, limit):
+    """Beside a year, 1 to 5 may be months, or quarters, or a branch's number. Its heading says which: a column that names something else is not part of a date."""
+    words = [cell.value.strip() for cell in (ws._cells.get((row, column)) for row in range(1, limit + 1)) if cell is not None and isinstance(cell.value, str) and cell.value.strip()]
+    if not words or any(core.as_part_of_date(word) is not None for word in words):
+        return True  # no heading, or 9월 and Q4 written out
+    return MONTH_HEADING.search(words[0]) is not None or core.QUARTER_HEADING.search(words[0]) is not None
 
 
 def _blocks(positions):
@@ -640,6 +652,9 @@ def _joined_sheets(source, ws, shape):
             break
     if not best or not re.search(r"\d|\D\D", best):
         return ""
+    # 매출 and 매출전망 share a beginning, but a forecast does not continue the actuals, and a hidden sheet cannot be checked.
+    if any(other.title.casefold().startswith(best.casefold()) and (other.sheet_state != "visible" or TARGET_NAME.search(other.title)) for other in source.wb.worksheets):
+        return ""
     pattern = best + "*"
     value = next((v for v in dated.values if not v.every_row), None)
     if value is None:
@@ -824,7 +839,8 @@ def default_conditions(source, shape, base, value, how):
     if how == "sum" and base.kind == "date":  # All Health Authorities beside each authority: add both and everything counts twice
         wholes = _whole_rows(source, shape, base, value)
         taken = {spec for spec, _word in wholes}
-        return (wholes + [(group.spec, group.values[0]) for group in base.groups if group.spec not in taken and MEASURE_COLUMN.search(group.name)])[:3]
+        measures = [group for group in base.groups if MEASURE_COLUMN.search(group.name) or (value is not None and GENERIC_VALUE.fullmatch((value.name or "").strip()) and KIND_COLUMN.search(group.name))]
+        return (wholes + [(group.spec, group.values[0]) for group in measures if group.spec not in taken])[:3]
     if base.kind == "name" and base.many_rows and how == "sum":
         ws = source._sheet(shape.sheet)
         wholes = [(spec, word) for spec, word in _whole_rows(source, shape, base, value) if _leaves_items(ws, base, spec, word)]
@@ -1022,10 +1038,35 @@ def find_doubts(source, shape, base, value, found):
         add("several_tables")
     if _first_of_period_columns(base, value):
         add("period_columns")
+    if how == "sum" and _adds_unlike_kinds(source, ws, shape, base, value):
+        add("mixed_kinds")
     codes = {issue.code for item in found for issue in item.issues}
     if "cross_total_differs" in codes:
         add("total_differs")
+    if "figures_not_read" in codes:
+        add("figures_not_read")
     return doubts
+
+
+def _adds_unlike_kinds(source, ws, shape, base, value):
+    """매출액 and 직원수 in one column of each date, added together. Whether kinds can be added is not in the data, but sizes this far apart suggest they cannot."""
+    if base.kind != "date" or not base.many_rows or not value.spec.isalpha():
+        return False
+    taken = {spec for spec, _word in default_conditions(source, shape, base, value, "sum")}
+    column = core.column_index_from_string(value.spec)
+    for group in base.groups:
+        if group.spec in taken or not group.spec.isalpha() or not KIND_COLUMN.search(group.name):
+            continue
+        line = core.column_index_from_string(group.spec)
+        sizes = {}
+        for row in range(1, min(ws.max_row, SAMPLE_ROWS) + 1):
+            number, word = core.figure_number(ws.cell(row, column).value), ws.cell(row, line).value
+            if number is not None and word not in (None, ""):
+                sizes.setdefault(str(word).strip(), []).append(abs(number))
+        means = [sum(found) / len(found) for found in sizes.values()]
+        if len(means) >= 2 and min(means) > 0 and max(means) >= min(means) * MIXED_SIZE:
+            return True
+    return False
 
 
 def _first_of_period_columns(base, value):
@@ -1236,7 +1277,8 @@ def plan_report(source, lang="ko"):
     rest = [ws for ws in data_sheets(source) if ws.title != shape.sheet and not (shape.glob and fnmatch.fnmatchcase(ws.title.casefold(), shape.glob.casefold()))]
     alike = []
     for ws in rest:
-        same = _same_layout(source, ws, base, value, lang) if ws.max_row <= SMALL_SHEET else None
+        # A forecast built like the actuals would be said just as they are: 2025년 12월 매출 9,012, for a month that has not happened.
+        same = _same_layout(source, ws, base, value, lang) if ws.max_row <= SMALL_SHEET and not (TARGET_NAME.search(ws.title) and not TARGET_NAME.search(shape.sheet)) else None
         if same:
             alike.append(same)
         if len(alike) >= MAX_SECTIONS:  # so many are more likely months or regions than different measures, and any few of them would be arbitrary

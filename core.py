@@ -101,7 +101,7 @@ TOTAL_TOLERANCE = 0.005  # a stated total this close to the items' sum is taken 
 LATE_MINUTES = 60  # a newest day's last entry this much earlier than usual looks unfinished
 SHARE_HEADER = "%"
 AMOUNT_HEADING = re.compile(r"[증중]감(?![률율])")  # 증감 alone is an amount that went up or down, 증감률 is a rate
-RATE_HEADING = re.compile(r"율|률|증감|전년비|전년동월비|지수.*증|점수|만족도|\bscores?\b|\bpercentage|% ?change|\bgrowth|\brates?\b|\bratios?\b", re.I)
+RATE_HEADING = re.compile(facts.RATE_SYLLABLE + r"|증감|전년비|전년동월비|지수.*증|점수|만족도|\bscores?\b|\bpercentage|% ?change|\bgrowth|\brates?\b|\bratios?\b", re.I)
 HANGUL = re.compile(r"[가-힣]")
 ID_CODE = re.compile(r"[A-Z0-9]{2,8}")  # J468: a dataset's code, not a name
 MAX_LINES_FOR_A_REPEAT = 200  # how far along a row of headings to look for the same one again
@@ -112,6 +112,10 @@ UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(�
 YEAR_LINE = re.compile(r"연간|연평균|연계|연합계|년간|annual|yearly|full\s*year", re.I)
 MONTH_LINE = re.compile(r"(?:0?[1-9]|1[0-2])\s*월|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?", re.I)
 MIN_MONTH_LINES = 6
+NEGATIVE_TEXT = re.compile(r"[△▵−]\s*(\d[\d,]*(?:\.\d+)?)|\(\s*(\d[\d,]*(?:\.\d+)?)\s*\)")
+QUARTER_SCAN = 30
+QUARTER_WORD = re.compile(r"Q\s*([1-4])|([1-4])\s*(?:분기|Q)", re.I)
+QUARTER_HEADING = re.compile(r"분기|quarter|qtr|\bq\b", re.I)
 EARLIER_NAME = re.compile(r"전년|전월|전기|전분기|작년|지난|이전|직전|prior|previous|last\s+(?:year|month|quarter)", re.I)
 UNIT_NOTE_LENGTH = 40
 UNIT_WORD_LENGTH = 20
@@ -352,8 +356,35 @@ def as_number(raw):
     return int(number) if number.is_integer() else number
 
 
+def figure_number(raw):
+    """What a cell holds as a figure: as_number, and also a loss written as text, △500 or (300) or −500. Only for cells already read as figures: elsewhere (1) is a numbered heading."""
+    number = as_number(raw)
+    if number is not None or not isinstance(raw, str):
+        return number
+    match = NEGATIVE_TEXT.fullmatch(raw.strip())
+    if not match:
+        return None
+    number = -float((match.group(1) or match.group(2)).replace(",", ""))
+    return int(number) if number.is_integer() else number
+
+
+def _holds_quarters(ws, ref, line):
+    """The second part of a split date is a quarter when its heading or its words say so: 4 under 분기 is not April."""
+    known = ws.__dict__.setdefault("_quarter_lines", {})
+    key = (ref.by_row, line)
+    if key not in known:
+        words = [cell.value.strip() for cell in (ws._cells.get(ref.at(position, line)) for position in range(1, QUARTER_SCAN + 1)) if cell is not None and isinstance(cell.value, str)]
+        known[key] = any(QUARTER_HEADING.search(word) or QUARTER_WORD.fullmatch(word) for word in words)
+    return known[key]
+
+
+def _unread_figure(raw):
+    """Digits where a figure belongs that cannot be read as one, such as ▲500 or 14000 and 15000 in one cell: leaving them out changes the total, so it must not go unsaid. With letters in it, it is a heading or a note."""
+    return isinstance(raw, str) and any(c.isdigit() for c in raw) and not any(c.isalpha() for c in raw) and figure_number(raw) is None and as_date(raw) is None
+
+
 def as_part_of_date(raw):
-    """A month or a day held in a column of its own: 9, 09, 9월, Sep. None for anything else."""
+    """A month or a day held in a column of its own: 9, 09, 9월, Sep. A quarter too: Q4, 4분기. None for anything else."""
     if isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)) and float(raw).is_integer():
@@ -361,6 +392,9 @@ def as_part_of_date(raw):
     if isinstance(raw, str):
         if raw.strip().isdigit():
             return int(raw.strip())
+        quarter = QUARTER_WORD.fullmatch(raw.strip())
+        if quarter:
+            return int(quarter.group(1) or quarter.group(2))
         return as_month(raw)
     return None
 
@@ -773,7 +807,7 @@ def _aggregate_value(ws, ref, position, spec, from_text=None):
         return None if value in (None, "") else int(_matches(ws, ref, position, *spec.numerator))
     if spec.kind == "count":
         return 1 if any(cell.value not in (None, "") for cell in cells) else None
-    numbers = [as_number(cell.value) for cell in cells]
+    numbers = [figure_number(cell.value) for cell in cells]
     if from_text is not None:
         from_text.extend(cell for cell, number in zip(cells, numbers) if number is not None and isinstance(cell.value, str))
     if spec.product:
@@ -789,7 +823,7 @@ def _years_only(ws, ref, position, specs):
 
 def _plain_value(ws, ref, position, line, from_text):
     cell = ws.cell(*ref.at(position, line))
-    number = as_number(cell.value)
+    number = figure_number(cell.value)
     if number is not None and isinstance(cell.value, str):
         from_text.append(cell)
     return number
@@ -1082,6 +1116,8 @@ class ExcelSource:
         others = [as_part_of_date(ws.cell(*ref.at(position, line)).value) for line in ref.date_parts[1:]]
         if year is None or None in others:
             return None
+        if _holds_quarters(ws, ref, ref.date_parts[1]):
+            return year.replace(month=(others[0] - 1) * 3 + 1) if len(others) == 1 and 1 <= others[0] <= 4 else None
         try:
             return year.replace(month=others[0], day=others[1] if len(others) > 1 else 1)
         except ValueError:
@@ -1091,6 +1127,8 @@ class ExcelSource:
         """(raw, text, format) of a row's date as a person should read it. A date split across cells is shown joined."""
         if ref.date_parts:
             date = self._date_from_parts(ref.sheets[sheet], ref, position)
+            if _holds_quarters(ref.sheets[sheet], ref, ref.date_parts[1]):
+                return date, f"{date.year} Q{(date.month - 1) // 3 + 1}", "General"
             text = date.strftime("%Y-%m-%d" if len(ref.date_parts) == 3 else "%Y-%m")
             return date, text, "General"
         return self.read(ref.sheets[sheet], *ref.at(position, ref.date))[:3]
@@ -1133,7 +1171,7 @@ class ExcelSource:
     def _has_figure(self, ws, row, column):
         """A number, a date, or a cell read() must report: anything but text, which may only be a label waiting for figures."""
         cell = ws.cell(row, column)
-        if cell.data_type == "e" or isinstance(cell.value, (dt.date, dt.time)) or as_number(cell.value) is not None:
+        if cell.data_type == "e" or isinstance(cell.value, (dt.date, dt.time)) or figure_number(cell.value) is not None:
             return True
         return cell.value is None and self._filled(ws, row, column)
 
@@ -1410,9 +1448,10 @@ class ExcelSource:
         if rows[-1][0] == (rows[-2][0] if len(rows) > 1 else None):
             raise IssueError("latest_ambiguous", date=rows[-1][0].date().isoformat(), count=sum(row[0] == rows[-1][0] for row in rows))
         points, from_text = [], []
+        unread = [raw for date, i, position in self._all_rows(ref) if date <= rows[-1][0] and _unread_figure(raw := ref.sheets[i].cell(*ref.at(position, line)).value)]
         for date, i, position in rows:
             cell = ref.sheets[i].cell(*ref.at(position, line))
-            number = as_number(cell.value)
+            number = figure_number(cell.value)
             if number is not None:
                 points.append(facts.Point(date, number, position, i))
                 if isinstance(cell.value, str):
@@ -1422,7 +1461,9 @@ class ExcelSource:
         if repeated:
             raise IssueError("latest_duplicates", date=repeated[-1].date().isoformat(), count=len(repeated))
         points = self._with_period_names(points, ref)
-        notes =[Issue("number_from_text", {"cell": f"{from_text[-1].parent.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)})] if from_text else []
+        notes = [Issue("number_from_text", {"cell": f"{from_text[-1].parent.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)})] if from_text else []
+        if unread:
+            notes.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
             notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
         newest = rows[-1]
@@ -1456,7 +1497,7 @@ class ExcelSource:
         spec = ref.values[0]
         if len(ref.values) != 1:
             raise IssueError("calc_columns", key=spec.word)
-        groups, owners, from_text = {}, {}, []
+        groups, owners, from_text, unread = {}, {}, [], []
         for i, ws in enumerate(ref.sheets):
             dated = dict((position, date) for date, position in self._dated_rows(ws, ref))
             current, current_position = None, None
@@ -1469,6 +1510,8 @@ class ExcelSource:
                     continue
                 number = _aggregate_value(ws, ref, position, spec, from_text)
                 if number is None:
+                    if spec.kind in ("sum", "mean"):
+                        unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in spec.lines) if _unread_figure(raw)]
                     continue
                 day = dt.datetime.combine(current.date(), dt.time())
                 if owners.setdefault(day, i) != i:
@@ -1496,14 +1539,17 @@ class ExcelSource:
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
             found.notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
         found.percent = spec.kind == "rate"
-        found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, ""))
-        found.scale = 100 if spec.kind == "rate" else 1
+        first_fmt = self._cell_format(top_ws.cell(*ref.at(top, spec.lines[0]))) if spec.kind in ("sum", "mean") and spec.lines else ""
+        found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, first_fmt))
+        found.scale = 100 if spec.kind == "rate" or "%" in first_fmt else 1  # 0.92 to 0.93 is one point, not 0.01
         found.per_cent_unit = spec.kind in ("sum", "mean") and in_per_cent(top_ws, ref.at(top, spec.lines[0])[0])
         usual = _usual_rows(days, groups)
         if usual is not None and groups[days[-1]][1] < usual and spec.kind in ("sum", "count"):
             found.cut_short = (groups[days[-1]][1], usual)
         if from_text:
             found.notes.append(Issue("number_from_text", {"cell": f"{from_text[-1].parent.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)}))
+        if unread:
+            found.notes.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         return found
 
     @staticmethod
@@ -1665,6 +1711,7 @@ class ExcelSource:
         labels, specs = ref.label_lines, ref.specs
         lower = min(spec.lines[0] if isinstance(spec, Aggregate) else spec for spec in specs)
         items, counts, order, totals, unlabeled, from_text, first = {}, {}, [], [], 0, [], None
+        unread = []
         heading = self._heading_row(ws, ref, labels, specs)
         outer = _rows_of_an_outer_level(ws, ref, labels)
         chosen = {line for spec in specs if isinstance(spec, Aggregate) for line, _word in spec.filters}
@@ -1675,6 +1722,8 @@ class ExcelSource:
             texts_so_far = len(from_text)
             numbers = [_aggregate_value(ws, ref, position, spec, from_text) if isinstance(spec, Aggregate) else _plain_value(ws, ref, position, spec, from_text) for spec in specs]
             if all(number is None for number in numbers):
+                wanted = [line for spec in specs for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]
+                unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in wanted) if _unread_figure(raw)]
                 continue
             if first is None and _years_only(ws, ref, position, specs):
                 del from_text[texts_so_far:]
@@ -1721,6 +1770,8 @@ class ExcelSource:
         if is_rate_kind:
             fmt = "0.0%"
         issues = [Issue("cross_total_found", {"label": year_line})] if year_line else []
+        if unread:
+            issues.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         if len(specs) == 2:
             first_name = self._header(ws, ref, first or ref.start, specs[0].lines[0] if isinstance(specs[0], Aggregate) else specs[0])
             second_name = self._header(ws, ref, first or ref.start, first_line)

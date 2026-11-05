@@ -3044,6 +3044,157 @@ class TriedReports(Base):
             request = type("R", (), {"facts": [facts.Fact("value", f"{period} Total Consumption: 8,347,151", ())]})
             self.assertEqual(core._lead_figure(request), "Total Consumption", period)
 
+    def test_zeros_never_crash_a_reading(self):
+        import itertools
+        show = facts.plain_number
+        starts = {"daily": lambda i: dt.datetime(2026, 1, 4) + dt.timedelta(days=i), "monthly": lambda i: dt.datetime(2020 + i // 12, i % 12 + 1, 1), "yearly": lambda i: dt.datetime(2000 + i, 1, 1), "quarterly": lambda i: dt.datetime(2015 + i // 4, i % 4 * 3 + 1, 1)}
+        for rhythm, when in starts.items():
+            for size, every, offset in itertools.product((3, 8, 15, 29, 40), (2, 3, 7), (0, 1, 3)):
+                values = [0.0 if (i + offset) % every == 0 else 100.0 + i % 5 for i in range(size)]
+                for tail in ([], [0.0], [50.0]):
+                    points = [facts.Point(when(i), value) for i, value in enumerate(values + tail)]
+                    facts.readings(points, show, "ko")
+                    facts.fact_pack(points, "수", show, "en")
+                    facts.sentence(points, "수", show, "ko")
+                    facts.rate_sentence(points, "수", show, "ko")
+                    facts.rate_pack(points, "수", show, "en")
+
+    def test_closed_sundays_and_a_holiday_zero_do_not_crash(self):
+        start = dt.datetime(2026, 1, 4)
+        points = [facts.Point(start + dt.timedelta(days=i), 0 if i % 7 == 0 else 100 + i % 5) for i in range(29)]
+        self.assertIsNone(facts.same_weekday(points))
+        facts.readings(points, facts.plain_number, "ko")
+        days = [facts.Point(start + dt.timedelta(days=i), 100.0 + i % 7) for i in range(30)]
+        days[-8] = facts.Point(days[-8].date, 0.0)
+        facts.readings(days, facts.plain_number, "en")
+        years = [facts.Point(dt.datetime(y, 1, 1), 100.0) for y in range(2020, 2025)] + [facts.Point(dt.datetime(2025, 1, 1), 0.0), facts.Point(dt.datetime(2026, 6, 1), 50.0)]
+        self.assertIn("변화율을 낼 수 없습니다", facts.readings(years, facts.plain_number, "ko")[0].text)
+
+    def test_a_loss_written_as_text_is_a_negative_figure(self):
+        for raw, number in (("△500", -500), ("▵ 1,200", -1200), ("(300)", -300), ("(1,234.5)", -1234.5), ("−7", -7), (100, 100), ("15건", 15)):
+            self.assertEqual(core.figure_number(raw), number, raw)
+        for raw in ("(1) 매출", "(단위)", "▲500", None, "-"):
+            self.assertIsNone(core.figure_number(raw), raw)
+        for raw in ("▲500", "14000\n15000"):
+            self.assertTrue(core._unread_figure(raw), raw)
+        for raw in ("2014년 기준 인구", "Total of 7 years or less", "* 2020.4.17. 교체", "E_0000_WH", "2025-03-01", 500):
+            self.assertFalse(core._unread_figure(raw), raw)  # headings and notes, not figures
+        self.assertIsNone(core.as_number("(300)"))  # elsewhere (1) is a numbered heading
+        rows = [["지점", "손익"], ["서울", 1000], ["부산", "△500"], ["대구", "(300)"], ["인천", 200], ["광주", 100]]
+        text = core.ExcelSource(self.book("손익.xlsx", 표=rows)).text_value("읽는법:표!A,B")[0]
+        self.assertIn("항목 5개", text)
+        self.assertIn("부산(-500)", text)
+        long = [["월", "지점", "손익"]] + [[f"2025-{m:02d}", name, value] for m in range(1, 7) for name, value in (("서울", 1000), ("부산", "△500"))]
+        self.assertIn("500", core.ExcelSource(self.book("긴표.xlsx", 표=long)).text_value("해설:표!A,합계(C)")[0])
+
+    def test_digits_it_cannot_read_are_said_and_asked_about(self):
+        rows = [["지점", "손익"], ["서울", 1000], ["부산", "▲500"], ["대구", 300], ["인천", 200], ["광주", 150]]
+        source = core.ExcelSource(self.book("못읽음.xlsx", 표=rows))
+        self.assertIn("figures_not_read", [issue.code for issue in source.text_value("읽는법:표!A,B")[2]])
+        self.assertIn("figures_not_read", [code for code, _params in suggest.plan_report(source).doubts])
+        months = [["월", "매출"]] + [[f"2025-{m:02d}", 100 + m * m] for m in range(1, 8)] + [["2025-08", "▲50"]] + [[f"2025-{m:02d}", 100 + m * m] for m in range(9, 12)]
+        self.assertIn("figures_not_read", [issue.code for issue in core.ExcelSource(self.book("월못읽음.xlsx", 표=months)).text_value("해설:표!A,B")[2]])
+        long = [["월", "지점", "매출"]] + [[f"2025-{m:02d}", name, "▲5" if (m, name) == (3, "부산") else 100 + m] for m in range(1, 7) for name in ("서울", "부산")]
+        self.assertIn("figures_not_read", [issue.code for issue in core.ExcelSource(self.book("합계못읽음.xlsx", 표=long)).text_value("해설:표!A,합계(C)")[2]])
+
+    def test_different_measures_in_one_column_are_not_added(self):
+        rows = [["기준월", "항목", "값"]] + [[f"2025-{m:02d}", kind, size * m] for m in range(1, 13) for kind, size in (("매출액", 8000), ("영업이익", 600), ("직원수", 12))]
+        section = suggest.plan_report(core.ExcelSource(self.book("지표.xlsx", 표=rows))).sections[0]
+        self.assertIn("값 (매출액) 96,000", self.note(section))
+
+    def test_kinds_far_apart_under_a_named_figure_are_asked_about(self):
+        rows = [["기준월", "항목", "실적"]] + [[f"2025-{m:02d}", kind, size * m + m * m] for m in range(1, 13) for kind, size in (("매출액", 8000), ("직원수", 12))]
+        self.assertIn("mixed_kinds", [code for code, _params in suggest.plan_report(core.ExcelSource(self.book("먼크기.xlsx", 표=rows))).doubts])
+        rows = [["기준월", "구분", "실적"]] + [[f"2025-{m:02d}", kind, size * m + m * m] for m in range(1, 13) for kind, size in (("국내선", 800), ("국제선", 600))]
+        self.assertNotIn("mixed_kinds", [code for code, _params in suggest.plan_report(core.ExcelSource(self.book("비슷한크기.xlsx", 표=rows))).doubts])
+
+    def test_a_hidden_sheet_is_not_reported(self):
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for title, year in (("실적", 2025), ("백업2030", 2020)):
+            ws = wb.create_sheet(title)
+            ws.append(["월", "매출"])
+            for m in range(1, 13):
+                ws.append([f"{year}-{m:02d}", 100 + m])
+        wb["백업2030"].sheet_state = "hidden"
+        path = os.path.join(self.dir, "숨김.xlsx")
+        wb.save(path)
+        plan = suggest.plan_report(core.ExcelSource(path))
+        self.assertEqual([section.sheet for section in plan.sections], ["실적"])
+        self.assertIn("2025년 12월", self.note(plan.sections[0]))
+
+    def test_only_hidden_sheets_are_still_read(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "숨김"
+        ws.append(["월", "매출"])
+        for m in range(1, 13):
+            ws.append([f"2025-{m:02d}", 100 + m])
+        extra = wb.create_sheet("표지")
+        extra.append(["표지"])
+        ws.sheet_state = "hidden"
+        path = os.path.join(self.dir, "다숨김.xlsx")
+        wb.active = 1
+        wb.save(path)
+        self.assertIsNotNone(suggest.plan_report(core.ExcelSource(path)))
+
+    def test_a_forecast_sheet_is_neither_joined_nor_reported_as_actuals(self):
+        head = ["월", "매출"]
+        path = self.book("전망.xlsx", 매출=[head] + [[f"2025-{m:02d}", 100 + m] for m in range(1, 7)], 매출전망=[head] + [[f"2025-{m:02d}", 9000 + m] for m in range(7, 13)])
+        plan = suggest.plan_report(core.ExcelSource(path))
+        self.assertEqual([section.sheet for section in plan.sections], ["매출"])
+        self.assertTrue(self.note(plan.sections[0]).startswith("2025년 6월 매출 106"), self.note(plan.sections[0]))
+
+    def test_sheets_that_continue_each_other_are_still_joined(self):
+        head = ["월", "매출"]
+        path = self.book("연도별.xlsx", 실적2024=[head] + [[f"2024-{m:02d}", 100 + m] for m in range(1, 13)], 실적2025=[head] + [[f"2025-{m:02d}", 200 + m] for m in range(1, 13)])
+        self.assertEqual(suggest.read_shape(core.ExcelSource(path), "실적2025").glob, "실적202*")
+
+    def test_a_quarter_column_beside_a_year_is_a_quarter(self):
+        rows = [["연도", "분기", "매출"]] + [[y, q, 100 + (y - 2023) * 10 + q] for y in (2023, 2024, 2025) for q in (1, 2, 3, 4)]
+        source = core.ExcelSource(self.book("분기.xlsx", 표=rows))
+        section = suggest.plan_report(source).sections[0]
+        self.assertTrue(self.note(section).startswith("2025년 4분기 매출 124"), self.note(section))
+        self.assertIn("전년 같은 분기", self.note(section))
+        words = [["연도", "구분", "매출"]] + [[y, f"{q}분기", 100 + (y - 2023) * 10 + q] for y in (2023, 2024, 2025) for q in (1, 2, 3, 4)]
+        self.assertTrue(self.note(suggest.plan_report(core.ExcelSource(self.book("분기글자.xlsx", 표=words))).sections[0]).startswith("2025년 4분기"))
+        source.thousands = True
+        key = core.MARKER.fullmatch(section.table.typed).group(2)
+        self.assertEqual(source.range_cells(key)[0][-1][0][1], "2025 Q4")
+
+    def test_a_number_column_beside_a_year_is_not_a_month(self):
+        rows = [["연도", "지점번호", "매출"]] + [[y, q, 100 * q + y % 7] for y in (2023, 2024, 2025) for q in (1, 2, 3, 4, 5)]
+        note = self.note(suggest.plan_report(core.ExcelSource(self.book("지점번호.xlsx", 표=rows))).sections[0])
+        self.assertNotIn("5월", note)
+        months = [["연도", "월", "매출"]] + [[y, m, 100 + m * m] for y in (2024, 2025) for m in range(1, 13)]
+        self.assertTrue(self.note(suggest.plan_report(core.ExcelSource(self.book("월.xlsx", 표=months))).sections[0]).startswith("2025년 12월"))
+        bare = [[y, m, 100 + m * m] for y in (2024, 2025) for m in range(1, 13)]
+        self.assertIn("12월", self.note(suggest.plan_report(core.ExcelSource(self.book("머리글없음.xlsx", 표=bare))).sections[0]))
+
+    def test_a_word_with_that_syllable_inside_is_not_a_rate(self):
+        for name in ("법률상담건수", "자율주행 건수", "규율위반"):
+            self.assertFalse(facts.is_rate(name), name)
+        for name in ("달성률", "환율", "증감률(%)", "수익률 평균", "Tax rate"):
+            self.assertTrue(facts.is_rate(name), name)
+        rows = [["월", "법률상담건수"]] + [[f"2025-{m:02d}", 200 + m * 10] for m in range(1, 6)]
+        note = self.note(suggest.plan_report(core.ExcelSource(self.book("상담.xlsx", 표=rows))).sections[0])
+        self.assertNotIn("포인트", note)
+        self.assertIn("% 증가", note)
+
+    def test_a_mean_of_a_percent_column_moves_in_whole_points(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        ws.append(["월", "지점", "달성"])
+        for m in range(1, 7):
+            for name, size in (("서울", 0.80), ("부산", 0.90)):
+                ws.append([f"2025-{m:02d}", name, size + m / 100])
+                ws.cell(ws.max_row, 3).number_format = "0.0%"
+        path = os.path.join(self.dir, "달성.xlsx")
+        wb.save(path)
+        text = core.ExcelSource(path).text_value("해설:표!A,평균(C)")[0]
+        self.assertIn("+1.0", text)
+
     def test_machine_names_and_footnote_marks_read_as_words(self):
         self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")
         self.assertEqual(facts.readable_name("합계 RETAINED_CATCH_KG"), "합계 Retained catch (kg)")
