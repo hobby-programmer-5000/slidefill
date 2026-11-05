@@ -80,10 +80,10 @@ MEAN_NAME = re.compile(r"평균|가격|단가|율|률|점수|\b(?:price|rate|rat
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
+TARGET_NAME = re.compile(r"목표|계획|예산|전망|예상|추정|\b(?:target|plan|budget|forecast|goal)s?\b", re.I)
 KIND_COLUMN = re.compile(r"항목|종류|구분|측정|분류|parameter|measures?\b|metric|indicator|\b(?:type|kind)\b", re.I)  # what the rows are measurements of, not who or where
 PERIOD_IN_TITLE = re.compile(r"(?:19|20)\d\d\s*년(?:\s*\d{1,2}\s*월)?(?:\s*\d\s*분기)?|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d\d\b", re.I)
 PERIOD_TITLE_ROWS = 6
-PERIOD_TITLE_COLUMNS = 5
 PERIOD_TITLE_LENGTH = 60
 NEVER_ADDED_NAME = re.compile(r"나이|연령(?!별)|근속|\b(?:age|tenure)\b", re.I)  # whatever else the sheet holds, adding people's ages says nothing
 UNLIKE_MIN_LARGEST = 100000
@@ -91,12 +91,11 @@ UNLIKE_SHARE = 0.1  # so many values below one, beside values in the hundreds of
 NOT_DATA_SHEET = re.compile(r"표지|목차|설명|안내|주석|index|contents|cover|notes?\b|copyright", re.I)
 YEAR_IN_NAME = re.compile(r"(?:19|20)\d\d")
 PLAIN_SHEET_NAME = re.compile(r"(?:data|sheet\s*\d*|시트\s*\d*|table\s*\d*|\d+)", re.I)  # says nothing, so it is not worth a heading
-UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(（\[]\s*units?\b", re.I)  # not 유통단계별단위명, which is only a column's name
+UNIT_NOTE = core.UNIT_NOTE
 UNIT_HEADING = re.compile(r"단위|units?", re.I)
 UNIT_VALUE_LENGTH = 10
 UNIT_ROWS = 6
 UNIT_COLUMNS = 12
-UNIT_LENGTH = 40
 MAX_FIGURES = 4  # beyond this they are more likely thirty stations than the two sides of one total, and a slide cannot hold them
 READ_ALL_FIGURES = 2  # so many figures can each have their reading on one slide
 MAX_SECTIONS = 3
@@ -396,6 +395,20 @@ def _bounded(spec, by_row, start, end):
     return f"{letter}{start}:{letter}{end}"
 
 
+def _mark_figures_running(ws, ref, base, by_row, dated):
+    """Which figures still have a value in the newest period the sheet has really reached: the newest where most of its actual figures are filled in. Months written ahead with only a target in them are not that period, so 매출 is not taken for a figure that has stopped."""
+    lines = {value.spec: int(value.spec) if by_row else core.column_index_from_string(value.spec) for value in base.values if value.spec.isdigit() or value.spec.isalpha()}
+    actual = [value for value in base.values if value.spec in lines and not TARGET_NAME.search(value.name or "")]
+    if not actual:
+        return
+    has = lambda value, position: core.as_number(ws.cell(*ref.at(position, lines[value.spec])).value) is not None  # noqa: E731
+    for _date, position in sorted(dated, reverse=True):
+        if sum(has(value, position) for value in actual) * 2 > len(actual):
+            for value in base.values:
+                value.reaches_newest = value.spec not in lines or has(value, position)
+            return
+
+
 def _read_date_base(source, ws, spec, by_row, codes):
     """A Base for a date line, with stacked tables and stray repeats dealt with, or None when the line does not really hold dates."""
     try:
@@ -439,7 +452,6 @@ def _read_date_base(source, ws, spec, by_row, codes):
     lines = set(ref.date_parts or (ref.date,))
     base = Base("date", used, base_name, first=min(dates).date().isoformat(), last=max(dates).date().isoformat(), count=len(set(dates)), notes=notes)
     other_count = ws.max_row if by_row else min(ws.max_column, SAMPLE_COLUMNS)
-    newest_position = max(dated)[1]
     stepping = []  # 1, 2, 3 is most likely a running number, but it may be all the sheet has
     sample = positions[:SAMPLE_ROWS] if not many else positions[:SAMPLE_ROWS]
     # Rows under a date with no date of their own belong to it, as with merged cells.
@@ -460,8 +472,7 @@ def _read_date_base(source, ws, spec, by_row, codes):
         dates_too = sum(core.as_date(v) is not None for v in filled) >= len(filled) * 0.8  # 20080625 is a day, and adding days means nothing
         code = not by_row and (codes.get(line, 0) >= CODE_VALUES_BESIDE_DATES or (many and _long_identifiers(numbers)))  # a book's number under each year; a series of large values has one per date
         if count >= max(len(filled) * 0.5, 2) and _names_a_figure(name) and not years_only and not dates_too and not code:
-            reaches = many or core.as_number(ws.cell(*ref.at(newest_position, line)).value) is not None
-            (stepping if _steps_by_one(numbers) else base.values).append(Value(_name(line, by_row), name, reaches_newest=reaches, size=sum(abs(number) for number in numbers if number)))
+            (stepping if _steps_by_one(numbers) else base.values).append(Value(_name(line, by_row), name, size=sum(abs(number) for number in numbers if number)))
         elif code:
             continue
         elif not by_row:
@@ -485,6 +496,8 @@ def _read_date_base(source, ws, spec, by_row, codes):
         base.values = stepping
     if many and not base.values:  # a log of events, with nothing to add: what it can report is how many per date
         base.values.append(Value(get_column_letter(ref.date), "", counted=True))
+    if not many:
+        _mark_figures_running(ws, ref, base, by_row, dated)
     newest = max(dated)
     raw = source._date_cell(ref, 0, newest[1])[0]
     base.newest_word = raw.strip() if isinstance(raw, str) else newest[0].strftime("%Y-%m") if isinstance(raw, dt.datetime) else str(raw)
@@ -659,6 +672,7 @@ def default_value(base):
     every_row = next((v for v in plain if v.every_row), None)
     if every_row:
         return every_row
+    plain = [v for v in plain if not TARGET_NAME.search(v.name or "")] or plain  # what happened, ahead of what was planned
     named_total = [v for v in plain if TOTAL_NAME.search(v.name)]
     ends_as_total = [v for v in named_total if ENDS_AS_TOTAL.search(v.name)]
     chosen = next(iter(ends_as_total), None) or next(iter(named_total), None) or plain[0]
@@ -1000,7 +1014,8 @@ def find_doubts(source, shape, base, value, found):
         add("heading_below")
     if base.kind == "date" and value.spec.isalpha() and _figures_without_dates(source, ws, shape, base, numbers):
         add("dates_sparse")
-    if how not in ("mean", "count") and not facts.is_rate(name) and not core.in_per_cent(ws) and _says_per_cent(ws):  # a note that says so outright is simply believed
+    figure_row = int(value.spec) if value.spec.isdigit() else min(numbers, default=None)
+    if how not in ("mean", "count") and not facts.is_rate(name) and not core.in_per_cent(ws, figure_row) and _says_per_cent(ws):  # a note that says so outright is simply believed
         add("maybe_percent")
     last_row, last_column = min(ws.max_row, SAMPLE_ROWS), min(ws.max_column, TITLE_COLUMNS)  # each asks every cell on the sheet, so once only
     if sum(isinstance(ws.cell(row, column).value, str) and TABLE_LINE.match(ws.cell(row, column).value.strip()) is not None for row in range(1, last_row + 1) for column in range(1, last_column + 1)) >= 2:
@@ -1101,13 +1116,14 @@ def _period_words(ws, value):
     """The time a table with no dates is for, when only its title says: 2026년 6월 건축 통계표. Two dates in a title are a span, and a figure named for its year says so itself."""
     if value is not None and YEAR_IN_NAME.search(value.name or ""):
         return ""
+    last_column = ws.max_column
     for row in range(1, min(ws.max_row, PERIOD_TITLE_ROWS) + 1):
-        for column in range(1, min(ws.max_column, PERIOD_TITLE_COLUMNS) + 1):
-            cell = ws._cells.get((row, column))
-            text = cell.value if cell is not None and isinstance(cell.value, str) else ""
-            found = PERIOD_IN_TITLE.findall(text) if len(text) <= PERIOD_TITLE_LENGTH else []
-            if len(found) == 1:
-                return " ".join(found[0].split())
+        filled = [cell.value for cell in (ws._cells.get((row, column)) for column in range(1, last_column + 1)) if cell is not None and cell.value not in (None, "")]
+        if len(filled) != 1 or not isinstance(filled[0], str):  # alone on its row, it is a title. Beside others, 2024년 실적 is only one column's heading
+            continue
+        found = PERIOD_IN_TITLE.findall(filled[0]) if len(filled[0]) <= PERIOD_TITLE_LENGTH else []
+        if len(found) == 1:
+            return " ".join(found[0].split())
     return ""
 
 

@@ -2977,6 +2977,73 @@ class TriedReports(Base):
         for word in ("TrialManagerId", "TrialLatitude", "TrialLongitude", "TrialId", "TrialNumber"):
             self.assertNotIn(word, names)
 
+    def test_targets_written_ahead_do_not_push_out_the_actual_figures(self):
+        rows = [["월", "매출 합계", "목표 합계"]] + [[f"2026-{m:02d}", 100 + m * m, 200 + m] for m in range(1, 11)] + [["2026-11", None, 300], ["2026-12", None, 310]]
+        section = suggest.plan_report(core.ExcelSource(self.book("합계.xlsx", 표=rows))).sections[0]
+        self.assertEqual(section.figures[0].name, "매출 합계")
+        self.assertTrue(self.note(section).startswith("2026년 10월 매출 합계 200"), self.note(section))
+
+    def test_an_actual_figure_comes_before_a_target_written_first(self):
+        rows = [["월", "목표", "매출", "이익"]] + [[f"2026-{m:02d}", 200 + m, 100 + m * m, 10 + m * m] for m in range(1, 11)] + [["2026-11", 300, None, None]]
+        section = suggest.plan_report(core.ExcelSource(self.book("앞.xlsx", 표=rows))).sections[0]
+        self.assertEqual(section.figures[0].name, "매출")
+
+    def test_a_percent_note_belongs_to_the_table_under_it(self):
+        rows = [["지역", "인원"]] + [[f"지역{n}", 1000 + n * n * 7] for n in range(6)] + [[None], ["(단위: %)"], ["지역", "비율"], ["가", 12], ["나", 30], ["다", 41]]
+        source = core.ExcelSource(self.book("두표.xlsx", 표=rows))
+        self.assertNotIn("%", source.text_value("해설:표!A2:A7,B2:B7")[0].replace("항목 합계", "").split(".")[0].split(" ")[0])
+        self.assertNotIn("1,175%", source.text_value("해설:표!A2:A7,B2:B7")[0])
+        self.assertIn("41%", source.text_value("해설:표!A11:A13,B11:B13")[0])
+
+    def test_a_percent_footnote_still_covers_the_table_above(self):
+        rows = [["구분", 2021, 2022, 2023, 2024], ["비율", 83, 84, 85, 87], [], ["Unit:"], ["Per cent"]]
+        sheet = core.ExcelSource(self.book("각주.xlsx", 표=rows))._sheet("표")
+        self.assertTrue(core.in_per_cent(sheet, 2))
+        self.assertTrue(core.in_per_cent(sheet))
+
+    def test_a_negative_in_a_section_with_no_condition_keeps_its_minus(self):
+        self.assertEqual(format_value(-5, "[>=100]0;0"), ("-5", True))
+        self.assertEqual(format_value(-5.5, "[>=100]0.0;0.0"), ("-5.5", True))
+        self.assertEqual(format_value(-3, "[>=5]##,###,##0;[<=-5]\\-##,###,##0;\\<\\5"), ("<5", True))
+        self.assertEqual(format_value(-190000, "[>=5]##,###,##0;[<=-5]\\-##,###,##0;\\<\\5"), ("-190,000", True))
+
+    def test_a_change_in_price_is_a_percentage_not_points(self):
+        rows = [["품목", "단가", "새 단가"], ["가", 1000, 1300], ["나", 2000, 1500], ["다", 500, 700]]
+        text = core.ExcelSource(self.book("가격.xlsx", 표=rows)).text_value("읽는법:표!A,B,C")[0]
+        self.assertNotIn("포인트", text)
+        self.assertIn("-25.0%", text)
+
+    def test_a_year_in_one_columns_heading_is_not_the_tables_period(self):
+        rows = [["구역", "2024년 실적", "합계"]] + [[f"구{n}", n * 7 + 3, 100 + n * n] for n in range(8)]
+        section = suggest.plan_report(core.ExcelSource(self.book("머리글.xlsx", 표=rows))).sections[0]
+        self.assertEqual(section.period, "")
+        self.assertNotIn("2024년", section.heading)
+
+    def test_a_very_long_paragraph_is_cut_where_a_sentence_ends_and_stays_on_the_slide(self):
+        import documents
+        long = "이 문단은 자료를 설명합니다. " * 200
+        kept = documents.key_paragraphs(documents.Document("x", "x", paragraphs=[long]))[0]
+        self.assertLessEqual(len(kept), documents.MAX_QUOTE + 2)
+        self.assertTrue(kept.endswith("니다. …") or kept.endswith("니다 …") or kept.endswith("다. …"), kept[-12:])
+        out = os.path.join(self.dir, "긴문단.pptx")
+        suggest.make_report(out, "제목", [suggest.Section("", [suggest.Suggestion("doc_quote", "k", "plain", result=kept)])])
+        prs = Presentation(out)
+        self.assertLessEqual(max(shape.top + shape.height for shape in prs.slides[0].shapes), prs.slide_height)
+
+    def test_a_summary_paragraph_is_not_a_glossary_entry(self):
+        import documents
+        summary = "요약: 올해 매출은 1,200억 원으로 전년보다 크게 늘었고 해외 비중이 40%를 넘었으며 영업이익도 함께 늘어 전체 실적을 끌어올렸습니다. 이 흐름은 하반기에도 이어졌습니다."
+        self.assertEqual(documents.key_paragraphs(documents.Document("x", "x", paragraphs=[summary])), [summary])
+
+    def test_a_mark_that_may_tell_two_figures_apart_stays(self):
+        self.assertEqual(facts.readable_name("시나리오(A)"), "시나리오(A)")
+        self.assertEqual(facts.readable_name("제주(A) 2025년"), "제주 2025년")
+
+    def test_a_fiscal_quarter_is_not_part_of_a_figures_name(self):
+        for period in ("Q4 25/26", "Q2 FY24", "FY2024 Q3"):
+            request = type("R", (), {"facts": [facts.Fact("value", f"{period} Total Consumption: 8,347,151", ())]})
+            self.assertEqual(core._lead_figure(request), "Total Consumption", period)
+
     def test_machine_names_and_footnote_marks_read_as_words(self):
         self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")
         self.assertEqual(facts.readable_name("합계 RETAINED_CATCH_KG"), "합계 Retained catch (kg)")

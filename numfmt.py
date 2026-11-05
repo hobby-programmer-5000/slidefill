@@ -124,7 +124,7 @@ def _pick_by_condition(value, sections, conditions):
     rest = next((section for section, condition in zip(sections, conditions) if not condition), None)
     if rest is None:
         raise Unsupported("no section for this value")
-    return rest, False
+    return rest, value < 0  # Excel keeps the minus here: [>=100]0;0 shows -5 as -5
 
 
 def _split_sections(fmt):

@@ -34,6 +34,9 @@ KEY_PARAGRAPHS = 3
 NOTE_START = re.compile(r"^\W*(?:note|notes|참고|주|비고)\b", re.I)
 POINTS_ELSEWHERE = re.compile(r"\b(?:table|figure|chart|appendix)\s*\d+|(?:표|그림|부록)\s*\d+|(?:below|above|아래|위)\s*(?:table|figure|표|그림)", re.I)
 GLOSSARY_ENTRY = re.compile(r"^[^.:：]{2,40}[:：]\s")  # Australian Fishing Zone: Waters adjacent to Australia...
+SUMMARY_START = re.compile(r"^\W*(?:요약|결론|개요|목적|핵심|주요\s*내용|주요\s*결과|시사점|배경|summary|conclusions?|overview|purpose|key\s+(?:points|findings)|highlights)\s*[:：]", re.I)  # the opposite of a glossary entry: what the document most wants read
+MAX_QUOTE = 900
+SENTENCE_END = re.compile(r"[.!?。]\s|다\.\s?")
 CAUTION = re.compile(r"care should be taken|caution|caveat|limitation|유의|주의|한계|해석할\s*때", re.I)
 STATES_A_FIGURE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?\s*(?:%|퍼센트|명|건|원|톤|kg|억|만)")
 
@@ -238,12 +241,21 @@ def change_text(found):
 
 def key_paragraphs(document):
     """What a document with nothing to line up says for itself, in its own words and its own order: a caution about reading the figures if it gives one, then the first long paragraphs, those stating a figure before those that do not. A pointer to a table not on the slide or an entry in a glossary means nothing there."""
-    usable = [text for text in document.paragraphs if len(text) >= LONG_PARAGRAPH and not NOTE_START.match(text) and not POINTS_ELSEWHERE.search(text) and not GLOSSARY_ENTRY.match(text)]
+    usable = [text for text in document.paragraphs if len(text) >= LONG_PARAGRAPH and not NOTE_START.match(text) and not POINTS_ELSEWHERE.search(text) and (not GLOSSARY_ENTRY.match(text) or SUMMARY_START.match(text))]
     cautions = [text for text in usable if CAUTION.search(text)][:1]
     rest = [text for text in usable if text not in cautions]
     chosen = cautions + [text for text in rest if STATES_A_FIGURE.search(text)] + [text for text in rest if not STATES_A_FIGURE.search(text)]
     chosen = chosen[:KEY_PARAGRAPHS]
-    return [text for text in usable if text in chosen]
+    return [_clipped(text) for text in usable if text in chosen]
+
+
+def _clipped(text):
+    """A paragraph short enough for a slide, cut where a sentence ends. A page of Word does not fit on one."""
+    if len(text) <= MAX_QUOTE:
+        return text
+    head = text[:MAX_QUOTE]
+    ends = [match.end() for match in SENTENCE_END.finditer(head)]
+    return (head[:ends[-1]] if ends else head).rstrip() + " …"
 
 
 def headline(document, links, lang):

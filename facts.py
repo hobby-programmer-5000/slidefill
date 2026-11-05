@@ -37,7 +37,7 @@ NESTED_TOLERANCE = 0.001  # a parent's figure is the exact sum of its parts, giv
 MACHINE_NAME = re.compile(r"[A-Za-z]+(?:_[A-Za-z0-9-]+)+|[a-z]+[A-Z][A-Za-z0-9]*")  # tourStatConfirmManageBiz, RETAINED_CATCH_KG: exported names, in no one's language
 SNAKE_NAME = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])")
 NAME_UNITS = {"kg": "kg", "g": "g", "mj": "MJ", "kj": "kJ", "kcal": "kcal", "km": "km", "m2": "m²", "m3": "m³", "kwh": "kWh", "mwh": "MWh", "usd": "USD", "aud": "AUD", "krw": "KRW", "pct": "%", "percent": "%"}
-LEGEND_MARK = re.compile(r"(?<=[^\s(])\([A-Z]\)(?=\s|$)")  # 제주(A) and 한국(B) point to a formula in a table's footnote, which a slide does not have
+LEGEND_MARK = re.compile(r"(?<=[^\s(])\([A-Z]\)(?=\s)")  # 제주(A) 2025년 points to a formula in a table's footnote. 시나리오(A) ends with it, and it may be all that tells it from 시나리오(B)
 COUNT_MARK = re.compile(r"^\s*#\s+")
 KOREAN_UNIT_MARK = re.compile(r"(?<=[가-힣])_(원|천원|만원|백만원|억원|명|건|톤|개|회)$")  # 수수료_원
 PRICE_NAME = re.compile(r"^(?!.*(?:총|합계|누계|\b(?:total|sum)\b))(?=.*(?:수수료|요금|가격|단가|이용료|사용료|입장료|참가비|회비|\b(?:price|fee|tariff)s?\b)\s*[_( ]?\s*(?:원|천원|만원|달러|krw|usd|aud|\$)?\s*\)?\s*$)", re.I)

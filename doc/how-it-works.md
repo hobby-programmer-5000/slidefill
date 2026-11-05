@@ -109,8 +109,8 @@ Warnings appear only in the app's list. So where a figure must be read different
 - **Prices per item**: a heading ending in `수수료`, `요금`, `가격`, `단가`, `price` or `fee` is ranked, not added. `수수료 수입` and `총수수료` are money taken, so they add up. Writing `합계( )` adds them anyway.
 - **Period columns it cannot read**: with four or more columns differing only in their digits, such as `H1 21/22`, choosing the first asks before making the report, since it may not be the newest.
 - **Values that cannot be added**: a name meaning a level, such as a heating value, a concentration or a temperature, is averaged rather than added. A column of kinds, such as 항목 or type, narrows it to one kind first.
-- **A sheet in per cent**: if it says so, as `Per cent` under `Unit:` or `(단위: %)`, values are written in per cent, changes in points, and no shares are given. A % merely somewhere on the sheet is asked about.
-- **A figure that stops early**: if the first choice has no value for the sheet's newest period, the largest total that does is used.
+- **A sheet in per cent**: if it says so, as `Per cent` under `Unit:` or `(단위: %)`, values are written in per cent, changes in points, and no shares are given. A unit note covers the table under it, or, with no figures under it, is a footnote to what is above. A % merely somewhere on the sheet is asked about.
+- **A figure that stops early**: if the first choice has no value for the sheet's newest period, the largest total that does is used. The newest period is the latest where most actual figures are filled in. A figure named as a target, plan or budget is not chosen while an actual one exists, and months with only a target written ahead do not count as the newest.
 
 ## Reading rules
 

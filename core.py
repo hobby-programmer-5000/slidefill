@@ -124,7 +124,6 @@ AS_AT_COLUMNS = 3
 AS_AT_LENGTH = 200
 DAY_FIRST = re.compile(r"\b(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s]((?:19|20)\d\d)\b")
 YEAR_FIRST = re.compile(r"((?:19|20)\d\d)\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})")
-MONTH_NAMES = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 PERIOD_WORD = {"ko": "기간", "en": "Period"}
 ITEM_WORD = {"ko": "항목", "en": "Item"}
 TRAILING_TOTAL = re.compile(r"\s+(?:total|합계|총계)\s*$", re.I)  # the row under a date heading is the sheet's total, not part of what the dates are called
@@ -606,10 +605,11 @@ def _with_per_cent(show):
     return lambda value: show(value) + "%"
 
 
-def unit_note(ws, rows, columns):
-    """(the words as written, the unit alone) of a note saying how a sheet's figures are measured. (단위: 백만원) says it in one cell; Unit: may leave it to the cell beside or below. ("", "") when there is none."""
-    for row in range(1, min(ws.max_row, rows) + 1):
-        for column in range(1, min(ws.max_column, columns) + 1):
+def _unit_notes(ws, rows, columns):
+    """(row, the words as written, the unit alone) for each note saying how figures are measured. (단위: 백만원) says it in one cell; Unit: may leave it to the cell beside or below."""
+    last_row, last_column = min(ws.max_row, rows), min(ws.max_column, columns)
+    for row in range(1, last_row + 1):
+        for column in range(1, last_column + 1):
             cell = ws._cells.get((row, column))  # only cells that exist: asking for rows makes a cell at every place
             if cell is None or not isinstance(cell.value, str):
                 continue
@@ -619,21 +619,20 @@ def unit_note(ws, rows, columns):
                 continue
             rest = text[match.end():].strip(" )）]:：")
             if rest:
-                return text, rest
+                yield row, text, rest
+                continue
             for place in ((row, column + 1), (row + 1, column)):
                 beside = ws._cells.get(place)
                 words = beside.value.strip() if beside is not None and isinstance(beside.value, str) else ""
                 if words and len(words) <= UNIT_WORD_LENGTH:
-                    return f"{text} {words}", words
-    return "", ""
+                    yield row, f"{text} {words}", words
+                    break
 
 
-def _year_beside_months(labels):
-    """The one line for the whole year among lines for its months. Beside anything else, 연간 may be an item of its own, such as a yearly plan beside a monthly one."""
-    names = [label for label in labels if isinstance(label, str)]
-    years = [label for label in names if YEAR_LINE.fullmatch(label.strip())]
-    months = sum(MONTH_LINE.fullmatch(label.strip()) is not None for label in names)
-    return years[0] if len(years) == 1 and months >= MIN_MONTH_LINES else None
+def unit_note(ws, rows, columns):
+    """(the words as written, the unit alone) of the first such note, or ("", "")."""
+    first = next(_unit_notes(ws, rows, columns), None)
+    return first[1:] if first else ("", "")
 
 
 def _reads_backwards(first, second):
@@ -644,18 +643,31 @@ def _reads_backwards(first, second):
     return bool(EARLIER_NAME.search(second or "")) and not EARLIER_NAME.search(first or "")
 
 
-def in_per_cent(ws):
-    """The sheet itself says its figures are per cent, not merely that a % appears somewhere on it."""
-    if "_in_per_cent" not in ws.__dict__:
-        ws.__dict__["_in_per_cent"] = PER_CENT_UNIT.fullmatch(unit_note(ws, UNIT_SCAN_ROWS, UNIT_SCAN_COLUMNS)[1]) is not None
-    return ws.__dict__["_in_per_cent"]
+def in_per_cent(ws, row=None):
+    """The note that covers this row says per cent, not merely that a % appears somewhere on the sheet. A note covers the rows under it. One with no figures under it is a footnote, and covers what is above. row None asks about the sheet as a whole, which only a footnote can answer."""
+    if "_unit_notes" not in ws.__dict__:
+        ws.__dict__["_unit_notes"] = list(_unit_notes(ws, UNIT_SCAN_ROWS, UNIT_SCAN_COLUMNS))
+        ws.__dict__["_last_figure_row"] = max((place[0] for place, cell in ws._cells.items() if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)), default=0) if ws.__dict__["_unit_notes"] else 0
+    notes = ws.__dict__["_unit_notes"]
+    above = [note for note in notes if row is not None and note[0] < row]
+    note = above[-1] if above else next((note for note in notes if note[0] >= ws.__dict__["_last_figure_row"]), None)
+    return note is not None and PER_CENT_UNIT.fullmatch(note[2]) is not None
+
+
+def _year_beside_months(labels):
+    """The one line for the whole year among lines for its months. Beside anything else, 연간 may be an item of its own, such as a yearly plan beside a monthly one."""
+    names = [label for label in labels if isinstance(label, str)]
+    years = [label for label in names if YEAR_LINE.fullmatch(label.strip())]
+    months = sum(MONTH_LINE.fullmatch(label.strip()) is not None for label in names)
+    return years[0] if len(years) == 1 and months >= MIN_MONTH_LINES else None
+
 
 
 def _stated_day(text):
     """A date written out in a sentence, or None."""
     words = DAY_FIRST.search(text)
     if words:
-        month = next((place for place, name in enumerate(MONTH_NAMES, start=1) if words.group(2).casefold().startswith(name)), None)
+        month = MONTH_NUMBERS.get(words.group(2)[:3].lower())
         numbers = (int(words.group(3)), month, int(words.group(1))) if month else None
     else:
         digits = YEAR_FIRST.search(text)
@@ -1425,7 +1437,7 @@ class ExcelSource:
         fmt = self._cell_format(ref.sheets[newest_point.sheet].cell(*ref.at(newest_point.row, line)))
         found.rate = self._is_rate_series(top_ws, ref, top, line, header, fmt) or AMOUNT_HEADING.search(header) is not None
         found.scale = 100 if "%" in fmt else facts.AMOUNT if AMOUNT_HEADING.search(header) else 1
-        found.per_cent_unit = "%" not in fmt and in_per_cent(top_ws)
+        found.per_cent_unit = "%" not in fmt and in_per_cent(top_ws, ref.at(top, line)[0])
         return found
 
     def _with_period_names(self, points, ref):
@@ -1486,7 +1498,7 @@ class ExcelSource:
         found.percent = spec.kind == "rate"
         found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, ""))
         found.scale = 100 if spec.kind == "rate" else 1
-        found.per_cent_unit = spec.kind in ("sum", "mean") and in_per_cent(top_ws)
+        found.per_cent_unit = spec.kind in ("sum", "mean") and in_per_cent(top_ws, ref.at(top, spec.lines[0])[0])
         usual = _usual_rows(days, groups)
         if usual is not None and groups[days[-1]][1] < usual and spec.kind in ("sum", "count"):
             found.cut_short = (groups[days[-1]][1], usual)
@@ -1497,7 +1509,7 @@ class ExcelSource:
     @staticmethod
     def _is_rate_series(ws, ref, top, line, header, fmt):
         """True when the figures are rates, scores or changes already, so they move in points. Judged from the heading, the format, the sheet's name, and plain words above the table."""
-        if "%" in fmt or RATE_HEADING.search(header) or RATE_TITLE.search(ws.title) or in_per_cent(ws):
+        if "%" in fmt or RATE_HEADING.search(header) or RATE_TITLE.search(ws.title) or in_per_cent(ws, ref.at(top, line)[0]):
             return True
         above =" ".join(str(ws.cell(*ref.at(position, other)).value or "") for position in range(top - 1, 0, -1) for other in (line, 1))
         return RATE_EXPLICIT.search(above) is not None
@@ -1725,8 +1737,9 @@ class ExcelSource:
                 rows = [item for item in rows if item is not largest]
                 stated = [largest.before, largest.value] if len(specs) == 2 else [largest.value]
                 issues.append(Issue("cross_total_found", {"label": largest.label}))
-        per_cent = not is_rate_kind and in_per_cent(ws)
-        rate = is_rate_kind or per_cent or priced or (isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)
+        per_cent = not is_rate_kind and in_per_cent(ws, ref.at(first or ref.start, first_line)[0])
+        # A price is not added, but it moves in percent: +300포인트 says nothing about 1,000 to 1,300.
+        rate = is_rate_kind or per_cent or (not priced and ((isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)))
         levels = facts.top_level(rows)
         if levels:  # 자산 and its parts, numbered by level: only the top level can stand side by side, and none of it adds up to a whole
             rows = levels
@@ -2590,7 +2603,7 @@ def _lead_figure(request):
     fact = next((fact for fact in request.facts if fact.id == "value"), None)
     if fact is None or ":" not in fact.text:
         return ""
-    return re.sub(r"^\s*(?:\d{4}년\s*(?:\d+월\s*(?:\d+일\s*(?:\(.\)\s*)?)?|\d분기\s*)?|\d+월\s*\d+일\s*(?:\(.\)\s*)?|\d{4}-\d{2}(?:-\d{2})?\s*|Q\d \d{4}\s*|\d{4}\s+|[A-Z][a-z]{2} \d{4}\s*|[A-Z][a-z]{2} \d+ (?:\(\w+\) )?)", "", fact.text.partition(":")[0]).strip()
+    return re.sub(r"^\s*(?:\d{4}년\s*(?:\d+월\s*(?:\d+일\s*(?:\(.\)\s*)?)?|\d분기\s*)?|\d+월\s*\d+일\s*(?:\(.\)\s*)?|\d{4}-\d{2}(?:-\d{2})?\s*|Q\d \d{4}\s*|Q[1-4]\s*\d{2,4}/\d{2}\s*|Q[1-4]\s*FY\s*'?\d{2,4}\s*|FY\s*'?\d{2,4}\s*Q[1-4]\s*|\d{4}\s+|[A-Z][a-z]{2} \d{4}\s*|[A-Z][a-z]{2} \d+ (?:\(\w+\) )?)", "", fact.text.partition(":")[0]).strip()
 
 
 def _lead_change(request, lang):
