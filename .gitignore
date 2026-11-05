@@ -11,6 +11,9 @@ data/
 CLAUDE.local.md
 PROGRESS.md
 
+# public files used to measure and try the app, and the scripts that fetch them: other people's data
+local/
+
 # build output
 build/
 dist/

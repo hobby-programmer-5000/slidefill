@@ -9,11 +9,14 @@ Run: .venv\\Scripts\\python.exe -X utf8 tools\\gui_check.py <work folder>
 """
 
 import ctypes
+import ctypes.wintypes
 import json
 import os
 import sys
+import threading
 import time
 import tkinter as tk
+import zipfile
 from tkinter import font as tkfont
 from tkinter import messagebox
 
@@ -45,6 +48,7 @@ def check(label, ok, detail=""):
 
 messagebox.askyesno = lambda title, body: (asked.append(("ask", body)), answer[0])[1]
 messagebox.showerror = lambda title, body: asked.append(("error", body))
+messagebox.showinfo = lambda title, body: asked.append(("info", body))
 
 
 def wait(root, instance, seconds=20):
@@ -70,17 +74,29 @@ def press(root, sequence):
     root.event_generate(sequence)
 
 
-def shot(root, name):
-    from PIL import ImageGrab
-    root.attributes("-topmost", True)
-    root.update()
-    time.sleep(0.3)
-    root.update()
-    box = (root.winfo_rootx(), root.winfo_rooty(),
-           root.winfo_rootx() + root.winfo_width(), root.winfo_rooty() + root.winfo_height())
-    ImageGrab.grab(box, all_screens=True).save(os.path.join(work, name + ".png"))
-    root.attributes("-topmost", False)
-    root.update()
+def shot(window, name):
+    """PrintWindow draws this window alone. A grab of the screen would take whatever else the person has open in front of it."""
+    from PIL import Image
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    window.update()
+    time.sleep(0.2)
+    window.update()
+    hwnd = user32.GetAncestor(window.winfo_id(), 2)
+    outer = ctypes.wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(outer))
+    width, height = outer.right - outer.left, outer.bottom - outer.top
+    screen = user32.GetDC(hwnd)
+    memory = gdi32.CreateCompatibleDC(screen)
+    bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
+    gdi32.SelectObject(memory, bitmap)
+    user32.PrintWindow(hwnd, memory, 2)  # PW_RENDERFULLCONTENT
+    header = (ctypes.c_uint32 * 10)(40, width, ctypes.c_uint32(-height).value, 1 | (32 << 16), 0, 0, 0, 0, 0, 0)
+    pixels = ctypes.create_string_buffer(width * height * 4)
+    gdi32.GetDIBits(memory, bitmap, 0, height, pixels, header, 0)
+    Image.frombuffer("RGB", (width, height), pixels, "raw", "BGRX", 0, 1).save(os.path.join(work, name + ".png"))
+    gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(memory)
+    user32.ReleaseDC(hwnd, screen)
 
 
 def start(lang=None):
@@ -241,12 +257,16 @@ def main():
     window = ui.insight_window
     check("Ctrl+I opens the candidate window", window is not None and window.window.winfo_exists())
     pump(window)
-    check("only the sentence that passes the checks is offered", list(window.listbox.get(0, "end")) == ["수송이 700으로 올랐습니다."],
+    written = [row for row in window.listbox.get(0, "end") if not row.startswith(i18n.text(ui.lang, "insight_mark_calculated"))]
+    check("calculated sentences are there, marked as such", any(c.calculated for c in window.shown), str(window.listbox.get(0, "end")))
+    check("only the model's sentence that passes the checks is offered", [c.statement for c in window.shown if not c.calculated] == ["수송이 700으로 올랐습니다."],
           str(window.listbox.get(0, "end")))
+    check("the model's sentence is marked to be checked", any(row.startswith(i18n.text(ui.lang, "insight_mark_model")) for row in written), str(written))
+    model_row = next(place for place, c in enumerate(window.shown) if not c.calculated)
     check("the left-out count is shown", "2" in window.status.cget("text") or "3" in window.status.cget("text"), window.status.cget("text"))
     shot(window.window, "insight_window")
     check("nothing is chosen until the person acts", window.chosen.get("1.0", "end").strip() == "")
-    window.listbox.selection_set(0)
+    window.listbox.selection_set(model_row)
     window.listbox.event_generate("<<ListboxSelect>>")
     root.update()
     basis = window.basis.get("1.0", "end")
@@ -308,6 +328,7 @@ def main():
     ui.show_template_row()
     root.update()
     check("the template row is hidden unless asked for", not any(w.winfo_ismapped() for w in ui.template_row))
+    check("with no template only the buttons that do something are shown", not ui.preview_button.winfo_ismapped() and ui.insight_button.winfo_ismapped() and ui.helper_button.winfo_ismapped())
     ui.vars["excel"].set(daily_book)
     ui.vars["output"].set(work)
     press(root, "<F5>")
@@ -316,6 +337,14 @@ def main():
     check("the status says what was chosen", ui.status[0] == "auto_ready" and "수송" in ui.status[1]["what"], str(ui.status))
     listed = [str(ui.tree.item(row)["values"][1]) for row in ui.tree.get_children()]
     check("the list has no notation in it", all("!" not in name and "{{" not in name for name in listed), str(listed))
+    okay = [str(ui.tree.item(row)["values"][1]) for row in ui.tree.get_children() if ui.tree_items[row].status == "ok"]  # anything to check comes before these
+    check("the list reads in the report's order, sentences first", okay[0].endswith(i18n.text(ui.lang, "suggest_note")), str(okay))
+    origins = [str(ui.tree.item(row)["values"][3]) for row in ui.tree.get_children()]
+    check("nor a cell address in where it comes from", origins and all("!" not in origin for origin in origins), str(origins))
+    ui.tree.selection_set(ui.tree.get_children()[0])
+    root.update()
+    check("nor when a row is selected", "!" not in ui.message.cget("text") and "{{" not in ui.message.cget("text"), ui.message.cget("text"))
+    check("both figures reach the report", "승차" in ui.auto.what and any(name.startswith("승차 · ") for name in listed), str(listed))
     check("the working template is not beside the workbook", os.path.dirname(ui.auto.path) != work, ui.auto.path)
     shot(root, "workbook_only")
     press(root, "<Control-g>")
@@ -325,12 +354,103 @@ def main():
     check("that report holds the newest value and no placeholder", "700" in words and "{{" not in words, words)
     check("the choice to go without a template survives", core.load_settings(settings).get("use_template") is False)
 
+    # Insight candidates with only a workbook: the model is a stub, and nothing reaches the report until a person applies it.
+    check("the insight button works with no template", str(ui.insight_button.cget("state")) == "normal")
+    gate = threading.Event()
+
+    def slow_model(path, body, timeout):
+        gate.wait(10)
+        return stub_model(path, body, timeout)
+
+    insight.post = slow_model
+    first_note = next(row for row in ui.tree.get_children() if ui.tree_items[row].key.startswith("해설") or ui.tree_items[row].key.startswith("note"))
+    ui.tree.selection_set(first_note)
+    root.update()
+    press(root, "<Control-i>")
+    root.update()
+    window = ui.insight_window
+    for _ in range(5):
+        root.update()
+        time.sleep(0.02)
+    list_top = window.listbox.winfo_rooty()
+    check("while it works a moving bar shows right above the list", window.bar.winfo_ismapped() and window.bar.winfo_rooty() < list_top and window.bar.winfo_rooty() + window.bar.winfo_height() <= list_top + 2)
+    check("and says how far along it is", "1" in window.status.cget("text") and "3" in window.status.cget("text"), window.status.cget("text"))
+    shot(window.window, "insight_working")
+    gate.set()
+    pump(window)
+    check("the bar goes when it is done", not window.bar.winfo_ismapped())
+    check("the candidates are about that figure, without notation", [c.statement for c in window.shown if not c.calculated] == ["수송이 700으로 올랐습니다."], str(window.listbox.get(0, "end")))
+    shot(window.window, "insight_done")
+    window.listbox.selection_set(next(place for place, c in enumerate(window.shown) if not c.calculated))
+    window.listbox.event_generate("<<ListboxSelect>>")
+    root.update()
+    window.add()
+    window.apply_button.invoke()
+    wait(root, ui)
+    press(root, "<Control-g>")
+    wait(root, ui)
+    words = " ".join(s.text_frame.text for s in Presentation(ui.last_output).slides[0].shapes if s.has_text_frame)
+    check("the chosen sentence takes the place of that figure's reading", "수송이 700으로 올랐습니다." in words, words)
+    check("the figure's own sentence stays", "수송 700" in words, words)
+    check("no placeholder is left", "{{" not in words, words)
+    chosen_row = next(ui.tree.item(row)["values"] for row in ui.tree.get_children() if "수송이 700" in str(ui.tree.item(row)["values"][2]))
+    check("the chosen sentence is listed by a plain name", chosen_row[0] == i18n.text(ui.lang, "status_ok") and "!" not in str(chosen_row[1]), str(chosen_row))
+    insight.post = real_post
+    ui.insights.clear()
+    ui.auto.stale = True
+    os.remove(ui.insights_file)
+
+    # Changing the contents: tick figures and see the slide before anything changes.
+    def calm(window):
+        for _ in range(300):
+            root.update()
+            time.sleep(0.03)
+            if not window.working:
+                break
+        for _ in range(5):
+            root.update()
+            time.sleep(0.02)
+
     press(root, "<Control-r>")
+    root.update()
+    window = ui.helper_window
+    calm(window)
+    calm(window)
+    node_of = lambda name: next(node for node, (_choice, value) in window.nodes.items() if value.name == name)  # noqa: E731
+    check("the contents window ticks what the report holds now", window.tree.item(node_of("수송"))["text"].startswith("☑") and window.tree.item(node_of("승차"))["text"].startswith("☑"), str(window.picked))
+    check("it draws the slide", window.slides and len(window.canvas.find_all()) > 10, str(len(window.canvas.find_all())))
+    check("and nothing to use until something changes", str(window.use_button.cget("state")) == "disabled")
+    shot(window.window, "contents_same")
+    before_report = ui.auto.sections
+    window.toggle(node_of("승차"))
+    calm(window)
+    check("unticking a figure redraws the slide without it", not any("승차" in item.result for item in window.slides[0][0].sentences), str([item.result for item in window.slides[0][0].sentences]))
+    check("it says what will change", "1" in window.change.cget("text") and "2" in window.change.cget("text"), window.change.cget("text"))
+    check("the report has not changed yet", ui.auto.sections is before_report)
+    shot(window.window, "contents_changed")
+    window.toggle(node_of("승차"))
+    window.toggle(node_of("수송"))
+    calm(window)
+    window.use_button.invoke()
+    wait(root, ui)
+    words = [str(ui.tree.item(row)["values"][2]) for row in ui.tree.get_children()]
+    check("the ticked figure goes in the report, and the other comes out", any("승차 70" in w for w in words) and not any("수송 700" in w for w in words), str(words))
+    press(root, "<Control-g>")
+    wait(root, ui)
+    made_words = " ".join(s.text_frame.text for s in Presentation(ui.last_output).slides[0].shapes if s.has_text_frame)
+    check("what was drawn is what is made", "승차 70" in made_words and "수송 700" not in made_words, made_words)
+
+    # The finer choices are still there for one file.
+    ui.open_detail()
     root.update()
     helper = ui.helper_window
     settle(helper)
     check("with no template the helper hides the notation", helper.plain and str(helper.copy_button.winfo_ismapped()) == "0" and helper.tree["displaycolumns"] == ("what", "result"), str(helper.tree["displaycolumns"]))
     shot(helper.window, "helper_plain")
+    offered = list(helper.boxes["value"]["values"]) + list(helper.boxes["base"]["values"])
+    check("the helper offers columns by their headings", offered and all(" · " not in text for text in offered) and "수송" in offered, str(offered))
+    rows = [str(helper.tree.item(row)["values"][0]) for row in helper.tree.get_children()]
+    check("with no template the helper lists only what the report holds", i18n.text(ui.lang, "suggest_prev") not in rows and i18n.text(ui.lang, "suggest_note") in rows, str(rows))
     helper.boxes["value"].current(1)
     helper.changed("value")
     for _ in range(200):
@@ -346,6 +466,130 @@ def main():
     press(root, "<Control-l>")
     wait(root, ui)
     check("the person's choice survives a language switch", ui.auto.chosen and any("승차 70" in str(ui.tree.item(row)["values"][2]) for row in ui.tree.get_children()))
+
+    # Dropping files on the window, through the real Windows message.
+    def drop_on_window(paths):
+        names = ("\0".join(paths) + "\0\0").encode("utf-16-le")
+        kernel32, user32 = ctypes.windll.kernel32, ctypes.windll.user32
+        kernel32.GlobalAlloc.restype, kernel32.GlobalLock.restype = ctypes.c_void_p, ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = (ctypes.c_void_p,)
+        user32.PostMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
+        block = kernel32.GlobalAlloc(0x42, 20 + len(names))  # GHND
+        pointer = kernel32.GlobalLock(block)
+        ctypes.memmove(pointer, (ctypes.c_uint32 * 5)(20, 0, 0, 0, 1), 20)  # DROPFILES: names follow at 20, wide characters
+        ctypes.memmove(pointer + 20, names, len(names))
+        kernel32.GlobalUnlock(block)
+        user32.PostMessageW(ui.drop.hwnd, 0x0233, block, None)  # WM_DROPFILES
+        for _ in range(15):
+            root.update()
+            time.sleep(0.02)
+
+    second_book = os.path.join(work, "second.xlsx")
+    second = openpyxl.Workbook()
+    second.active.title = "고객"
+    second.active.append(["일자", "방문"])
+    for day in range(1, 8):
+        second.active.append([f"2025/11/{day:02d}", day * 11])
+    second.save(second_book)
+    data_csv = os.path.join(work, "third.csv")
+    with open(data_csv, "w", encoding="utf-8-sig", newline="") as fh:
+        fh.write("일자,판매\n" + "".join(f"2025/11/{day:02d},{day * 5}\n" for day in range(1, 8)))
+    note_file = os.path.join(work, "note.pdf")
+    open(note_file, "w").close()
+    ui.own_template.set(False)
+    ui.show_template_row()
+    ui.more_files = []
+    ui.vars["excel"].set("")
+    ui.auto = None
+    root.update()
+    check("with no files the list says what to do", ui.drop_hint.winfo_ismapped())
+    shot(root, "drop_empty")
+    check("the window accepts dropped files", ui.drop.hwnd is not None)
+    drop_on_window([daily_book, second_book, data_csv, note_file])
+    wait(root, ui)
+    check("dropped files are listed, and another kind of file is not", ui.inputs() == [daily_book, second_book, data_csv], str(ui.inputs()))
+    check("the hint goes", not ui.drop_hint.winfo_ismapped())
+    check("a report from three files is previewed", ui.report is not None and ui.report.count("error") == 0 and len(ui.report.items) > 6, str(ui.report and [(i.key, i.status) for i in ui.report.items][:4]))
+    check("the refused file is named", any("note.pdf" in body for kind, body in asked) or "note.pdf" in ui.message.cget("text"), str(asked))
+    shot(root, "three_files")
+    drop_on_window([second_book])
+    wait(root, ui)
+    check("the same file is not added twice", len(ui.inputs()) == 3, str(ui.inputs()))
+    press(root, "<Control-g>")
+    wait(root, ui)
+    many = Presentation(ui.last_output).slides
+    check("three files make an overview and three slides", len(many) == 4 and os.path.basename(ui.last_output).startswith("daily_"), f"{len(many)} {ui.last_output}")
+    overview_words = " ".join(s.text_frame.text for s in many[0].shapes if s.has_text_frame)
+    check("the overview has each file's main sentence", "수송" in overview_words and "방문" in overview_words and "판매" in overview_words, overview_words)
+    press(root, "<Control-r>")
+    root.update()
+    window = ui.helper_window
+    calm(window)
+    calm(window)
+    check("the contents window groups figures by file", window.tree.exists("file0") and window.tree.exists("file2") and len(window.slides) == 4, str(len(window.slides)))
+    shot(window.window, "contents_files")
+    window.window.destroy()
+    insight.post = stub_model
+    press(root, "<Control-i>")
+    root.update()
+    window = ui.insight_window
+    check("the insight window offers all the files together first", "(" in window.about.get() and core.ALL_FILES in window.request.key, window.about.get())
+    check("what the window shows as the basis holds no instruction to the model", "cross" not in window.basis.get("1.0", "end"), window.basis.get("1.0", "end")[:120])
+    pump(window)
+    shot(window.window, "insight_files")
+    window.window.destroy()
+    root.update()
+    insight.post = real_post
+    # A Word document among the files: its dated entries are lined up with the figures.
+    word_file = os.path.join(work, "record.docx")
+    with zipfile.ZipFile(word_file, "w") as package:
+        package.writestr("word/document.xml", '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                         '<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>기록 문서</w:t></w:r></w:p>'
+                         '<w:p><w:r><w:t>2025년 11월 4일 수송 노선을 늘렸습니다.</w:t></w:r></w:p></w:body></w:document>')
+    drop_on_window([word_file])
+    wait(root, ui)
+    check("a Word file can be dropped in", word_file in ui.inputs(), str(ui.inputs()))
+    named = [str(ui.tree.item(row)["values"][1]) for row in ui.tree.get_children()]
+    check("the document is in the list by a plain name", i18n.text(ui.lang, "suggest_doc_note") in named and not any("@" in name for name in named), str(named))
+    press(root, "<Control-g>")
+    wait(root, ui)
+    with_word = Presentation(ui.last_output).slides
+    check("the report has a slide for the document, after the overview", len(with_word) == 5 and "기록 문서" in " ".join(s.text_frame.text for s in with_word[1].shapes if s.has_text_frame), str(len(with_word)))
+    press(root, "<Control-r>")
+    root.update()
+    window = ui.helper_window
+    calm(window)
+    calm(window)
+    check("the contents window draws the document's slide too", len(window.slides) == 5 and window.slides[1][0].wide, str(len(window.slides)))
+    window.turn(1)
+    root.update()
+    shot(window.window, "contents_document")
+    window.window.destroy()
+    root.update()
+    ui.file_list.selection_clear(0, "end")
+    ui.file_list.selection_set(3)
+    ui.show_files_state()
+    ui.remove_button.invoke()
+    wait(root, ui)
+    check("removing the document leaves the workbooks", ui.inputs() == [daily_book, second_book, data_csv], str(ui.inputs()))
+    ui.file_list.selection_clear(0, "end")
+    ui.more_files = []
+    ui.vars["excel"].set("")
+    drop_on_window([word_file])
+    wait(root, ui)
+    check("a Word file alone asks for a workbook", any("Excel" in body or "엑셀" in body for kind, body in asked if kind == "error"), str(asked[-1:]))
+    ui.more_files = [second_book, data_csv]
+    ui.vars["excel"].set(daily_book)
+    ui.show_files()
+    ui.preview()
+    wait(root, ui)
+    ui.file_list.selection_set(1, 2)
+    ui.show_files_state()
+    ui.remove_button.invoke()
+    wait(root, ui)
+    check("removing files leaves the rest", ui.inputs() == [daily_book], str(ui.inputs()))
+    check("more files are remembered", core.load_settings(settings).get("excel") == daily_book)
+    ui.more_files = []
 
     other = openpyxl.Workbook()
     other.active.title = "메모"
@@ -363,13 +607,14 @@ def main():
     ui.preview()
     wait(root, ui)
     wait(root, ui)
-    check("choosing a file while another is being read ends on the new one", ui.auto.excel == daily_book and not ui.again, ui.auto.excel)
+    check("choosing a file while another is being read ends on the new one", ui.auto.excel == (daily_book,) and not ui.again, str(ui.auto.excel))
 
     # The helper with a template in play: the references, to copy into it.
     ui.own_template.set(True)
     ui.show_template_row()
     root.update()
     check("the template row comes back when asked for", all(w.winfo_ismapped() for w in ui.template_row))
+    check("and so does its Preview button", ui.preview_button.winfo_ismapped() and ui.insight_button.winfo_ismapped())
     ui.vars["excel"].set(daily_book)
     ui.vars["template"].set(daily_template)
     press(root, "<Control-r>")
@@ -420,6 +665,49 @@ def main():
     press(root, "<F5>")
     wait(root, ui)
     check("the app recovers after an error", len(ui.tree.get_children()) == 9)
+
+    # A choice the rules cannot be sure of: nothing is made until a person has looked.
+    doubtful = os.path.join(work, "doubtful.xlsx")
+    book = openpyxl.Workbook()
+    book.active.title = "Example"
+    for row in [["지역", "매출"]] + [[f"지역{n}", 100 + n * 37 % 91] for n in range(8)]:
+        book.active.append(row)
+    book.save(doubtful)
+    template_before, output_before = ui.vars["template"].get(), ui.vars["output"].get()
+    ui.vars["template"].set("")
+    ui.own_template.set(False)
+    ui.more_files = []
+    ui.vars["excel"].set(doubtful)
+    ui.vars["output"].set(work)
+    press(root, "<F5>")
+    wait(root, ui)
+    check("a doubtful choice says so in the status line", ui.status[0] == "auto_ready_doubt", str(ui.status))
+    made_before = [name for name in os.listdir(work) if name.startswith("doubtful") and name.endswith(".pptx")]
+    press(root, "<Control-g>")
+    wait(root, ui)
+    window = ui.doubt_window
+    check("creating asks first and makes nothing yet", window is not None and window.window.winfo_exists() and [name for name in os.listdir(work) if name.startswith("doubtful") and name.endswith(".pptx")] == made_before)
+    check("it says why in plain words", bool(window and window.reasons) and all("_" not in reason for reason in window.reasons), str(window.reasons if window else None))
+    shot(window.window, "doubt_en" if ui.lang == "en" else "doubt_ko")
+    window.cancel_button.invoke()
+    root.update()
+    check("cancel makes nothing and asks again next time", ui.auto.doubts and [name for name in os.listdir(work) if name.startswith("doubtful") and name.endswith(".pptx")] == made_before)
+    press(root, "<Control-g>")
+    wait(root, ui)
+    window = ui.doubt_window
+    window.keep_button.invoke()
+    root.update()
+    wait(root, ui)
+    check("keeping it makes the report", len([name for name in os.listdir(work) if name.startswith("doubtful") and name.endswith(".pptx")]) == len(made_before) + 1 and ui.status[0] == "saved", str(ui.status))
+    press(root, "<Control-g>")
+    wait(root, ui)
+    check("having kept it, it does not ask again", ui.doubt_window is None and ui.status[0] == "saved", str(ui.status))
+    ui.vars["template"].set(template_before)
+    ui.vars["output"].set(output_before)
+    ui.own_template.set(True)
+    ui.vars["excel"].set(EXCEL)
+    press(root, "<F5>")
+    wait(root, ui)
 
     root.destroy()
     root, ui = start()

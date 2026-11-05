@@ -1,7 +1,7 @@
 @echo off
 rem Builds the single-file executable dist\SlideFill.exe.
 rem Unit tests run first, and the finished exe must fill the samples: any failure stops the build.
-rem First time only: uv venv --python 3.14 .venv ^&^& uv pip install --python .venv\Scripts\python.exe openpyxl python-pptx pyinstaller
+rem First time only: uv venv --python 3.14 .venv ^&^& uv pip install --python .venv\Scripts\python.exe openpyxl python-pptx xlrd python-calamine pyinstaller
 rem
 rem The excluded modules are parts the app never uses. Remove an exclude only if the app starts
 rem importing it, and update THIRD-PARTY-NOTICES.md at the same time.

@@ -13,6 +13,7 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 ## Features
 
 - **A report from the workbook alone**: choose a file and SlideFill reads the sheet, chooses the contents, and shows the real values first. If it took the wrong figure, change it with Ctrl+R. This is an automatic judgement, so check the values before you create the report.
+- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that mean nothing added, only counting rows, or tables stacked on one sheet, it shows why and asks before making the report. It will not catch every mistake.
 - **Text**: `{{Sales}}` or `{{Summary!B3}}` anywhere: text boxes, table cells, groups, notes, chart titles, slide masters. Your fonts and colors stay.
 - **Tables**: fills a PowerPoint table from a range, adding or removing rows to fit. Total rows stay at the bottom.
 - **Charts**: replaces chart data and keeps the chart's style. "Edit Data" in PowerPoint shows the new numbers.
@@ -23,7 +24,7 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 - **Preview first**: a list of every value and where it comes from, before anything is created.
 - **No silent blanks**: anything that cannot be filled stays as a visible `{{placeholder}}`, is listed as a problem, and the app asks before continuing.
 - **Your files stay as they are**: the template and workbook are only read. Each report is a new dated file that never overwrites another.
-- **Insight candidates you choose from** (optional): a model on your own PC reads the calculated results and suggests sentences. They pass checks, but nothing goes in the report until you pick it.
+- **Insight sentences you choose from** (optional): one sentence that says what a figure means, so whoever reads the report gets the point without working it out from the table. A model on your own PC reads the calculated results and suggests them. They pass checks, but nothing goes in the report until you pick it.
 - **Nothing leaves your PC**: no account, no Office needed to run it, no internet connections. The optional insight step talks only to Ollama on this PC. English and Korean.
 
 ## Install
@@ -36,7 +37,7 @@ Windows 10/11 with [uv](https://docs.astral.sh/uv/):
 
 ```bat
 uv venv --python 3.14 .venv
-uv pip install --python .venv\Scripts\python.exe openpyxl python-pptx pyinstaller
+uv pip install --python .venv\Scripts\python.exe openpyxl python-pptx xlrd python-calamine pyinstaller
 build.bat
 ```
 
@@ -52,7 +53,25 @@ build.bat
 
 **3. Press Ctrl+G.** A new `<workbook name>_<date>.pptx` appears beside the workbook. Next month: open the app, press Ctrl+G.
 
-For now this builds on one figure from one sheet: a slide of sentences and a slide with a table and a chart. If your slides are already laid out, use a template as below.
+**Insight sentences (optional):** select a figure in the list and press **Ctrl+I**. A model on this PC suggests sentences from the calculated results. The one you choose takes the place of that figure's "how to read it". If you choose none, the calculated sentence stays.
+
+Each sheet gets one slide: sentences on the left, a chart and a table on the right. What goes in:
+
+- Figures: up to 4 side by side all go in, such as domestic and foreign. With a total column, or 5 or more figures, only one goes in and the window says how many were left out.
+- Sheets: up to 3 sheets built alike go in together. More than that, such as one sheet per month, or sheets built differently are left out and counted.
+- Units: the sheet name or a "unit" note above the table is copied onto the slide. A unit written anywhere else does not appear.
+- Charts: a figure more than 10 times larger or smaller than the first goes in the table only.
+- Tables: large numbers get commas. With your own template they stay as Excel shows them.
+- Year columns: with columns such as `2025` and `2024`, only the newest goes in.
+- Left out: a table with several levels of headings, such as sex and measure under each year, is not guessed at. The app says it cannot lay out a report by itself.
+
+If your slides are already laid out, use a template as below.
+
+**Several files.** Drag files onto the window, or press **Add files**, and the report opens with an overview: which way the figures moved across the files, calculated, then each file's main sentence, then each file's slide. Files that end at different times are not compared, and the slide says so. In **Ctrl+I**, "All the files together" asks the model for a sentence about them. How one file affects another is not in the data, so sentences that claim it are left out.
+
+**With a Word document.** Add a `.docx` with your workbook and it gets its own slide. SlideFill finds entries that start with a date, matches the names in them to figures in the workbook, and shows the mean before and after that time in a table. That says the two came at the same time, not that one caused the other, and the slide says so. A document with no dated entries has its paragraphs with figures quoted as they are, and those figures are looked for in the workbook. Word tables, pictures, `.doc` and `.hwp` are not read for this.
+
+**Changing the contents.** **Ctrl+R** lists every sheet and figure. Tick what should go in and the slide it makes is drawn beside the list. Nothing in the report changes until you press **Use these contents**.
 
 ### With your own template
 
@@ -157,7 +176,9 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 
 - SlideFill reads the values Excel last **saved**. Save the workbook first.
 - Files with a password or document security (DRM) cannot be read. It tells you so.
-- `.xls` and `.ppt` are not supported. `.xlsm` is read, and its macros never run.
+- Reads `.xlsx .xlsm .xltx .xltm .xls .xlsb .ods .csv .tsv .txt`. Macros never run. A file named `.xls` that is really an HTML table or an `.xlsx` is read too.
+- `.xlsb` and `.ods` give values only, without number formats or merged cells, so 85% shows as 0.85. Save as `.xlsx` if the display matters.
+- `.ppt` is not supported.
 - Placeholders inside SmartArt cannot be filled. They are reported.
 - Dynamic names such as `OFFSET(...)` cannot be resolved. Use an Excel table instead.
 - Unusual number formats (fractions, `[DBNum1]`, conditions like `[>=100]`) fall back to the plain value with a warning.
@@ -179,6 +200,9 @@ The Excel and PowerPoint checks need Office installed, and the format comparison
 
 ```
 app.py              window
+contents.py         the window for changing contents, and dropping files
+readers.py          reads .xls, .xlsb, .ods, .csv and more into one form
+documents.py        reads Word files and lines their dated entries up with figures
 core.py             reads the workbook, fills the template (no GUI, no model)
 facts.py            calculated figures and the language router
 insight.py          candidate sentences from the local model, and their checks

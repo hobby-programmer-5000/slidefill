@@ -84,7 +84,12 @@ For a table with no dates:
 - **The whole** is the total the sheet states. Without one, the items are added and the sentence says "the items' sum", with a warning, because SlideFill cannot know that every column can be added.
 - **A stated total that differs from the items' sum** by over 0.5% means rows overlap, so no shares are given.
 - **Rates, indexes and means** get no shares. This is judged from headings and the sheet's name, so a column with no such word can still be added wrongly.
-- **`소계`** rows are left out of the items, and a catch-all such as `기타` is ranked last.
+- **`소계`** rows are left out of the items, and a catch-all such as `기타` is ranked last. Closing lines merged in from the left column, such as `유료` and `무료`, count as subtotals too.
+- **In a table with a kind on each row**, if the kind column has a line meaning all of them (`FY Subtotal`, `00:소계`, `5합계`), only that line is used. A line with another name counts too if its value equals the other lines added up, date after date (within 2%, at least 90% of the time). The line chosen is written beside the figure's name. Adding the parts to the whole would double the value. When kinds split each name (`월계` and `누계`, `건수` and `연면적`), only the first is used. A column headed `지표` or `Measures` holds different units, so it is split in tables by date as well.
+- **Tables stacked on one sheet** (the same heading and names coming back further down): only the first is read. **Lines indented as in a pivot table** are parts of the line above, so only the outermost level is compared.
+- **An average over time for an amount**, such as `분기별 평균 수출금액`, adds up across items. `평균 단가` and `평균 점수` are averaged.
+- **Identifiers and codes** are not chosen as figures: columns whose name says so (`ABN`, `ISBN`, `FILE NUMBER`, postcodes, latitude), columns that repeat one to one with the words beside them (a species code, an area repeated for each region), and whole numbers of nine or more digits that are all different. Neither are places in an order (`발생차수`, rank, a running number that starts again), dates stored as numbers (`Group End Date`), columns where every line is a year, or lists that mix 0.003 with 6,378,137 in one column. Ages are not added; people are counted instead. If no figure is left, rows are counted or the file is said to be unreadable. This is judged from names and contents, so it can miss one or drop the wrong one, and the window says which figure was taken.
+- **A heading that repeats** takes the merged heading right above it (`일반수출신고 건수`), so a figure for one part does not read as the whole.
 - **Two periods** name the largest rise in percent, the largest in amount if different, and the largest fall. Items under 1% of the largest are not named for moving most. Rates move in points.
 
 - **Level numbers** (`I.`, `1.`, `1-1.`, `(1)`), in two or more kinds, mean only the top level is compared and no shares are given, because adding a parent to its parts means nothing.
@@ -147,7 +152,7 @@ Three stages, with a person at the end. `core.run` never calls a model, and does
 
 1. **Code calculates.** `facts.py` works out the figures. It also finds what is worth noticing: comparisons that point different ways, a value outside the usual range for its weekday, the day least like its usual level.
 2. **The router picks a model.** It counts Hangul and Latin letters in the template and the sheets. A rule does this rather than another model, because it needs no memory and has been right so far.
-3. **The model writes, and checks filter.** The model cites the facts it used, from a list fixed by the output format. A sentence is left out if it holds a number its cited facts do not, states a cause, leaks an internal name, is in the wrong language, or makes a known misreading. A possible cause goes in a separate field, is shown as something to check, and never enters the report.
+3. **The model writes, and checks filter.** The model cites the facts it used, from a list fixed by the output format. A sentence is left out if it holds a number its cited facts do not, makes a comparison they do not (a change against last week written as "a year earlier"), gives the sum or another item's value as one item's, names the figure from a sheet's title or by a guess ("households"), gives a change or a low in a period that had not ended without saying so, judges ("highly concentrated"), states a cause, leaks an internal name, is in the wrong language, or makes a known misreading. A possible cause goes in a separate field, is shown as something to check, and never enters the report.
 
 The person's choice is saved with a fingerprint of the calculated results. When the figures change, the fingerprint no longer matches, and the report goes back to the calculated sentence and says so.
 
@@ -171,3 +176,11 @@ Rows are added by copying an existing body row, so new rows look like the others
 ## Charts
 
 SlideFill replaces the chart's data and its embedded workbook, which is what PowerPoint's "Edit Data" opens. The chart's own formatting is not touched.
+
+## Several files
+
+With two or more files, each is read on its own and gets its own slides, and one overview slide goes first.
+
+The overview's first sentence comes from the code, not the model. It takes each file's lead figure and its change from a year earlier (or from the period before), and says whether they all rose, all fell, or moved in different directions. If the files end at different times, or compare against different periods, it says so and does not compare them.
+
+Whether one file affects another cannot be calculated, so it is never said. In a test with the real model, leaving the comparison to the model gave about 3 sentences out of 24 that truly compared the files, and wrong readings passed the checks. So the code compares, the model only reads the result and suggests sentences, and only a sentence someone chooses goes in the report.

@@ -34,10 +34,15 @@ OTHER_ITEM = re.compile(r"기타|그\s*외|others?|misc\.?|etc\.?", re.I)
 AMOUNT = 0  # the scale of a series whose changes are plain amounts rather than points
 PART_MARK = re.compile(r"[-–·•]\s")
 NESTED_TOLERANCE = 0.001  # a parent's figure is the exact sum of its parts, give or take rounding
+MACHINE_NAME = re.compile(r"[A-Za-z]+(?:_[A-Za-z0-9-]+)+|[a-z]+[A-Z][A-Za-z0-9]*")  # tourStatConfirmManageBiz, RETAINED_CATCH_KG: exported names, in no one's language
+MIN_NESTED_PARENT = 100  # among hospitals with 1, 2 or 3 doctors, 2 = 1 + 1 says nothing: it took 38 doctors out of a list of 127
+MAX_NESTED_ITEMS = 100  # among thousands of companies, one is bound to equal the sum of the next few by chance, and they are not its parts
 CLOSE_SECOND = 1.1  # the first is less than this many times the second: a multiple like 1.0 says nothing
 OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]+\.\s")), ("dash", re.compile(r"\d+-\d+\.")), ("number", re.compile(r"\d+\.(?!\d)")),
            ("paren", re.compile(r"\(\d+\)")), ("hangul", re.compile(r"[가-하]\.")))
 SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
+MAX_LISTED = 6
+SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
 RATE_WORD = re.compile(r"율|률|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
 WEEKDAYS = {"ko": ["월", "화", "수", "목", "금", "토", "일"], "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
 WEEKDAY_PLURALS = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
@@ -66,11 +71,13 @@ class Fact:
     id: str
     text: str
     numbers: tuple
+    figure: str = ""  # on a subject fact: which figure all of a file's facts are about
+    period: str = ""  # and which period is "now"; any other period is only something to compare with
 
 
 def detect_language(texts):
     """The router: which language the report is mostly in, by counting letters. Needs no model and no memory."""
-    joined = " ".join(texts)
+    joined = MACHINE_NAME.sub(" ", " ".join(texts))
     return "ko" if len(HANGUL.findall(joined)) >= len(LATIN.findall(joined)) else "en"
 
 
@@ -656,12 +663,85 @@ def top_level(items):
     return kept if len(kept) >= 2 else None
 
 
+def cross_file_readings(entries, lang="ko"):
+    """What can be said of several files together by calculation alone. entries: (name, change in percent or None, period text, basis). Which way each moved, or why they cannot be compared. How they relate is not in the data, so it is never said."""
+    ko = lang == "ko"
+    known = [entry for entry in entries if entry[1] is not None]
+    if len(known) < 2:
+        return []
+    periods = list(dict.fromkeys(entry[2] for entry in known))
+    if len(periods) > 1:
+        listed = ", ".join(f"{name} {period}" for name, _change, period, _basis in known)
+        return [Fact("cross_periods", f"파일마다 최신 시점이 달라({listed}) 변화 방향을 나란히 비교할 수 없습니다." if ko else f"The files end at different times ({listed}), so which way they moved cannot be compared side by side.", ())]
+    bases = {entry[3] for entry in known}
+    if len(bases) > 1:
+        return [Fact("cross_basis", "파일마다 비교 기준이 달라 변화 방향을 나란히 비교할 수 없습니다." if ko else "The files compare against different periods, so which way they moved cannot be compared side by side.", ())]
+    basis = known[0][3]
+    word = {"year": "전년 같은 기간보다" if ko else "against a year earlier", "prev": "직전보다" if ko else "against the period before"}[basis]
+    moved = []
+    for name, change, _period, _basis in known:
+        if ko:
+            moved.append(f"{name} {abs(change):.1f}% {'증가' if change > 0 else '감소'}" if change else f"{name} 변동 없음")
+        else:
+            moved.append(f"{name} {'up' if change > 0 else 'down'} {abs(change):.1f}%" if change else f"{name} unchanged")
+    signs = {(change > 0) - (change < 0) for _name, change, _period, _basis in known}
+    if signs == {1}:
+        ending = "모두 늘었습니다" if ko else "all rose"
+    elif signs == {-1}:
+        ending = "모두 줄었습니다" if ko else "all fell"
+    elif signs == {1, -1} or len(signs) > 1:
+        ending = "방향이 서로 다릅니다" if ko else "they moved in different directions"
+    else:
+        ending = "변동이 없습니다" if ko else "none changed"
+    text = f"{periods[0]} {word} {', '.join(moved)}로 {ending}." if ko else f"{periods[0]} {word}: {', '.join(moved)}; {ending}."
+    return [Fact("cross_direction", text, tuple(NUMBER.findall(", ".join(moved))))]
+
+
+def separate_lists(items):
+    """True when numbers repeat among the top level, as with I. 유동자산 and I. 유동부채: separate lists on one sheet, whose lines are not rivals."""
+    marks = []
+    for item in items:
+        label = item.label.strip()
+        match = next((pattern.match(label) for _kind, pattern in OUTLINE if pattern.match(label)), None)
+        if match:
+            marks.append(match.group(0).strip())
+    return len(marks) >= 2 and len(set(marks)) < len(marks)
+
+
 def _share(value, total):
     return format_value(value / total, "0.0%")[0]
 
 
 def without_parts(items):
-    """Items with the rows that are parts of another taken out: a bullet in front of the name, or rows that add up exactly to the row above them. None when nothing is nested."""
+    """Items with the rows that are parts of another taken out: a bullet in front of the name, or rows that add up exactly to the row above them. None when nothing is nested.
+
+    In a long list one row can equal the next few by chance. There it counts only when most of the list turns out to be parts, level under level, as in a pivot table of terms, regions and schools.
+    """
+    if len(items) <= MAX_NESTED_ITEMS:
+        return _one_level_of_parts(items, True)
+    kept = _every_level_of_parts(items)
+    if len(kept) * 2 <= len(items) and len(kept) >= 2:
+        return kept
+    return _one_level_of_parts(items, False)
+
+
+def _every_level_of_parts(items):
+    """From the bottom up, so a school is taken into its region before the region is taken into its term."""
+    below = []  # the rows still standing, last row first
+    for item in reversed(items):
+        added = 0
+        for count, later in enumerate(reversed(below), start=1):
+            added += later.value
+            if count >= 2 and item.value and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
+                del below[-count:]
+                break
+            if item.value >= 0 and added > item.value * (1 + NESTED_TOLERANCE):
+                break
+        below.append(item)
+    return below[::-1]
+
+
+def _one_level_of_parts(items, by_sums):
     kept, skip, changed = [], 0, False
     for place, item in enumerate(items):
         if skip:
@@ -672,11 +752,11 @@ def without_parts(items):
             changed = True
             continue
         added = 0
-        for count, later in enumerate(items[place + 1:], start=1):
+        for count, later in enumerate(items[place + 1:] if by_sums else (), start=1):
             if PART_MARK.match(later.label):
                 continue
             added += later.value
-            if count >= 2 and item.value and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
+            if count >= 2 and abs(item.value) >= MIN_NESTED_PARENT and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
                 skip = count
                 break
             if item.value >= 0 and added > item.value * (1 + NESTED_TOLERANCE):
@@ -730,6 +810,8 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
         if not moves and not negative:
             found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
         return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
+    if separate_lists(items):
+        return [Fact("read_separate", SEPARATE_LISTS[lang], ())]
     ordered = ranked_items(items)
     named = [item for item in ordered if not OTHER_ITEM.fullmatch(item.label.strip())] or ordered
     top, second, bottom = ordered[0], ordered[1], named[-1]
@@ -757,6 +839,8 @@ def item_sentence(items, header, show, lang="ko", total=None, additive=True, bef
     if any(item.before is not None for item in items):
         first = item_readings(items, show, lang, total, additive, before_total, limit=1, stated=stated, rate=rate, scale=scale)
         return f"{header}: {first[0].text}" if first else f"{header}."
+    if separate_lists(items):
+        return f"{header}: " + ", ".join(f"{item.label} {show(item.value)}" for item in items[:MAX_LISTED]) + "."
     ordered = ranked_items(items)
     if additive and total:
         tops = ", ".join(f"{item.label} {_share(item.value, total)}" for item in ordered[:3])
