@@ -176,7 +176,7 @@ A.X 4.0 Light is used for Korean. Qwen 3.5 4B is used for English, where its sen
 
 ## Tables
 
-Rows are added by copying an existing body row, so new rows look like the others. If the table has PowerPoint's "Total Row" turned on, the last row stays last. Tables with vertically merged cells cannot change their row count, because copying part of a merge would break it.
+Rows are added by copying an existing body row, so new rows look like the others. If the table has PowerPoint's "Total Row" turned on, the last row stays last. If cells are merged down only in the heading rows, rows come and go at the bottom and the merges stay. A table merged down in its body cannot change its row count, because copying part of a merge would break it. A table that grows as far as a shape that was below it gets a warning.
 
 ## Charts
 

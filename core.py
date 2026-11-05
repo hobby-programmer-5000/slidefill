@@ -107,6 +107,7 @@ HEADING_LOOK_AHEAD = 30
 PIVOT_HEADING = re.compile(r"column labels|row labels|values|열 레이블|행 레이블|값", re.I)
 GRAND_TOTAL = re.compile(r"(?:grand\s+)?total|총합계|합계|총계|전체", re.I)
 UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(（\[]\s*units?\b", re.I)  # not 유통단계별단위명, which is only a column's name
+EARLIER_NAME = re.compile(r"전년|전월|전기|전분기|작년|지난|이전|직전|prior|previous|last\s+(?:year|month|quarter)", re.I)
 UNIT_NOTE_LENGTH = 40
 UNIT_WORD_LENGTH = 20
 UNIT_SCAN_ROWS = 40  # a note may sit under a short table
@@ -602,6 +603,14 @@ def unit_note(ws, rows, columns):
     return "", ""
 
 
+def _reads_backwards(first, second):
+    """Two periods are read first to second. Sheets often put this year first, and 매출 then 전년 read that way turns a rise into a fall with nothing to show for it."""
+    years = [re.search(r"(?:19|20)\d\d", name or "") for name in (first, second)]
+    if all(years):
+        return int(years[0].group(0)) > int(years[1].group(0))
+    return bool(EARLIER_NAME.search(second or "")) and not EARLIER_NAME.search(first or "")
+
+
 def in_per_cent(ws):
     """The sheet itself says its figures are per cent, not merely that a % appears somewhere on it."""
     if "_in_per_cent" not in ws.__dict__:
@@ -630,8 +639,8 @@ def _clean_label(text):
     return "".join(parts) if parts and all(len(part) == 1 for part in parts) else " ".join(parts)
 
 
-def _merged_value(ws, row, column):
-    """The value a person sees in a cell: inside a merged range, that of its first cell."""
+def _merge_origin(ws, row, column):
+    """The first cell of the merged range this cell is in, or None."""
     origins = ws.__dict__.get("_merge_origins")
     if origins is None:
         origins = {}
@@ -640,7 +649,12 @@ def _merged_value(ws, row, column):
                 for c in range(merged.min_col, merged.max_col + 1):
                     origins[(r, c)] = (merged.min_row, merged.min_col)
         ws.__dict__["_merge_origins"] = origins
-    return ws.cell(*origins.get((row, column), (row, column))).value
+    return origins.get((row, column))
+
+
+def _merged_value(ws, row, column):
+    """The value a person sees in a cell: inside a merged range, that of its first cell."""
+    return ws.cell(*(_merge_origin(ws, row, column) or (row, column))).value
 
 
 def _rows_of_an_outer_level(ws, ref, labels):
@@ -1184,8 +1198,19 @@ class ExcelSource:
         date, i, position = self._latest_rows(ref)[-1]
         return self._date_cell(ref, i, position)[1], f"{date.date().isoformat()} · {ref.sheets[i].title}!{_line_name(ref, ref.date)}", self._row_notes(ref, date)
 
+    def _fully_filled(self, rows, ref):
+        """The rows filled as a row of this sheet usually is. Asked only for the date, there is no column to judge by, and a month ahead with only its target written must not pass for the latest."""
+        counts = []
+        for _date, i, position in rows:
+            ws = ref.sheets[i]
+            counts.append(sum(self._has_figure(ws, *ref.at(position, line)) for line in self._other_lines(ws, ref)))
+        usual = Counter(counts).most_common(1)[0][0]
+        return [row for row, count in zip(rows, counts) if count >= usual] or rows
+
     def _latest_text(self, ref, key):
         rows = self._latest_rows(ref)
+        if not ref.plain:
+            rows = self._fully_filled(rows, ref)
         if len(ref.plain) > 1:
             raise IssueError("range_for_text", key=key, source=key)
         newest = rows[-1][0]
@@ -1251,6 +1276,9 @@ class ExcelSource:
         issues = self._row_notes(ref, picked[-1][0])
         if len(picked) != count:
             issues.append(Issue("latest_fewer", {"wanted": count, "found": len(picked)}))
+        gaps = [date for date, i, position in picked if any(ref.sheets[i].cell(*ref.at(position, line)).value in (None, "") for line in ref.plain)]
+        if gaps and len(ref.plain) > 1:  # targets written for the months ahead: their actual figures show as blanks
+            issues.append(Issue("latest_partial_rows", {"count": len(gaps), "first": gaps[0].date().isoformat()}))
         first_sheet = ref.sheets[picked[0][1]]
         top = self._dated_rows(first_sheet, ref)[0][1]
         lines = (ref.date, *ref.plain)
@@ -1635,6 +1663,11 @@ class ExcelSource:
         if is_rate_kind:
             fmt = "0.0%"
         issues = []
+        if len(specs) == 2:
+            first_name = self._header(ws, ref, first or ref.start, specs[0].lines[0] if isinstance(specs[0], Aggregate) else specs[0])
+            second_name = self._header(ws, ref, first or ref.start, first_line)
+            if _reads_backwards(first_name, second_name):
+                issues.append(Issue("cross_backwards", {"first": first_name, "second": second_name}))
         if from_text:
             issues.append(Issue("number_from_text", {"cell": f"{ws.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)}))
         if unlabeled:
@@ -1842,6 +1875,10 @@ class ExcelSource:
             line = []
             for c in range(col, max_col + 1):
                 raw, text, fmt, cell_issues = self.read(ws, r, c)
+                if raw in (None, ""):  # 지역 merged over two rows, with the range starting on the second: a person sees the word there
+                    origin = _merge_origin(ws, r, c)
+                    if origin and not (row <= origin[0] <= max_row and col <= origin[1] <= max_col):
+                        raw, text, fmt, cell_issues = self.read(ws, *origin)
                 line.append((raw, text, fmt))
                 issues.extend(cell_issues)
             rows.append(line)
@@ -2026,6 +2063,17 @@ def _drawn_height(tbl):
     return total
 
 
+def _can_resize_merged(tbl, wanted):
+    """Rows come and go at the bottom, so cells merged down in a heading stay whole: a two-row heading is the usual company table. Merged in the body, a copied or removed row would tear a merge apart."""
+    trs = tbl.tr_lst
+    merged = [place for place, tr in enumerate(trs) if any(tc.get("rowSpan") or tc.get("vMerge") for tc in tr.tc_lst)]
+    if not merged:
+        return True
+    heading = merged[-1] + 1
+    total = 1 if tbl.tblPr is not None and tbl.tblPr.get("lastRow") == "1" else 0
+    return merged == list(range(heading)) and len(trs) - heading - total >= 1 and wanted - heading - total >= 1
+
+
 def fill_table(shape, rows, slide_height, in_group, skip=0):
     """Fill a table from its top-left cell, leaving the first skip rows as they are. Returns issues.
 
@@ -2035,9 +2083,9 @@ def fill_table(shape, rows, slide_height, in_group, skip=0):
     n_cols = len(tbl.tblGrid.gridCol_lst)
     if len(rows[0]) != n_cols:
         return [Issue("column_mismatch", {"range": len(rows[0]), "table": n_cols})]
-    spans_rows = any(tc.get("rowSpan") or tc.get("vMerge") for tr in tbl.tr_lst for tc in tr.tc_lst)
-    if spans_rows and len(rows) != len(tbl.tr_lst):
+    if len(rows) != len(tbl.tr_lst) and not _can_resize_merged(tbl, len(rows)):
         return [Issue("merged_resize", {})]
+    bottom_before = shape.top + _drawn_height(tbl) if not in_group else 0
     _resize_rows(tbl, len(rows))
     issues = []
     for tr, line in zip(tbl.tr_lst[skip:], rows[skip:]):
@@ -2051,7 +2099,21 @@ def fill_table(shape, rows, slide_height, in_group, skip=0):
         shape.height = sum(tr.h for tr in tbl.tr_lst)
         if shape.top + _drawn_height(tbl) > slide_height:
             issues.append(Issue("table_overflow", {"rows": len(rows)}))
+        covered = _shape_now_covered(shape, bottom_before, shape.top + _drawn_height(tbl))
+        if covered:
+            issues.append(Issue("table_covers", {"rows": len(rows), "name": covered}))
     return issues
+
+
+def _shape_now_covered(table, bottom_before, bottom_after):
+    """The name of a shape that was clear below a table and is under it now that it has grown. A table that grew last month is the usual cause, and the slide looks wrong with no error anywhere."""
+    for other in table._parent:
+        if other.shape_id == table.shape_id or None in (other.top, other.left, other.width):
+            continue
+        beside = other.left < table.left + table.width and other.left + other.width > table.left
+        if beside and bottom_before <= other.top < bottom_after:
+            return other.name
+    return ""
 
 
 def _chart_number_format(rows):
@@ -2270,10 +2332,19 @@ class _Run:
                 continue
             if isinstance(part, XmlPart) and not name.startswith(("/ppt/diagrams/", "/ppt/charts/")):
                 continue
+            if name.startswith("/ppt/diagrams/drawing"):  # PowerPoint's drawn copy of the SmartArt beside it, not a second place to fix
+                continue
             if not PLACEHOLDER.search(part.blob.decode("utf-8", "ignore")):
                 continue
             item = self.item("unsupported", name, ("part", name))
-            self.add_issues(item, [Issue("unsupported_location", {"part": name})])
+            self.add_issues(item, [Issue("unsupported_location", {"part": name, "slide": self.slide_holding(part)})])
+
+    def slide_holding(self, part):
+        """The number of the slide that uses a part, so a person can find it."""
+        for number, slide in enumerate(self.prs.slides, start=1):
+            if any(not rel.is_external and rel.target_part is part for rel in slide.part.rels.values()):
+                return number
+        return "?"
 
 
 def _chart_error_as_warning(issue):

@@ -127,7 +127,7 @@ A table with no dates reads its first column as the names of items.
 | You want | Type this |
 |---|---|
 | The largest and its share | `{{reading:Table!A,B}}` |
-| What moved between two periods | `{{reading:Table!A,B,C}}` |
+| What moved between two periods | `{{reading:Table!A,B,C}}` (B the earlier, C the later; a warning if the headings look the other way) |
 | The largest item's name, value, share | `{{top1:Table!A,B}}`, `{{topvalue1:Table!A,B}}`, `{{share1:Table!A,B}}` |
 | A table and chart of the top 5 | Alt text: `{{table:share5:Table!A,B}}`, `{{chart:top5:Table!A,B}}` |
 
@@ -180,9 +180,10 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - Reads `.xlsx .xlsm .xltx .xltm .xls .xlsb .ods .csv .tsv .txt`. Macros never run. A file named `.xls` that is really an HTML table or an `.xlsx` is read too.
 - `.xlsb` and `.ods` give values only, without number formats or merged cells, so 85% shows as 0.85. Save as `.xlsx` if the display matters.
 - `.ppt` is not supported.
-- Placeholders inside SmartArt cannot be filled. They are reported.
+- Placeholders inside SmartArt cannot be filled. They are reported, with the slide they are on.
+- A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
 - Dynamic names such as `OFFSET(...)` cannot be resolved. Use an Excel table instead.
-- Unusual number formats (fractions, `[DBNum1]`, conditions like `[>=100]`) fall back to the plain value with a warning.
+- Unusual number formats (fractions, `[DBNum1]` and the like) fall back to the plain value with a warning. Conditions such as `[>=5]#,##0` show as Excel shows them.
 - Thousands and decimal separators are always `,` and `.`.
 
 ## How it is checked

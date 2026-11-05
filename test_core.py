@@ -1493,12 +1493,12 @@ class DataShapes(Base):
         self.assertEqual([[cell[1] for cell in line] for line in rows], [["구분", "수입", "%"], ["KTX", "700", "70.0%"], ["새마을", "200", "20.0%"]])
 
     def test_a_rank_table_fills_a_slide_and_a_chart(self):
-        frame = self.slide.shapes.add_table(2, 3, 0, 0, 914400, 914400)
+        frame = self.slide.shapes.add_table(2, 3, 0, 0, 8229600, 914400)
         frame._element.xpath(".//p:cNvPr")[0].set("descr", "{{표:구성비3:표!A,B}}")
         data = CategoryChartData()
         data.categories = ["A", "B"]
         data.add_series("S", [1, 2])
-        chart = self.slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, 0, 914400, 914400, 914400, data)
+        chart = self.slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, 0, 914400 * 3, 914400, 914400, data)  # clear of the table once it has grown
         chart._element.xpath(".//p:cNvPr")[0].set("descr", "{{차트:순위3:표!A,B}}")
         report, out = self.go(self.sheets(표=self.SHARES))
         self.assertEqual({item.status for item in report.items}, {"ok"})
@@ -2972,6 +2972,154 @@ class TriedReports(Base):
         word = self.docx("설명.docx", ["이 문서는 자료의 범위와 집계 방식을 설명하는 긴 문단이며, 값을 해석할 때 유의할 점을 충분히 길게 적어 둔 문장입니다. 그래서 슬라이드에 그대로 옮길 수 있습니다."])
         titles = [section.title for section in suggest.plan_files(core.Sources([one, two, word])).sections]
         self.assertEqual(titles, ["", "설명", "하나", "둘"])
+
+
+class CompanyTemplates(Base):
+    """What a company-style template made in real PowerPoint and Excel turned up, on 2026-11-05."""
+
+    def table_book(self, rows, merged=()):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        for row in rows:
+            ws.append(row)
+        for cells in merged:
+            ws.merge_cells(cells)
+        path = os.path.join(self.dir, "표.xlsx")
+        wb.save(path)
+        return path
+
+    def table_template(self, rows, columns, key, merges=(), top=1.0, height=0.3, below=None):
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        frame = slide.shapes.add_table(rows, columns, Inches(0.5), Inches(top), Inches(8), Inches(height * rows))
+        for row in frame.table.rows:
+            row.height = Inches(height)
+        frame._element.xpath(".//p:cNvPr")[0].set("descr", "{{표:" + key + "}}")
+        for first, last in merges:
+            frame.table.cell(*first).merge(frame.table.cell(*last))
+        if below is not None:
+            box = slide.shapes.add_textbox(Inches(0.5), Inches(below), Inches(8), Inches(0.5))
+            box.name = "아래 글"
+            box.text_frame.text = "설명"
+        path = os.path.join(self.dir, "표.pptx")
+        prs.save(path)
+        return path
+
+    DATA = [["지역", "지점", "당월", None], [None, None, "매출", "목표"]] + [[f"권역{n}", f"지점{n}", 100 + n, 200 + n] for n in range(5)]
+
+    def filled(self, template, excel, key="error"):
+        out = os.path.join(self.dir, "out.pptx")
+        if os.path.exists(out):
+            os.remove(out)
+        report = core.run(template, excel, out)
+        return report, Presentation(out)
+
+    def test_a_two_row_merged_heading_can_grow_and_keeps_its_merges(self):
+        excel = self.table_book(self.DATA, ("A1:A2", "B1:B2", "C1:D1"))
+        template = self.table_template(4, 4, "표!A1:D7", (((0, 0), (1, 0)), ((0, 1), (1, 1)), ((0, 2), (0, 3))))
+        report, prs = self.filled(template, excel)
+        self.assertEqual(report.count("error"), 0, [(i.key, [x.code for x in i.issues]) for i in report.items])
+        table = next(s for s in prs.slides[0].shapes if s.has_table).table
+        self.assertEqual(len(table.rows), 7)
+        self.assertEqual(table.cell(0, 0).text, "지역")
+        self.assertTrue(table.cell(0, 0).is_merge_origin)
+        self.assertEqual(table.cell(0, 0).span_height, 2)
+        self.assertEqual(table.cell(0, 2).span_width, 2)
+        self.assertEqual(table.cell(6, 3).text, "204")
+
+    def test_a_two_row_merged_heading_can_shrink(self):
+        excel = self.table_book(self.DATA[:3], ("A1:A2", "B1:B2", "C1:D1"))
+        template = self.table_template(6, 4, "표!A1:D3", (((0, 0), (1, 0)), ((0, 1), (1, 1))))
+        report, prs = self.filled(template, excel)
+        self.assertEqual(report.count("error"), 0)
+        self.assertEqual(len(next(s for s in prs.slides[0].shapes if s.has_table).table.rows), 3)
+
+    def test_cells_merged_in_the_body_still_refuse_to_resize(self):
+        excel = self.table_book(self.DATA)
+        template = self.table_template(4, 4, "표!A1:D7", (((2, 0), (3, 0)),))
+        report, _prs = self.filled(template, excel)
+        self.assertEqual([x.code for i in report.items for x in i.issues], ["merged_resize"])
+
+    def test_a_merge_cannot_be_cut_through_by_shrinking(self):
+        excel = self.table_book(self.DATA[:1])
+        template = self.table_template(4, 4, "표!A1:D1", (((0, 0), (1, 0)),))
+        report, _prs = self.filled(template, excel)
+        self.assertEqual([x.code for i in report.items for x in i.issues], ["merged_resize"])
+
+    def test_a_range_starting_inside_a_merge_shows_the_word_a_person_sees(self):
+        source = core.ExcelSource(self.table_book(self.DATA, ("A1:A2", "B1:B2", "C1:D1")))
+        rows = source.range_cells("표!A2:D3")[0]
+        self.assertEqual([cell[1] for cell in rows[0]], ["지역", "지점", "매출", "목표"])
+        whole = source.range_cells("표!A1:D2")[0]
+        self.assertEqual(whole[1][0][1], "")  # the word is already in the range, above it
+
+    def test_the_latest_date_is_not_a_month_with_only_its_target_written(self):
+        rows = [["월", "실적", "목표", "이익"]] + [[f"2026-{m:02d}", 10 + m, 20, 1 + m] for m in range(1, 11)] + [["2026-11", None, 21, None], ["2026-12", None, 22, None]]
+        source = core.ExcelSource(self.table_book(rows))
+        text, _where, issues = source.text_value("최신:표!A")
+        self.assertEqual(text, "2026-10")
+        self.assertEqual([issue.code for issue in issues], ["latest_older"])
+
+    def test_the_latest_date_stays_when_rows_are_filled(self):
+        rows = [["월", "실적", "목표"]] + [[f"2026-{m:02d}", 10 + m, 20] for m in range(1, 11)]
+        text, _where, issues = core.ExcelSource(self.table_book(rows)).text_value("최신:표!A")
+        self.assertEqual((text, issues), ("2026-10", []))
+
+    def test_rows_shown_with_empty_columns_are_mentioned(self):
+        rows = [["월", "실적", "목표"]] + [[f"2026-{m:02d}", 10 + m, 20] for m in range(1, 11)] + [["2026-11", None, 21]]
+        source = core.ExcelSource(self.table_book(rows))
+        codes = [issue.code for issue in source.range_cells("최신3:표!A,B,C")[2]]
+        self.assertIn("latest_partial_rows", codes)
+        self.assertNotIn("latest_partial_rows", [issue.code for issue in source.range_cells("최신3:표!A,C")[2]])
+
+    def test_this_year_before_last_year_is_warned_about(self):
+        rows = [["제품", "매출", "전년"], ["가", 120, 100], ["나", 80, 90], ["다", 50, 40], ["라", 30, 20]]
+        codes = [issue.code for issue in core.ExcelSource(self.table_book(rows)).text_value("읽는법:표!A,B,C")[2]]
+        self.assertIn("cross_backwards", codes)
+        self.assertNotIn("cross_backwards", [issue.code for issue in core.ExcelSource(self.table_book(rows)).text_value("읽는법:표!A,C,B")[2]])
+
+    def test_two_years_written_newest_first_are_warned_about(self):
+        rows = [["제품", "2025년", "2024년"], ["가", 120, 100], ["나", 80, 90], ["다", 50, 40]]
+        source = core.ExcelSource(self.table_book(rows))
+        self.assertIn("cross_backwards", [issue.code for issue in source.text_value("읽는법:표!A,B,C")[2]])
+        self.assertNotIn("cross_backwards", [issue.code for issue in source.text_value("읽는법:표!A,C,B")[2]])
+
+    def test_a_table_that_grows_over_a_shape_below_is_warned_about(self):
+        rows = [["지점", "매출"]] + [[f"지점{n}", 100 + n] for n in range(9)]
+        excel = self.table_book(rows)
+        report, _prs = self.filled(self.table_template(3, 2, "표!A1:B10", top=1.0, height=0.4, below=3.0), excel)
+        found = [x for i in report.items for x in i.issues if x.code == "table_covers"]
+        self.assertEqual(found[0].params["name"], "아래 글")
+        report, _prs = self.filled(self.table_template(3, 2, "표!A1:B3", top=1.0, height=0.4, below=3.0), excel)
+        self.assertEqual([x.code for i in report.items for x in i.issues if x.code == "table_covers"], [])
+
+    def test_smartart_is_listed_once_and_says_which_slide(self):
+        wb_path = self.table_book([["이름"], ["값"]])
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[6])
+        second = prs.slides.add_slide(prs.slide_layouts[6])
+        second.shapes.add_textbox(0, 0, 100, 100).text_frame.text = "{{표!A2}}"
+        plain = os.path.join(self.dir, "plain.pptx")
+        prs.save(plain)
+        patched = os.path.join(self.dir, "smart.pptx")
+        with zipfile.ZipFile(plain) as src, zipfile.ZipFile(patched, "w") as dst:
+            for info in src.infolist():
+                data = src.read(info.filename)
+                if info.filename == "[Content_Types].xml":
+                    data = data.replace(b"</Types>", (b'<Override PartName="/ppt/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>'
+                                                      b'<Override PartName="/ppt/diagrams/drawing1.xml" ContentType="application/vnd.ms-office.drawingml.diagramDrawing+xml"/></Types>'))
+                if info.filename == "ppt/slides/_rels/slide2.xml.rels":
+                    data = data.replace(b"</Relationships>", (b'<Relationship Id="rId98" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/>'
+                                                              b'<Relationship Id="rId99" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="../diagrams/drawing1.xml"/></Relationships>'))
+                dst.writestr(info, data)
+            dst.writestr("ppt/diagrams/data1.xml", "<x>{{매출}}</x>")
+            dst.writestr("ppt/diagrams/drawing1.xml", "<x>{{매출}}</x>")
+        report = core.run(patched, wb_path)
+        found = [item for item in report.items if item.kind == "unsupported"]
+        self.assertEqual([item.key for item in found], ["/ppt/diagrams/data1.xml"])
+        self.assertEqual(found[0].issues[0].params["slide"], 2)
+        self.assertIn("슬라이드 2", i18n.text("ko", "issue_unsupported_location", **found[0].issues[0].params))
 
 
 class WordDocuments(Base):
