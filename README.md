@@ -13,7 +13,8 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 ## Features
 
 - **A report from the workbook alone**: choose a file and SlideFill reads the sheet, chooses the contents, and shows the real values first. If it took the wrong figure, change it with Ctrl+R. This is an automatic judgement, so check the values before you create the report.
-- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that mean nothing added, only counting rows, or tables stacked on one sheet, it shows why and asks before making the report. It will not catch every mistake.
+- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that look meaningless added, only counting rows, or tables stacked on one sheet, it shows why and asks before making the report. If you keep the choice, the slide says the value was not confirmed. It will not catch every mistake.
+- **It keeps what a value means**: levels such as heating values or concentrations are averaged, not added. Figures on a sheet whose stated unit is per cent are written in per cent and points. A period still running is not compared with others.
 - **Text**: `{{Sales}}` or `{{Summary!B3}}` anywhere: text boxes, table cells, groups, notes, chart titles, slide masters. Your fonts and colors stay.
 - **Tables**: fills a PowerPoint table from a range, adding or removing rows to fit. Total rows stay at the bottom.
 - **Charts**: replaces chart data and keeps the chart's style. "Edit Data" in PowerPoint shows the new numbers.
@@ -69,7 +70,7 @@ If your slides are already laid out, use a template as below.
 
 **Several files.** Drag files onto the window, or press **Add files**, and the report opens with an overview: which way the figures moved across the files, calculated, then each file's main sentence, then each file's slide. Files that end at different times are not compared, and the slide says so. In **Ctrl+I**, "All the files together" asks the model for a sentence about them. How one file affects another is not in the data, so sentences that claim it are left out.
 
-**With a Word document.** Add a `.docx` with your workbook and it gets its own slide. SlideFill finds entries that start with a date, matches the names in them to figures in the workbook, and shows the mean before and after that time in a table. That says the two came at the same time, not that one caused the other, and the slide says so. A document with no dated entries has its paragraphs with figures quoted as they are, and those figures are looked for in the workbook. Word tables, pictures, `.doc` and `.hwp` are not read for this.
+**With a Word document.** Add a `.docx` with your workbook and it gets its own slide. SlideFill finds entries that start with a date, matches the names in them to figures in the workbook, and shows the mean before and after that time in a table. That says the two came at the same time, not that one caused the other, and the slide says so. A document with no dated entries has its cautions and description quoted as they are, and its figures are looked for in the workbook. With several files, a document that shares a folder with only one workbook comes just before that workbook's slides. Word tables, pictures, `.doc` and `.hwp` are not read for this.
 
 **Changing the contents.** **Ctrl+R** lists every sheet and figure. Tick what should go in and the slide it makes is drawn beside the list. Nothing in the report changes until you press **Use these contents**.
 

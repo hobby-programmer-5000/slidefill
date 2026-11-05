@@ -699,6 +699,8 @@ def main():
     root.update()
     wait(root, ui)
     check("keeping it makes the report", len([name for name in os.listdir(work) if name.startswith("doubtful") and name.endswith(".pptx")]) == len(made_before) + 1 and ui.status[0] == "saved", str(ui.status))
+    kept_words = " ".join(shape.text_frame.text for slide in Presentation(ui.last_output).slides for shape in slide.shapes if shape.has_text_frame)
+    check("the report says what was kept unconfirmed", "※" in kept_words, kept_words[:200])
     press(root, "<Control-g>")
     wait(root, ui)
     check("having kept it, it does not ask again", ui.doubt_window is None and ui.status[0] == "saved", str(ui.status))

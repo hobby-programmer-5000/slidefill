@@ -79,6 +79,11 @@ MEAN_NAME = re.compile(r"평균|가격|단가|율|률|점수|\b(?:price|rate|rat
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
+KIND_COLUMN = re.compile(r"항목|종류|구분|측정|분류|parameter|measures?\b|metric|indicator|\b(?:type|kind)\b", re.I)  # what the rows are measurements of, not who or where
+PERIOD_IN_TITLE = re.compile(r"(?:19|20)\d\d\s*년(?:\s*\d{1,2}\s*월)?(?:\s*\d\s*분기)?|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d\d\b", re.I)
+PERIOD_TITLE_ROWS = 6
+PERIOD_TITLE_COLUMNS = 5
+PERIOD_TITLE_LENGTH = 60
 NEVER_ADDED_NAME = re.compile(r"나이|연령(?!별)|근속|\b(?:age|tenure)\b", re.I)  # whatever else the sheet holds, adding people's ages says nothing
 UNLIKE_MIN_LARGEST = 100000
 UNLIKE_SHARE = 0.1  # so many values below one, beside values in the hundreds of thousands, are not the same kind of thing
@@ -106,7 +111,7 @@ TABLE_ROW = 0.3
 TABLE_POINTS = 13
 SLIDE_CHARACTERS = 1100  # characters × points that fit across the full width, for mixed Korean and digits
 AXIS_FORMAT = "[>=1000]#,##0;General"  # 7,000,000 can be read, and a small figure such as 0.2 keeps its decimal
-QUIET_CODES = ("reading", "by_item", "insight", "doc_reading", "doc_quote")  # what explains the main sentence, set smaller beneath it
+QUIET_CODES = ("reading", "change", "by_item", "insight", "doc_reading", "doc_quote", "doubt_note")  # what explains the main sentence, set smaller beneath it
 RULE_AT = 1.28
 WIDE_ROW = 0.42
 WIDE_POINTS = 11
@@ -137,6 +142,8 @@ class Value:
     name: str
     every_row: bool = False  # the sum of every line, as when each row is one harbor
     counted: bool = False  # nothing to add up, so rows are counted
+    reaches_newest: bool = True  # False when the sheet's newest period has no figure for it: a programme that ended years ago
+    size: float = 0  # how large its figures are together, for telling a grand total from a part of it
 
 
 @dataclass
@@ -186,7 +193,7 @@ class Suggestion:
 
     @property
     def typed(self):
-        return "{{" + self.key + "}}"
+        return self.result if self.place == "plain" else "{{" + self.key + "}}"  # plain: words for the slide, with nothing to look up
 
 
 @dataclass
@@ -202,6 +209,7 @@ class Section:
     file: int = 0
     cross: str = ""  # the key of a sentence about several files together, once someone chooses one
     wide: bool = False  # a table across the whole slide, under the sentences
+    period: str = ""  # the time its figures are for, when a sheet says so only in its title
 
     @property
     def items(self):
@@ -429,6 +437,7 @@ def _read_date_base(source, ws, spec, by_row, codes):
     lines = set(ref.date_parts or (ref.date,))
     base = Base("date", used, base_name, first=min(dates).date().isoformat(), last=max(dates).date().isoformat(), count=len(set(dates)), notes=notes)
     other_count = ws.max_row if by_row else min(ws.max_column, SAMPLE_COLUMNS)
+    newest_position = max(dated)[1]
     stepping = []  # 1, 2, 3 is most likely a running number, but it may be all the sheet has
     sample = positions[:SAMPLE_ROWS] if not many else positions[:SAMPLE_ROWS]
     # Rows under a date with no date of their own belong to it, as with merged cells.
@@ -449,7 +458,8 @@ def _read_date_base(source, ws, spec, by_row, codes):
         dates_too = sum(core.as_date(v) is not None for v in filled) >= len(filled) * 0.8  # 20080625 is a day, and adding days means nothing
         code = not by_row and (codes.get(line, 0) >= CODE_VALUES_BESIDE_DATES or (many and _long_identifiers(numbers)))  # a book's number under each year; a series of large values has one per date
         if count >= max(len(filled) * 0.5, 2) and _names_a_figure(name) and not years_only and not dates_too and not code:
-            (stepping if _steps_by_one(numbers) else base.values).append(Value(_name(line, by_row), name))
+            reaches = many or core.as_number(ws.cell(*ref.at(newest_position, line)).value) is not None
+            (stepping if _steps_by_one(numbers) else base.values).append(Value(_name(line, by_row), name, reaches_newest=reaches, size=sum(abs(number) for number in numbers if number)))
         elif code:
             continue
         elif not by_row:
@@ -640,12 +650,28 @@ def _joined_by_sum(source, pattern, ws, dated, value):
 
 
 def default_value(base):
-    """The figure a report most likely wants: a total if one is named, else the first."""
+    """The figure a report most likely wants: a total if one is named, else the first. One that stops before the sheet's newest period gives way to one that does not: a programme that ended in 2021-22 says little about a file that runs to 2024-25."""
     plain = [v for v in base.values]
     if not plain:
         return None
+    every_row = next((v for v in plain if v.every_row), None)
+    if every_row:
+        return every_row
     named_total = [v for v in plain if TOTAL_NAME.search(v.name)]
-    return next((v for v in plain if v.every_row), None) or next((v for v in named_total if ENDS_AS_TOTAL.search(v.name)), None) or next(iter(named_total), None) or plain[0]
+    ends_as_total = [v for v in named_total if ENDS_AS_TOTAL.search(v.name)]
+    chosen = next(iter(ends_as_total), None) or next(iter(named_total), None) or plain[0]
+    if chosen.reaches_newest:
+        return chosen
+    for totals in (ends_as_total, named_total):
+        running = [v for v in totals if v.reaches_newest]
+        if running:
+            return max(running, key=lambda v: v.size)  # a grand total is at least as large as any part of it
+    return next((v for v in plain if v.reaches_newest), chosen)
+
+
+def _is_level(name):
+    """A heating value, a concentration or a temperature: something each row has, not an amount the rows hold between them. Adding them up says only how many rows there are."""
+    return bool(name) and LEVEL_NAME.search(re.sub(r"\s+", "", name)) is not None and not AVERAGE_OVER_TIME.search(name)
 
 
 def default_how(base, value):
@@ -662,6 +688,8 @@ def default_how(base, value):
         return "mean"
     if value is not None and NEVER_ADDED_NAME.search(value.name):
         return "count" if base.kind == "name" else "mean"
+    if value is not None and _is_level(value.name):
+        return "mean"
     # Rows of named things, such as staff by department: the column could be anything, an age or a salary, so it is only added if it says it is an amount.
     if base.kind == "name" and not (value is not None and AMOUNT_NAME.search(value.name)) and not _splits_by_group(base):
         return "count"
@@ -796,9 +824,13 @@ def default_conditions(source, shape, base, value, how):
     ref = source._parse_ref(f"{shape.sheet}!{base.spec}", base.spec)
     rows = [(date, position) for date, position in source._dated_rows(ws, ref)][:SAMPLE_ROWS]
     chosen = []
+    # Each company's heating value can be averaged, so 회사 is left alone. BOD beside COD cannot, so a column of kinds still narrows it to one.
+    level_only = value is not None and _is_level(value.name) and not MEAN_NAME.search(value.name)
     for group in base.groups:
         if len({date for date, _p in rows}) == len(rows):
             break
+        if level_only and not KIND_COLUMN.search(group.name):
+            continue
         line = core.column_index_from_string(group.spec)
         narrowed = [(d, p) for d, p in rows if str(ws.cell(*ref.at(p, line)).value).strip() == group.values[0]]
         if narrowed:
@@ -916,6 +948,9 @@ def suggestions(source, shape, base, value=None, how=None, conditions=(), lang="
     change = two_periods(source, shape, base)
     if change and not conditions:
         made.insert(0, _try(source, "change", f"{word('reading', lang)}:{shape.sheet}!{base.spec},{change[0]},{change[1]}", "text"))
+    elif change and change[1] == value.spec and how == "sum":  # 월계 beside 누계: the same condition on both years
+        older = value_spec(Value(change[0], ""), how, conditions, lang)
+        made.insert(0, _try(source, "change", f"{word('reading', lang)}:{shape.sheet}!{base.spec},{older},{value_spec(value, how, conditions, lang)}", "text"))
     # By item, in the newest period: one reference a long table of dates and names usually wants.
     group = next((g for g in base.groups if not ID_NAME.search(g.name)), None) if not _across(base) else None  # the days of the week are no one's idea of items
     if base.kind == "date" and group and base.date_spec and base.newest_word and how != "rate":
@@ -955,7 +990,7 @@ def find_doubts(source, shape, base, value, found):
     if how == "count" or value.counted:
         add("count_only")
     numbers = _figure_rows(ws, value)
-    if how == "sum" and not AVERAGE_OVER_TIME.search(name) and (LEVEL_NAME.search(re.sub(r"\s+", "", name)) or (base.many_rows and _nearly_the_same(list(numbers.values())))):
+    if how == "sum" and not AVERAGE_OVER_TIME.search(name) and base.many_rows and _nearly_the_same(list(numbers.values())):  # a level by its name is averaged already
         add("sum_of_levels")
     if core.BOUNDED_LINE.fullmatch(base.spec) or any(code == "note_first_table" for code, _params in base.notes):
         add("first_table")
@@ -963,9 +998,10 @@ def find_doubts(source, shape, base, value, found):
         add("heading_below")
     if base.kind == "date" and value.spec.isalpha() and _figures_without_dates(source, ws, shape, base, numbers):
         add("dates_sparse")
-    if how not in ("mean", "count") and not facts.is_rate(name) and _says_per_cent(ws):
+    if how not in ("mean", "count") and not facts.is_rate(name) and not core.in_per_cent(ws) and _says_per_cent(ws):  # a note that says so outright is simply believed
         add("maybe_percent")
-    if sum(isinstance(ws.cell(row, column).value, str) and TABLE_LINE.match(ws.cell(row, column).value.strip()) is not None for row in range(1, min(ws.max_row, SAMPLE_ROWS) + 1) for column in range(1, min(ws.max_column, TITLE_COLUMNS) + 1)) >= 2:
+    last_row, last_column = min(ws.max_row, SAMPLE_ROWS), min(ws.max_column, TITLE_COLUMNS)  # each asks every cell on the sheet, so once only
+    if sum(isinstance(ws.cell(row, column).value, str) and TABLE_LINE.match(ws.cell(row, column).value.strip()) is not None for row in range(1, last_row + 1) for column in range(1, last_column + 1)) >= 2:
         add("several_tables")
     codes = {issue.code for item in found for issue in item.issues}
     if "cross_total_differs" in codes:
@@ -1024,7 +1060,7 @@ def _added_or_shown(base, figures):
 
 def describe(shape, *values):
     """Which figures were taken, in words a person can check against the workbook."""
-    names = ", ".join(value.name for value in values if value and not (value.every_row or value.counted))
+    names = ", ".join(facts.readable_name(value.name) for value in values if value and not (value.every_row or value.counted))
     return " · ".join(part for part in (shape.sheet, names) if part)
 
 
@@ -1048,16 +1084,31 @@ def heading(source, shape, title=""):
     return " · ".join(parts)
 
 
+def _period_words(ws, value):
+    """The time a table with no dates is for, when only its title says: 2026년 6월 건축 통계표. Two dates in a title are a span, and a figure named for its year says so itself."""
+    if value is not None and YEAR_IN_NAME.search(value.name or ""):
+        return ""
+    for row in range(1, min(ws.max_row, PERIOD_TITLE_ROWS) + 1):
+        for column in range(1, min(ws.max_column, PERIOD_TITLE_COLUMNS) + 1):
+            cell = ws._cells.get((row, column))
+            text = cell.value if cell is not None and isinstance(cell.value, str) else ""
+            found = PERIOD_IN_TITLE.findall(text) if len(text) <= PERIOD_TITLE_LENGTH else []
+            if len(found) == 1:
+                return " ".join(found[0].split())
+    return ""
+
+
 def _unit_words(ws):
     """A note such as (단위: 백만원) near the top, or a column headed 단위 that says the same thing in every row."""
+    note = core.unit_note(ws, UNIT_ROWS, UNIT_COLUMNS)[0]
+    if note:
+        return [note]
     for row in range(1, min(ws.max_row, UNIT_ROWS) + 1):
         for column in range(1, min(ws.max_column, UNIT_COLUMNS) + 1):
             raw = ws.cell(row, column).value
             if not isinstance(raw, str):
                 continue
             text = raw.strip()
-            if UNIT_NOTE.search(text) and len(text) <= UNIT_LENGTH:
-                return [text]
             if UNIT_HEADING.fullmatch(text):
                 below = {str(ws.cell(place, column).value).strip() for place in range(row + 1, min(ws.max_row, row + SAMPLE_ROWS) + 1) if ws.cell(place, column).value not in (None, "")}
                 if len(below) == 1 and len(next(iter(below))) <= UNIT_VALUE_LENGTH:
@@ -1095,6 +1146,9 @@ def _section(source, shape, base, value, found, lang, figures=None):
         for item in items:
             item.figure = figure.name if not (figure.every_row or figure.counted) else ""
     words = heading(source, shape)
+    period = _period_words(source._sheet(shape.sheet), value) if base.kind == "name" else ""
+    if period and period not in words:
+        words = " · ".join(part for part in (period, words) if part)
     sentences = []
     for number, items in enumerate(made):
         chosen = _sentence_items({item.code: item for item in items if item.status != "error"})
@@ -1110,7 +1164,7 @@ def _section(source, shape, base, value, found, lang, figures=None):
         together = _comparable(figures, made)[:MAX_TABLE_FIGURES]
         chart = _together(source, shape, base, together, "chart", word("latest", lang) + "12", lang) if len(together) > 1 else chart
         chart = chart or _table_and_chart({item.code: item for item in found if item.status != "error"})[1]
-    return Section(words, sentences, table, chart, figures, sheet=shape.sheet)
+    return Section(words, sentences, table, chart, figures, sheet=shape.sheet, period=period)
 
 
 def section_for(source, shape, base, figures, found, lang="ko"):
@@ -1189,7 +1243,7 @@ def overview(sections, names, lang="ko", source=None):
         lead = next((item for item in section.sentences if item.code == "note"), None) or next(iter(section.sentences), None)
         if lead is not None:
             seen.add(section.file)
-            sentences.append(replace(lead, label=names[section.file], figure=""))
+            sentences.append(replace(lead, label=" · ".join(part for part in (names[section.file], section.period) if part), figure=""))
             references.append(lead.key.partition(":")[2])
     together = "|".join(references)
     key = f"{word('insight', lang)}:{core.ALL_FILES}{together}"
@@ -1282,7 +1336,30 @@ def plan_files(sources, lang="ko"):
 def with_documents(sections, sources, lang="ko"):
     """The overview first, then a slide for each document, then each workbook's slides: the reader meets what happened before the detail."""
     pages = [document_section(sources, number, lang) for number in range(len(sources.documents))]
-    return [overview(sections, sources.names, lang, sources)] + pages + sections
+    first, placed = [], {}
+    for document, page in zip(sources.documents, pages):
+        workbook = _workbook_beside(document, sources)
+        if workbook is None:
+            first.append(page)
+        else:
+            placed.setdefault(workbook, []).append(page)
+            if len(sources.sources) > 1:
+                page.title = f"{sources.names[workbook]} · {page.title}"
+    ordered, seen = [], set()
+    for section in sections:
+        if section.file not in seen:
+            seen.add(section.file)
+            ordered += placed.get(section.file, [])
+        ordered.append(section)
+    ordered += [page for workbook, group in placed.items() if workbook not in seen for page in group]
+    return [overview(sections, sources.names, lang, sources)] + first + ordered
+
+
+def _workbook_beside(document, sources):
+    """The one workbook kept in the document's folder, which it most likely describes. None when files all share a folder and nothing says which."""
+    folder = os.path.dirname(os.path.abspath(document.path))
+    beside = [number for number, source in enumerate(sources.sources) if os.path.dirname(os.path.abspath(source.path)) == folder]
+    return beside[0] if len(beside) == 1 else None
 
 
 def _slide_words(title, sections):
@@ -1366,7 +1443,7 @@ def one_section(found, words=""):
 
 def _sentence_items(by_code):
     """A bare figure says nothing the sentence does not, so it is only used when there is no sentence."""
-    return [by_code[code] for code in ("note", "reading", "by_item") if code in by_code] or [by_code[code] for code in ("latest", "top") if code in by_code]
+    return [by_code[code] for code in ("note", "reading", "change", "by_item") if code in by_code] or [by_code[code] for code in ("latest", "top") if code in by_code]
 
 
 def _table_and_chart(by_code):
@@ -1396,33 +1473,38 @@ def make_starter(path, title, found, words=""):
 
 
 def make_report(path, title, sections):
-    """One slide for each section: its title, the sentences on the left, the chart and table on the right, so it can be read at a glance."""
+    """One slide for each section: its title, the sentences on the left, the chart and table on the right, so it can be read at a glance. What does not fit goes on to another slide rather than off the bottom of this one."""
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
     _use_font(prs)
     for number, section in enumerate(sections):
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
-        words = section.title or (title if number == 0 else section.heading or title)
-        _text(slide, LEFT, 0.28, FULL_WIDTH, 0.6, words, 26, TITLE_COLOR, bold=True)
-        if (number == 0 or section.title) and section.heading and section.heading not in words:
-            _text(slide, LEFT, 0.86, FULL_WIDTH, 0.35, section.heading, 13, MUTED)
-        line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(LEFT + 0.1), Inches(RULE_AT), Inches(LEFT + FULL_WIDTH - 0.1), Inches(RULE_AT))
-        line.line.color.rgb = TITLE_COLOR
-        line.line.width = Pt(1.25)
         width = TEXT_WIDTH if (section.table or section.chart) and not section.wide else FULL_WIDTH
-        y = CONTENT_TOP
-        for item in _fit(section.sentences, width):
-            size = _size(item)
-            quiet = item.code in QUIET_CODES
-            if item.label:
-                _text(slide, LEFT, y, width, 0.3, item.label, 12, MUTED)
-                y += LABEL_HEIGHT
-            _text(slide, LEFT, y, width, 0.5, item.typed, size, BODY_COLOR if quiet else TITLE_COLOR, bold=not quiet)
-            y += _height(item, width) + SENTENCE_GAP
-        if section.wide:
-            _add_wide_table(slide, section, y)
-        else:
-            _add_table_and_chart(slide, section)
+        pages = _pages(_fit(section.sentences, width), width)
+        for place, page in enumerate(pages):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            words = section.title or (title if number == 0 else section.heading or title)
+            shown = f"{words} ({place + 1}/{len(pages)})" if len(pages) > 1 else words
+            _text(slide, LEFT, 0.28, FULL_WIDTH, 0.6, shown, 26, TITLE_COLOR, bold=True)
+            if (number == 0 or section.title) and section.heading and section.heading not in words:
+                _text(slide, LEFT, 0.86, FULL_WIDTH, 0.35, section.heading, 13, MUTED)
+            line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(LEFT + 0.1), Inches(RULE_AT), Inches(LEFT + FULL_WIDTH - 0.1), Inches(RULE_AT))
+            line.line.color.rgb = TITLE_COLOR
+            line.line.width = Pt(1.25)
+            y = CONTENT_TOP
+            for item in page:
+                size = _size(item)
+                quiet = item.code in QUIET_CODES
+                block = _height(item, width)
+                top = y
+                if item.label:
+                    _text(slide, LEFT, top, width, 0.3, item.label, 12, MUTED)
+                    top += LABEL_HEIGHT
+                _text(slide, LEFT, top, width, y + block - top + SENTENCE_GAP, item.typed, size, BODY_COLOR if quiet else TITLE_COLOR, bold=not quiet)
+                y += block + SENTENCE_GAP
+            if section.wide and place == len(pages) - 1:
+                _add_wide_table(slide, section, y)
+            elif not section.wide and place == 0:
+                _add_table_and_chart(slide, section)
     prs.save(path)
     return path
 
@@ -1519,9 +1601,33 @@ def _fit(sentences, width):
     for item in reversed(sentences):
         if sum(_height(i, width) + SENTENCE_GAP for i in kept) <= room:
             break
-        if item.code in ("reading", "by_item"):
+        if item.code in ("reading", "change", "by_item"):
             kept = [i for i in kept if i is not item]
     return kept
+
+
+def _pages(sentences, width):
+    """The sentences for each slide. A first slide holding every file's main sentence is the one that fills up, and none of them may be lost."""
+    room = SLIDE_BOTTOM - CONTENT_TOP
+    pages, used = [[]], 0
+    for item in sentences:
+        need = _height(item, width) + SENTENCE_GAP
+        if pages[-1] and used + need > room:
+            pages.append([])
+            used = 0
+        pages[-1].append(item)
+        used += need
+    return pages
+
+
+def with_doubt_notes(sections, doubts):
+    """Sections that say on the slide what a person was warned of and chose to keep: (file name or "", words). Whoever reads the report did not see the window."""
+    done = [replace(section, sentences=list(section.sentences)) for section in sections]
+    for name, words in doubts:
+        section = next((s for s in done if s.sheet and (not name or s.title == name)), None)
+        if section is not None:
+            section.sentences.append(Suggestion("doubt_note", "", "plain", result=words))
+    return done
 
 
 def _text(slide, left, top, width, height, words, size, color=None, bold=False):

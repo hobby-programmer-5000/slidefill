@@ -35,6 +35,10 @@ AMOUNT = 0  # the scale of a series whose changes are plain amounts rather than 
 PART_MARK = re.compile(r"[-–·•]\s")
 NESTED_TOLERANCE = 0.001  # a parent's figure is the exact sum of its parts, give or take rounding
 MACHINE_NAME = re.compile(r"[A-Za-z]+(?:_[A-Za-z0-9-]+)+|[a-z]+[A-Z][A-Za-z0-9]*")  # tourStatConfirmManageBiz, RETAINED_CATCH_KG: exported names, in no one's language
+SNAKE_NAME = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])")
+NAME_UNITS = {"kg": "kg", "g": "g", "mj": "MJ", "kj": "kJ", "kcal": "kcal", "km": "km", "m2": "m²", "m3": "m³", "kwh": "kWh", "mwh": "MWh", "usd": "USD", "aud": "AUD", "krw": "KRW", "pct": "%", "percent": "%"}
+LEGEND_MARK = re.compile(r"(?<=[^\s(])\([A-Z]\)(?=\s|$)")  # 제주(A) and 한국(B) point to a formula in a table's footnote, which a slide does not have
+COUNT_MARK = re.compile(r"^\s*#\s+")
 MIN_NESTED_PARENT = 100  # among hospitals with 1, 2 or 3 doctors, 2 = 1 + 1 says nothing: it took 38 doctors out of a list of 127
 MAX_NESTED_ITEMS = 100  # among thousands of companies, one is bound to equal the sum of the next few by chance, and they are not its parts
 CLOSE_SECOND = 1.1  # the first is less than this many times the second: a multiple like 1.0 says nothing
@@ -63,6 +67,7 @@ class Point:
     value: float
     row: int = 0
     sheet: int = 0
+    label: str = ""  # how the period is written when a date cannot say it: 2025-26 is a financial year, not the year 2026
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,24 @@ class Fact:
     numbers: tuple
     figure: str = ""  # on a subject fact: which figure all of a file's facts are about
     period: str = ""  # and which period is "now"; any other period is only something to compare with
+
+
+def readable_name(name):
+    """A heading as a report should say it: Retained catch (kg) for RETAINED_CATCH_KG, 제주 for 제주(A), EAF Items for # EAF Items. Only the marks of a machine or of a table's own footnotes go; the words stay the sheet's."""
+    text = LEGEND_MARK.sub("", COUNT_MARK.sub("", name or ""))
+    return SNAKE_NAME.sub(_words_of_snake, text)
+
+
+def _words_of_snake(match):
+    words = match.group(0).split("_")
+    if not all(word.isalpha() and len(word) >= 2 for word in words):  # E_0000_WH is a code, and words made from it would be no clearer
+        return match.group(0)
+    unit = NAME_UNITS.get(words[-1].casefold()) if len(words) > 1 else None
+    if unit:
+        words = words[:-1]
+    text = " ".join(words).lower()
+    text = text[:1].upper() + text[1:]
+    return f"{text} ({unit})" if unit else text
 
 
 def detect_language(texts):
@@ -216,6 +239,10 @@ def partial_year(points):
 def point_text(date, points, lang):
     """A date as the data's own rhythm calls for: a monthly series is about months, not the first of each."""
     ko = lang == "ko"
+    if points[-1].label:
+        named = next((point.label for point in points if point.date == date), "")
+        if named:
+            return named
     if partial_year(points) and date == points[-1].date:
         return f"{date.year}년 {date.month}월까지" if ko else f"{MONTHS[date.month - 1]} {date.year} year to date"
     if is_yearly(points):
@@ -670,8 +697,8 @@ def cross_file_readings(entries, lang="ko"):
     if len(known) < 2:
         return []
     periods = list(dict.fromkeys(entry[2] for entry in known))
-    if len(periods) > 1:
-        listed = ", ".join(f"{name} {period}" for name, _change, period, _basis in known)
+    if len(periods) > 1:  # each file's slide says what it is about, so this only has to say why they cannot stand side by side
+        listed = ", ".join(periods)
         return [Fact("cross_periods", f"파일마다 최신 시점이 달라({listed}) 변화 방향을 나란히 비교할 수 없습니다." if ko else f"The files end at different times ({listed}), so which way they moved cannot be compared side by side.", ())]
     bases = {entry[3] for entry in known}
     if len(bases) > 1:

@@ -12,6 +12,21 @@ $full = (Resolve-Path $Path).Path
 $ppt = New-Object -ComObject PowerPoint.Application
 $hadOpen = $ppt.Presentations.Count -gt 0
 $exit = 0
+
+function Open-ChartData($chart) {
+    # Excel takes a moment to let go of the chart before, and meanwhile Activate fails with 0xB0D7019E. That says nothing about the file.
+    for ($try = 1; ; $try++) {
+        try {
+            $chart.ChartData.Activate()
+            return
+        }
+        catch {
+            if ($try -ge 6) { throw }
+            Start-Sleep -Seconds 3
+        }
+    }
+}
+
 try {
     # ReadOnly, not Untitled, no window
     $deck = $ppt.Presentations.Open($full, -1, 0, 0)
@@ -20,7 +35,7 @@ try {
         foreach ($shape in $slide.Shapes) {
             if ($shape.HasChart) {
                 $chart = $shape.Chart
-                $chart.ChartData.Activate()
+                Open-ChartData $chart
                 $book = $chart.ChartData.Workbook
                 $sheet = $book.Worksheets.Item(1)
                 $used = $sheet.UsedRange
@@ -28,6 +43,7 @@ try {
                     $slide.SlideIndex, $used.Rows.Count, $used.Columns.Count, `
                     $sheet.Cells.Item(2, 1).Text, $sheet.Cells.Item(2, 2).Text
                 $book.Close()
+                Start-Sleep -Seconds 4  # opened sooner, PowerPoint can show a box saying Excel is busy, and it waits there for someone to press OK
             }
             if ($shape.HasTable) {
                 "Slide {0} table: {1} rows x {2} cols" -f $slide.SlideIndex, $shape.Table.Rows.Count, $shape.Table.Columns.Count

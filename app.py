@@ -729,7 +729,11 @@ class App:
         if answer == "change":
             self.open_helper()
         elif answer == "keep":
-            self.auto.doubts = []
+            auto = self.auto
+            notes = [(params.get("file", ""), i18n.text(auto.lang, "doubt_report_note", reason=i18n.text(auto.lang, "doubt_" + code, figure=params.get("figure", "")))) for code, params in auto.doubts]
+            auto.sections = suggest.with_doubt_notes(auto.sections, notes)
+            auto.stale = True
+            auto.doubts = []
             self.generate()
 
     def show_error(self, error):

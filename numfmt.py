@@ -7,6 +7,7 @@ reports it by returning exact=False so the caller can warn instead of showing a 
 
 import ctypes
 import datetime as dt
+import operator
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
@@ -111,6 +112,21 @@ def _format(value, fmt, epoch):
     return _literals(tokens, "")
 
 
+CONDITION = re.compile(r"\[(>=|<=|<>|>|<|=)\s*(-?\d+(?:\.\d+)?)\]")
+_COMPARE = {">=": operator.ge, "<=": operator.le, "<>": operator.ne, ">": operator.gt, "<": operator.lt, "=": operator.eq}
+
+
+def _pick_by_condition(value, sections, conditions):
+    """[>=5]#,##0;[<=-5]\\-#,##0;\\<5, as some publishers hide small counts: the first section whose test passes, else the last with no test of its own."""
+    for place, (section, condition) in enumerate(zip(sections, conditions)):
+        if condition and _COMPARE[condition.group(1)](value, float(condition.group(2))):
+            return section.replace(condition.group(0), "", 1), place == 0 and value < 0
+    rest = next((section for section, condition in zip(sections, conditions) if not condition), None)
+    if rest is None:
+        raise Unsupported("no section for this value")
+    return rest, False
+
+
 def _split_sections(fmt):
     sections, buf, i = [], "", 0
     while i < len(fmt):
@@ -141,6 +157,9 @@ def _split_sections(fmt):
 
 def _pick_section(value, sections):
     """Return (section, negate). A negative value only gets an automatic minus when no section is meant for it."""
+    conditions = [CONDITION.search(section) for section in sections]
+    if any(conditions):
+        return _pick_by_condition(value, sections, conditions)
     if len(sections) == 1:
         return sections[0], value < 0
     if value < 0:

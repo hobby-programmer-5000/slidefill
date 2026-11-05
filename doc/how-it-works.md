@@ -103,7 +103,12 @@ Warnings appear only in the app's list. So where a figure must be read different
 
 - **A period with fewer rows than usual**: instead of comparing totals, the sentence says it looks incomplete and gives a per-row mean. That does not allow for the season of the missing rows, so with a month column, a monthly series through `A+B` is more accurate.
 - **Newest values that are words** (`(결측)`, `집계중`): it says how many periods were passed over and which value was used.
-- **A period not over when the file was saved, a day cut short, a 0 filled in ahead**: stated first. `학년도` and `회계연도` are not calendar years, so they are not called unfinished.
+- **A period not over when the file was saved**: stated first, and not compared with other periods. The reading comes from the periods that have ended, since three months set against whole years reads as a collapse however well warned. If the file gives a date such as `Data as at 30-Sep-2025` and it falls within that period, that date is used instead of the day it was saved.
+- **A day cut short, a 0 filled in ahead**: stated first. `학년도` and `회계연도` are not calendar years, so they are not called unfinished.
+- **Financial years** (`2025-26`) are read as the ending year only for sorting. A sentence says them as the sheet does.
+- **Values that cannot be added**: a name meaning a level, such as a heating value, a concentration or a temperature, is averaged rather than added. A column of kinds, such as 항목 or type, narrows it to one kind first.
+- **A sheet in per cent**: if it says so, as `Per cent` under `Unit:` or `(단위: %)`, values are written in per cent, changes in points, and no shares are given. A % merely somewhere on the sheet is asked about.
+- **A figure that stops early**: if the first choice has no value for the sheet's newest period, the largest total that does is used.
 
 ## Reading rules
 

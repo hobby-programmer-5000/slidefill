@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import urllib.error
 import zipfile
+from dataclasses import replace
 from unittest import mock
 
 import openpyxl
@@ -163,7 +164,7 @@ class Formats(unittest.TestCase):
         self.assertEqual(shown(46329, "yyyy/mm/dd"), "2026/11/03")
 
     def test_unknown_format_is_reported_not_guessed(self):
-        for fmt in ("# ?/?", "[DBNum1]General", "[>=100]0;0", "000-0000", "[$-F800]dddd"):
+        for fmt in ("# ?/?", "[DBNum1]General", "000-0000", "[$-F800]dddd"):
             text, exact = format_value(46329, fmt)
             self.assertFalse(exact, fmt)
             self.assertEqual(text, "46329")
@@ -1442,7 +1443,8 @@ class DataShapes(Base):
         rows[0][0] = "연도"
         issues = self.value("읽는법:표!A,B", 표=rows)
         self.assertEqual(issues[2][0].code, "latest_unfinished")
-        self.assertIn("아직 끝나지 않은 기간", issues[0])
+        self.assertIn("끝난 기간 중 가장 최근은", issues[0])
+        self.assertIn("아직 끝나지 않은 기간", self.value("해설:표!A,B", 표=rows)[0])
 
     def test_a_close_second_is_not_a_multiple(self):
         rows = [["구분", "값"], ["가", 104], ["나", 100], ["합계", 204]]
@@ -1649,8 +1651,9 @@ class Suggestions(Base):
         _s, _shape, base, found = self.first(표=rows)
         self.assertEqual(base.count, 17)  # 2012/13 has no month 13, and it is still a year
         self.assertEqual(base.last, "2026-01-01")
-        self.assertIn("2026년", found["note"].result)
-        monthly = [["월", "수"]] + [[f"2026-{m:02d}", m * m] for m in range(1, 13)]
+        self.assertIn("2025-26", found["note"].result)  # a sentence calls it what the sheet does: it is not the year 2026
+        self.assertNotIn("2026년", found["note"].result)
+        monthly =[["월", "수"]] + [[f"2026-{m:02d}", m * m] for m in range(1, 13)]
         _s, _shape, base, _found = self.first(표=monthly)
         self.assertEqual(base.first, "2026-01-01")  # real months stay months
 
@@ -1981,9 +1984,26 @@ class Suggestions(Base):
         rows = [["연월", "회사", "발량"]] + [[f"2025-{m:02d}", f"회사{c}", 42.4 + (m + c) % 3 * 0.1] for m in range(1, 7) for c in range(10)]
         self.assertIn("sum_of_levels", self.doubts(rows))
 
-    def test_adding_up_something_called_a_level_raises_a_doubt(self):
+    def test_something_called_a_level_is_averaged_and_not_asked_about(self):
         rows = [["연월", "지점", "수질 BOD"]] + [[f"2025-{m:02d}", f"지점{c}", 10 + m * c] for m in range(1, 7) for c in range(4)]
-        self.assertIn("sum_of_levels", self.doubts(rows))
+        self.assertNotIn("sum_of_levels", self.doubts(rows))
+        path = self.book("수질.xlsx", 표=rows)
+        note = next(item for item in suggest.plan_report(core.ExcelSource(path)).sections[0].sentences if item.code == "note")
+        self.assertIn("평균 수질 BOD", note.result)
+        self.assertIn("평균 수질 BOD 19.", note.result)  # 10, 16, 22 and 28 averaged, not one of them and not their sum
+
+    def test_a_level_is_averaged_within_one_kind_of_measurement(self):
+        rows = [["연월", "항목", "지점", "농도"]] + [[f"2025-{m:02d}", kind, place, size * m] for m in range(1, 7) for kind, size in (("BOD", 1), ("COD", 100)) for place in ("가", "나")]
+        path = self.book("수질.xlsx", 표=rows)
+        note = next(item for item in suggest.plan_report(core.ExcelSource(path)).sections[0].sentences if item.code == "note")
+        self.assertIn("BOD", note.result)  # BOD and COD together would mean nothing
+
+    def test_a_level_reads_as_a_range_not_as_shares_of_a_sum(self):
+        rows = [["연월", "회사", "발열량"]] + [[f"2025-{m:02d}", f"회사{c}", 42 + c / 10 + m / 100] for m in range(1, 7) for c in range(10)]
+        path = self.book("가스.xlsx", 표=rows)
+        by_item = next(item for item in suggest.plan_report(core.ExcelSource(path)).sections[0].sentences if item.code == "by_item")
+        self.assertIn("가장 높은 항목은 회사9", by_item.result)
+        self.assertNotRegex(by_item.result, "합계|전체의")
 
     def test_an_average_over_time_that_adds_up_raises_no_doubt(self):
         rows = [["번호", "분류", "분기별 평균 수출금액(USD)"]] + [[n + 1, name, size] for n, (name, size) in enumerate((("전자", 100), ("전자", 200), ("화학", 50), ("화학", 70), ("전자", 300), ("화학", 80), ("예술", 9), ("예술", 11)))]
@@ -2009,9 +2029,20 @@ class Suggestions(Base):
             rows += [[None, "소파", 2 + day], [None, "책상", 4 + day]]
         self.assertIn("dates_sparse", self.doubts(rows))
 
-    def test_a_note_saying_per_cent_raises_a_doubt(self):
+    def test_a_sheet_that_states_per_cent_is_read_in_points(self):
         rows = [["구분", 2019, 2020, 2021, 2022, 2023], ["Total children", 83, 84, 85, 85.8, 87], [], ["Unit:"], ["Per cent"]]
+        self.assertEqual(self.doubts(rows), [])
+        section = suggest.plan_report(core.ExcelSource(self.book("비율.xlsx", 표=rows))).sections[0]
+        note = next(item for item in section.sentences if item.code == "note").result
+        self.assertIn("87%", note)
+        self.assertIn("85.8% 대비 +1.2포인트", note)
+        self.assertIn("Unit: Per cent", section.heading)
+
+    def test_a_percent_sign_somewhere_on_the_sheet_is_only_a_doubt(self):
+        rows = [["구분", 2019, 2020, 2021, 2022, 2023], ["Total children", 83, 84, 85, 85.8, 87], [], ["Per cent"]]
         self.assertIn("maybe_percent", self.doubts(rows))
+        note = next(item for item in suggest.plan_report(core.ExcelSource(self.book("비율2.xlsx", 표=rows))).sections[0].sentences if item.code == "note").result
+        self.assertNotIn("%,", note.replace("% 증가", ""))
 
     def test_an_example_sheet_raises_a_doubt(self):
         self.assertIn("example_sheet", self.doubts([["지역", "매출"]] + [[f"지역{n}", 100 + n * 37 % 91] for n in range(8)], sheet="Example"))
@@ -2705,6 +2736,242 @@ class SeveralFiles(Base):
         self.assertIn("다 319", words)
         self.assertNotIn("가 119", words)
         self.assertEqual([cell[1] for cell in suggest.preview_rows(source, section.table)[0]][1:], ["나", "다"])
+
+
+class TriedReports(Base):
+    """What going through a whole report by eye turned up, on 2026-11-05: right sums, wrong readings."""
+
+    def book(self, name, **tabs):
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for title, rows in tabs.items():
+            ws = wb.create_sheet(title)
+            for row in rows:
+                ws.append(row)
+        path = os.path.join(self.dir, name)
+        wb.save(path)
+        return path
+
+    def docx(self, name, lines):
+        path = os.path.join(self.dir, name)
+        body = "".join(f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for line in lines)
+        with zipfile.ZipFile(path, "w") as package:
+            package.writestr("word/document.xml", f'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>')
+        return path
+
+    def note(self, section):
+        return next(item for item in section.sentences if item.code == "note").result
+
+    def yearly(self, name, start=2015, end=2024):
+        return self.book(f"{name}.xlsx", 자료=[["연도", "매출"]] + [[year, 100 + year * 7 % 13] for year in range(start, end + 1)])
+
+    def test_a_first_slide_with_many_files_goes_on_to_another_rather_than_off_the_bottom(self):
+        paths = [self.yearly(f"파일{number}") for number in range(9)]
+        source = core.Sources(paths)
+        plan = suggest.plan_files(source)
+        out = os.path.join(self.dir, "많음.pptx")
+        suggest.make_report(out, "제목", plan.sections)
+        slides = Presentation(out).slides
+        height = Presentation(out).slide_height
+        words = []
+        for slide in slides:
+            for shape in slide.shapes:
+                self.assertLessEqual(shape.top + shape.height, height, shape.name)
+                if shape.has_text_frame:
+                    words.append(shape.text_frame.text)
+        for number in range(9):
+            self.assertIn(f"파일{number}", words)
+        self.assertGreater(len(slides), 9 + 1)  # the overview took more than one
+        self.assertTrue(any(word.endswith("(1/2)") for word in words))
+
+    def test_a_label_is_not_counted_twice_in_a_sentences_height(self):
+        item = suggest.Suggestion("note", "키", "text", result="짧은 문장", label="파일")
+        out = os.path.join(self.dir, "높이.pptx")
+        suggest.make_report(out, "제목", [suggest.Section("", [item, replace(item, label="다음")])])
+        tops = sorted(shape.top for shape in Presentation(out).slides[0].shapes if shape.has_text_frame and shape.text_frame.text == "다음" or shape.has_text_frame and shape.text_frame.text == "파일")
+        self.assertAlmostEqual((tops[1] - tops[0]) / 914400, suggest.LABEL_HEIGHT + 18 * suggest.LINE_HEIGHT / 72 + suggest.SENTENCE_GAP, places=2)
+
+    def test_yearly_files_say_no_month_in_the_comparison_across_files(self):
+        request = core.Sources([self.yearly("하나"), self.book("둘.xlsx", 자료=[["월", "매출"]] + [[f"2023-{m:02d}", 100 + m] for m in range(1, 13)])])
+        plan = suggest.plan_files(request)
+        cross = next(item for item in plan.sections[0].sentences if item.code == "cross").result
+        self.assertIn("2024년,", cross)
+        self.assertNotIn("2024년 1월", cross)
+        self.assertIn("2023년 12월", cross)
+
+    def test_no_change_is_still_a_change_to_list(self):
+        one = self.book("같음.xlsx", 자료=[["연도", "매출"]] + [[year, 300] for year in range(2020, 2025)])
+        two = self.book("늘음.xlsx", 자료=[["연도", "매출"]] + [[year, 100 + (year - 2020) ** 2] for year in range(2020, 2025)])
+        cross = next(item for item in suggest.plan_files(core.Sources([one, two])).sections[0].sentences if item.code == "cross").result
+        self.assertIn("같음 (매출) 변동 없음", cross)
+
+    def test_a_figure_that_stops_early_gives_way_to_the_grand_total(self):
+        years = ["2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
+        rows = [["Program", "Category"] + years,
+                ["Child Program Total", None, 3000, 3100, 3006, None, None],
+                ["Family", "Family", 50000, 51000, 52000, 53000, 54000],
+                ["Migration Program Total", None, 137000, 157000, 140000, 195000, 190000],
+                ["Grand Total", None, 140000, 160000, 143000, 195000, 190000]]
+        path = self.book("이민.xlsx", Outcome=rows)
+        section = suggest.plan_report(core.ExcelSource(path)).sections[0]
+        self.assertEqual(section.figures[0].name, "Grand Total")
+        self.assertIn("2023-24 Grand Total 190,000", self.note(section))
+
+    def test_a_total_that_reaches_the_newest_period_stays_first(self):
+        rows = [["구분"] + [f"202{y}년" for y in range(0, 6)], ["남 합계"] + [10 + y for y in range(6)], ["여 합계"] + [50 + y for y in range(6)]]
+        base = suggest.read_shape(core.ExcelSource(self.book("합계.xlsx", 표=rows)), "표").bases[0]
+        self.assertEqual(suggest.default_value(base).name, "남 합계")
+
+    def test_a_period_still_running_is_not_compared_with_ended_ones(self):
+        rows = [["Fin. Year", "수"]] + [[f"{y}-{(y + 1) % 100:02d}", 8000 + y] for y in range(2018, 2025)] + [["2025-26", 960]]
+        wb = openpyxl.Workbook()
+        wb.active.title = "자료"
+        for row in rows:
+            wb.active.append(row)
+        info = wb.create_sheet("Information")
+        info.append(["Data as at 30-Sep-2025, for applications created on or after 01-Jul-2018."])
+        wb.properties.modified = dt.datetime(2025, 10, 3)
+        path = os.path.join(self.dir, "미완결.xlsx")
+        wb.save(path)
+        wb2 = openpyxl.load_workbook(path)  # saving stamps the time, so it is put back in the file itself
+        source = core.ExcelSource(path)
+        source.wb.properties.modified = dt.datetime(2025, 10, 3)
+        note = source.text_value("해설:자료!A,B")[0]
+        read = source.text_value("읽는법:자료!A,B")[0]
+        wb2.close()
+        self.assertIn("2025-26은 자료 기준일 2025-09-30에 아직 끝나지 않은 기간", note)
+        self.assertIn("2025-26 수 960.", note)
+        self.assertNotIn("감소", note)
+        self.assertNotIn("끝나지 않은", read)  # said once, on the slide
+        self.assertIn("끝난 기간 중 가장 최근은 2024-25 10,024입니다", read)
+        self.assertNotRegex(read, "960|가장 낮은")
+
+    def test_a_note_about_another_time_does_not_become_the_date_of_the_data(self):
+        wb = openpyxl.Workbook()
+        wb.active.title = "자료"
+        for year in range(2015, 2026):
+            wb.active.append([f"{year}-{(year + 1) % 100:02d}", 100 + year])
+        wb.create_sheet("Notes").append(["Rules as at 01-Jul-2012 apply."])
+        path = os.path.join(self.dir, "다른날짜.xlsx")
+        wb.save(path)
+        source = core.ExcelSource(path)
+        source.wb.properties.modified = dt.datetime(2025, 10, 3)
+        self.assertIn("파일을 저장한 2025-10-03", source.text_value("해설:자료!A,B")[0])
+
+    def test_a_format_that_hides_small_counts_shows_large_ones_with_commas(self):
+        fmt = "[>=5]##,###,##0;[<=-5]\\-##,###,##0;\\<\\5"
+        self.assertEqual(format_value(190000, fmt), ("190,000", True))
+        self.assertEqual(format_value(-190000, fmt), ("-190,000", True))
+        self.assertEqual(format_value(3, fmt), ("<5", True))
+        self.assertEqual(format_value(-3, fmt), ("<5", True))
+        self.assertEqual(format_value(100, "[<50]0;[>=50]0.0"), ("100.0", True))
+        self.assertEqual(format_value(-5, "[<50]0;[>=50]0.0"), ("-5", True))
+
+    def test_a_rates_reading_does_not_repeat_its_sentence(self):
+        rows = [["구분", 2019, 2020, 2021, 2022, 2023], ["Total children", 83, 84, 85, 85.8, 87], [], ["Unit:"], ["Per cent"]]
+        source = core.ExcelSource(self.book("비율.xlsx", 표=rows))
+        section = suggest.plan_report(source).sections[0]
+        note, reading = (next(item.result for item in section.sentences if item.code == code) for code in ("note", "reading"))
+        self.assertIn("+1.2포인트", note)
+        self.assertNotIn("+1.2포인트", reading)
+        self.assertIn("가장 높은", reading)
+
+    def test_one_english_file_says_its_period_in_the_reports_language(self):
+        self.assertEqual(core._period_in("2023", "ko"), "2023년")
+        self.assertEqual(core._period_in("Aug 2021", "ko"), "2021년 8월")
+        self.assertEqual(core._period_in("Q3 2021", "ko"), "2021년 3분기")
+        self.assertEqual(core._period_in("2021년 8월", "en"), "Aug 2021")
+        self.assertEqual(core._period_in("2024-25", "ko"), "2024-25")
+
+    def test_machine_names_and_footnote_marks_read_as_words(self):
+        self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")
+        self.assertEqual(facts.readable_name("합계 RETAINED_CATCH_KG"), "합계 Retained catch (kg)")
+        self.assertEqual(facts.readable_name("제주(A) 2025년 (월계)"), "제주 2025년 (월계)")
+        self.assertEqual(facts.readable_name("# EAF Items (FY Subtotal)"), "EAF Items (FY Subtotal)")
+        self.assertEqual(facts.readable_name("Plan (A)"), "Plan (A)")
+        self.assertEqual(facts.readable_name("매출"), "매출")
+        self.assertEqual(facts.readable_name("E_0000_WH"), "E_0000_WH")  # a code, not words
+
+    def test_a_report_says_readable_headings_where_a_template_keeps_the_sheets(self):
+        rows = [["YEAR", "RETAINED_CATCH_KG"]] + [[year, 1000 + year] for year in range(2015, 2025)]
+        source = core.ExcelSource(self.book("어획.xlsx", 표=rows))
+        self.assertTrue(source.text_value("해설:표!A,B")[0].startswith("2024년 Retained catch (kg) 3,024"))
+        self.assertEqual(source.range_cells("최신3:표!A,B")[0][0][1][1], "RETAINED_CATCH_KG")
+        source.thousands = True
+        self.assertEqual(source.range_cells("최신3:표!A,B")[0][0][1][1], "Retained catch (kg)")
+
+    def test_a_laid_out_table_does_not_call_its_dates_by_the_wrong_heading(self):
+        across = [["Visa Category"] + [f"20{y}-{y + 1}" for y in range(15, 21)], ["Grand Total"] + [100 + y * 3 for y in range(6)]]
+        source = core.ExcelSource(self.book("가로.xlsx", 표=across))
+        source.thousands = True
+        section = suggest.plan_report(source).sections[0]
+        key = core.MARKER.fullmatch(section.table.typed).group(2)
+        self.assertEqual(source.range_cells(key)[0][0][0][1], "기간")
+
+    def test_a_blank_item_heading_is_filled_in_a_laid_out_table(self):
+        rows = [[None, "매출"], ["가", 30], ["나", 20], ["다", 10], ["라", 5]]
+        source = core.ExcelSource(self.book("빈칸.xlsx", 표=rows))
+        source.thousands = True
+        self.assertEqual(source.range_cells("구성비3:표!A,B")[0][0][0][1], "항목")
+
+    def test_a_table_with_no_dates_says_the_period_in_its_title(self):
+        rows = [["2026년 6월 건축 통계표"], [None], ["구역", "건수"]] + [[f"구{n}", 10 + n * n] for n in range(8)]
+        section = suggest.plan_report(core.ExcelSource(self.book("건축.xlsx", 자료=rows))).sections[0]
+        self.assertTrue(section.heading.startswith("2026년 6월"), section.heading)
+        self.assertEqual(section.period, "2026년 6월")
+
+    def test_a_span_in_a_title_is_not_one_period(self):
+        rows = [["2020년~2024년 통계표"], [None], ["구역", "건수"]] + [[f"구{n}", 10 + n * n] for n in range(8)]
+        self.assertEqual(suggest.plan_report(core.ExcelSource(self.book("기간.xlsx", 자료=rows))).sections[0].period, "")
+
+    def test_two_years_beside_each_other_are_compared_under_one_kind(self):
+        rows = [[None, None, "2025년", "2024년"]]
+        for name, month, year in (("중국", 100, 900), ("대만", 61, 400), ("일본", 47, 300), ("태국", 23, 100), ("미국", 11, 90)):
+            rows += [[name, "월계", month, month // 2], [None, "누계", year, year // 2]]
+        section = suggest.plan_report(core.ExcelSource(self.book("두해.xlsx", 표=rows))).sections[0]
+        change = next(item for item in section.sentences if item.code == "change").result
+        self.assertIn("119 → 242", change)  # 월계 only: 누계 would have made it far larger
+        self.assertIn("+103.4%", change)
+
+    def test_a_kept_doubt_is_said_on_the_slide(self):
+        rows = [["연월", "회사", "발량"]] + [[f"2025-{m:02d}", f"회사{c}", 42.4 + (m + c) % 3 * 0.1] for m in range(1, 7) for c in range(10)]
+        plan = suggest.plan_report(core.ExcelSource(self.book("의심.xlsx", 표=rows)))
+        self.assertTrue(plan.doubts)
+        words = "※ 확인되지 않은 값입니다."
+        sections = suggest.with_doubt_notes(plan.sections, [("", words)])
+        self.assertEqual(sections[0].sentences[-1].typed, words)
+        self.assertEqual(len(plan.sections[0].sentences) + 1, len(sections[0].sentences))
+        out = os.path.join(self.dir, "표시.pptx")
+        suggest.make_report(out, "제목", sections)
+        self.assertIn(words, [shape.text_frame.text for shape in Presentation(out).slides[0].shapes if shape.has_text_frame])
+
+    def test_a_document_says_what_matters_and_not_a_pointer_or_a_glossary_entry(self):
+        import documents
+        pointer = "The shaded cells in the Table 1 below show the years for which data is included for each fishery, noting that zero catch shows nothing at all."
+        glossary = "Australian Fishing Zone: Waters adjacent to Australia which extend from defined baselines to 200 nm seawards, but not including coastal and excepted waters."
+        about = "This dataset shows the annual landed catch in kilograms, by species and fishery, for fisheries managed by the authority in each calendar year."
+        care = "Care should be taken when interpreting trends in this data because there are many factors that can affect catches in each and every year."
+        document = documents.Document("x", "x", paragraphs=[about, pointer, care, glossary])
+        self.assertEqual(documents.key_paragraphs(document), [about, care])
+
+    def test_a_document_in_a_workbooks_folder_comes_just_before_it(self):
+        folder = os.path.join(self.dir, "함께")
+        os.makedirs(folder)
+        apart = self.yearly("따로")
+        with_it = os.path.join(folder, "같이.xlsx")
+        shutil.copy(self.yearly("원본"), with_it)
+        long = "이 문서는 자료의 범위와 집계 방식을 설명하는 긴 문단이며, 값을 해석할 때 유의할 점을 충분히 길게 적어 둔 문장입니다. 그래서 슬라이드에 그대로 옮길 수 있습니다."
+        word = self.docx("설명.docx", [long])
+        shutil.move(word, os.path.join(folder, "설명.docx"))
+        plan = suggest.plan_files(core.Sources([apart, with_it, os.path.join(folder, "설명.docx")]))
+        titles = [section.title for section in plan.sections]
+        self.assertEqual(titles, ["", "따로", "같이 · 설명", "같이"])
+
+    def test_documents_stay_in_front_when_a_folder_says_nothing(self):
+        one, two = self.yearly("하나"), self.yearly("둘")
+        word = self.docx("설명.docx", ["이 문서는 자료의 범위와 집계 방식을 설명하는 긴 문단이며, 값을 해석할 때 유의할 점을 충분히 길게 적어 둔 문장입니다. 그래서 슬라이드에 그대로 옮길 수 있습니다."])
+        titles = [section.title for section in suggest.plan_files(core.Sources([one, two, word])).sections]
+        self.assertEqual(titles, ["", "설명", "하나", "둘"])
 
 
 class WordDocuments(Base):
