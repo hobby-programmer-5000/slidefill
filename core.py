@@ -17,7 +17,7 @@ import unicodedata
 import warnings
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import openpyxl
 from lxml import etree
@@ -29,7 +29,19 @@ from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.package import XmlPart
 
+import documents
 import facts
+import readers
+
+
+class _NoPivotCaches(dict):
+    def __missing__(self, key):
+        return None
+
+
+# A pivot table's cache holds every source record, read again for each sheet: one public workbook passed 6 GB here. What the table shows is stored in the sheet's cells,
+# and nothing here ever saves a workbook it has read, so the caches are left unread.
+openpyxl.reader.workbook.WorkbookParser.pivot_caches = property(lambda self: _NoPivotCaches())
 from numfmt import format_value
 
 warnings.filterwarnings("ignore", module="openpyxl")
@@ -51,7 +63,9 @@ LATEST_COLUMNS = re.compile(r"[A-Za-z]{1,3}(\s*:\s*[A-Za-z]{1,3})?")
 DATE_TEXT = re.compile(r"(\d{4})\s*[-/.년]\s*(\d{1,2})\s*(?:[-/.월]\s*(\d{1,2})\s*[.일]?)?\s*[월.]?\s*(?:\(\w+\))?"
                        r"\s*(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?")
 DATE_DIGITS = re.compile(r"(\d{4})(\d{2})(\d{2})")
-YEAR_TEXT = re.compile(r"((?:19|20)\d\d)\s*(?:년도?)?")
+EMPTY_EDGE_ROWS, EMPTY_EDGE_COLUMNS = 1000, 100  # cells with only a format this far past the last value are dropped on loading
+DATE_YEARS = (1800, 2199)  # the years a date written as text or digits may have
+YEAR_TEXT = re.compile(r"((?:19|20)\d\d)\s*(?:년도?)?|\[\s*((?:19|20)\d\d)\s*\]")  # [2023] is how a catalogue writes a year it worked out
 DATE_MARK = re.compile(r"\s*(?:\((?:p|r|e|est)\)|\*+)\s*$", re.I)  # Jul. 2026(p): preliminary and revised marks
 MONTH_WORDS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january", "february", "march", "april", "june",
                "july", "august", "september", "october", "november", "december"}
@@ -63,13 +77,22 @@ KOREAN_SHORT_MONTH = re.compile(r"(\d{2})\s*년\s*(\d{1,2})\s*월")
 QUARTER_YEAR_FIRST = re.compile(r"(\d{4})\s*(?:년\s*)?[-.]?\s*Q?([1-4])(?:\s*분기|(?<=Q[1-4]))", re.I)
 QUARTER_Q_FIRST = re.compile(r"Q([1-4])\s*[-.']?\s*(\d{4}|\d{2})", re.I)
 QUARTER_Q_AFTER = re.compile(r"([1-4])Q\s*[-.']?\s*(\d{4}|\d{2})", re.I)
+FISCAL_QUARTER_SPAN = re.compile(r"Q([1-4])\s*[-.' ]?\s*(\d{4}|\d{2})\s*[/–—-]\s*(\d{2})", re.I)
+FISCAL_QUARTER_FY = re.compile(r"Q([1-4])\s*[-.' ]?\s*FY\s*'?(\d{4}|\d{2})|FY\s*'?(\d{4}|\d{2})\s*[-.' ]?\s*Q([1-4])", re.I)
 DAY_MONTH_YEAR = re.compile(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})")
 MONTH_DAY_YEAR = re.compile(r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),\s*(\d{4})")
 MONTH_QUARTER = re.compile(r"([A-Za-z]{3,9})\s+quarter\s+(\d{4})", re.I)
 YEAR_SPAN = re.compile(r"((?:19|20)\d\d)\s*[-/–—]\s*(\d{2})")
 FISCAL_YEAR = re.compile(r"(?:fy\s*)?((?:19|20)\d\d)\s*[–—]\s*(\d{2})", re.I)  # 2007–08, named by the year it ends. 2007-08 with a plain hyphen reads as a month
 MONTH_ALONE = re.compile(r"0?(\d{1,2})\s*월")
-NUMBER_TEXT = re.compile(r"\s*([+-]?\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\([^()]*\)|\[[^\[\]]*\]|명|건|원|개|회|톤|대|호)?\s*")
+DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)"  # commas or spaces only where they group thousands: 1,2,3 is three figures in one cell, not 123, and 39 925 in a statistics yearbook is 39,925
+HEADING_SCAN_CELLS = 20000  # a small sheet's cells are looked through at once; a large one's heading row only to this many columns
+HEADING_SCAN_COLUMNS = 200
+ONE_LABEL_SHARE = 0.8  # lines with one label among the label columns, for those columns to be levels of one outline
+SHEET_WORD_ROWS = 20
+SHEET_WORD_COLUMNS = 10
+GROUPING = re.compile(r"[, \u00a0\u202f]")
+NUMBER_TEXT = re.compile(r"\s*([+-]?" + DIGITS + r"(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\([^()]*\)|\[[^\[\]]*\]|명|건|원|개|회|톤|대|호)?\s*")
 AGGREGATE = re.compile(r"\s*(합계|sum|건수|count|평균|avg|average|mean|비율|rate)\s*\((.*)\)\s*", re.I | re.S)
 AGGREGATE_KINDS = {"합계": "sum", "sum": "sum", "건수": "count", "count": "count", "평균": "mean", "avg": "mean", "average": "mean", "mean": "mean", "비율": "rate", "rate": "rate"}
 YEAR_HEADING = re.compile(r"(?:year|연도|fy)?\s*((?:19|20)\d\d)\s*(?:년도?)?", re.I)
@@ -80,15 +103,49 @@ SCHOOL_YEAR = re.compile(r"학년도|회계연도|fiscal|\bfy\b", re.I)
 BOUNDED_LINE = re.compile(r"([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)")
 RANK = re.compile(r"\s*(순위값|순위|구성비|topvalue|top|share)\s*(\d*)\s*:(.*)", re.I | re.S)
 RANK_NAMES = {"순위": "name", "top": "name", "순위값": "value", "topvalue": "value", "구성비": "share", "share": "share"}
-TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "total", "grandtotal", "sum", "합"}
+TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "전국", "전산업", "total", "grandtotal", "sum", "합"}  # 전국 over the regions, 전산업 over the industries
 SUBTOTAL_WORDS = {"소계", "subtotal"}
+BUDGET_NAME = re.compile(r"예산|목표|계획|\b(?:budget|target|plan)(?:s|ned)?\b", re.I)  # what was planned for a period, set beside what happened in it
+TOTAL_ROW = re.compile(r"totals?(?![a-z])(?!.*\b(?:pty|ltd|inc|limited|llc|corp|plc|gmbh)\b)", re.I)  # Total revenue, not Total Tools Importing Pty Ltd or TotalEnergies
 TOTAL_TOLERANCE = 0.005  # a stated total this close to the items' sum is taken to be their total, allowing for rounding
 LATE_MINUTES = 60  # a newest day's last entry this much earlier than usual looks unfinished
 SHARE_HEADER = "%"
 AMOUNT_HEADING = re.compile(r"[증중]감(?![률율])")  # 증감 alone is an amount that went up or down, 증감률 is a rate
-RATE_HEADING = re.compile(r"율|률|증감|전년비|전년동월비|지수.*증|점수|만족도|\bscores?\b|\bpercentage|% ?change|\bgrowth|\brates?\b|\bratios?\b", re.I)
+RATE_HEADING = re.compile(facts.RATE_SYLLABLE + r"|증감|전년비|전년동월비|지수.*증|점수|만족도|\bscores?\b|\bpercentage|% ?change|\bgrowth|\brates?\b|\bratios?\b", re.I)
 HANGUL = re.compile(r"[가-힣]")
 ID_CODE = re.compile(r"[A-Z0-9]{2,8}")  # J468: a dataset's code, not a name
+MAX_LINES_FOR_A_REPEAT = 200  # how far along a row of headings to look for the same one again
+HEADING_LOOK_AHEAD = 30
+PIVOT_HEADING = re.compile(r"column labels|row labels|values|열 레이블|행 레이블|값", re.I)
+GRAND_TOTAL = re.compile(r"(?:grand\s+)?total|총합계|합계|총계|전체", re.I)
+UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(（\[]\s*units?\b", re.I)  # not 유통단계별단위명, which is only a column's name
+YEAR_LINE = re.compile(r"연간|연평균|연계|연합계|년간|annual|yearly|full\s*year", re.I)
+MONTH_LINE = re.compile(r"(?:0?[1-9]|1[0-2])\s*월|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?", re.I)
+MIN_MONTH_LINES = 6
+PART_CODE = re.compile(r"([0-9A-Za-z]+(?:[-.][0-9A-Za-z]+)*)")  # 611 and 611-01 at the start of an account's name
+NEGATIVE_TEXT = re.compile(r"[△▵−]\s*(" + DIGITS + r"(?:\.\d+)?)|\(\s*(" + DIGITS + r"(?:\.\d+)?)\s*\)")
+QUARTER_SCAN = 30
+QUARTER_WORD = re.compile(r"Q\s*([1-4])|([1-4])\s*(?:분기|Q)", re.I)
+QUARTER_HEADING = re.compile(r"분기|quarter|qtr|\bq\b", re.I)
+EARLIER_NAME = re.compile(r"전년|전월|전기|전분기|작년|지난|이전|직전|prior|previous|last\s+(?:year|month|quarter)", re.I)
+UNIT_NOTE_LENGTH = 40
+UNIT_WORD_LENGTH = 20
+UNIT_SCAN_ROWS = 40  # a note may sit under a short table
+UNIT_SCAN_COLUMNS = 12
+PER_CENT_UNIT = re.compile(r"\s*(?:per\s?cent|percent(?:age)?|퍼센트|백분율|%)\s*", re.I)
+AS_AT = re.compile(r"\bas\s+(?:at|of)\b|기준일|자료\s*기준|기준\s*[:：]", re.I)  # Data as at 30-Sep-2025
+AS_AT_ROWS = 60
+AS_AT_COLUMNS = 3
+AS_AT_LENGTH = 200
+DAY_FIRST = re.compile(r"\b(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s]((?:19|20)\d\d)\b")
+YEAR_FIRST = re.compile(r"((?:19|20)\d\d)\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})")
+PERIOD_WORD = {"ko": "기간", "en": "Period"}
+ITEM_WORD = {"ko": "항목", "en": "Item"}
+TRAILING_TOTAL = re.compile(r"\s+(?:total|합계|총계)\s*$", re.I)  # the row under a date heading is the sheet's total, not part of what the dates are called
+FISCAL_YEAR_ENDS = (6, 30)  # the file does not say. March, June and September are all in use; before the second calendar year's middle, a 2025-26 figure cannot be called complete
+COUNT_WORD_KO = "건수"
+MIN_HEADING_LENGTH = 2
+OUTER_LEVEL_SHARE = 0.5  # labels merged in from the left on most rows are simply how this table is written
 CALC = re.compile(r"\s*(전일대비|직전대비|전주대비|평균대비|최고일|최저일|해설|읽는법|prev|week|avg|peak|low|note|reading)\s*(\d*)\s*:(.*)", re.I | re.S)
 INSIGHT = re.compile(r"\s*(?:통찰|insight)\s*:(.*)", re.I | re.S)
 CALC_NAMES = {"전일대비": "prev", "직전대비": "prev", "전주대비": "week", "평균대비": "avg", "최고일": "peak", "최저일": "low", "해설": "해설", "읽는법": "읽는법"}
@@ -192,6 +249,8 @@ def _check_file(path, extensions, kind):
         raise SlideFillError("file_unreadable", path=path, detail=str(exc))
     if ext not in extensions:
         raise SlideFillError(f"wrong_type_{kind}", path=path)
+    if kind == "excel" and ext in readers.NOT_CHECKED_AS_ZIP:
+        return
     if head[:8] == OLE_MAGIC:
         raise SlideFillError("file_protected", path=path)
     if not zipfile.is_zipfile(path):
@@ -212,6 +271,8 @@ def as_date(raw):
     match = DATE_TEXT.fullmatch(raw) or DATE_DIGITS.fullmatch(raw)
     if match:
         year, month, day, *clock = list(match.groups()) + [None] * 3
+        if not DATE_YEARS[0] <= int(year) <= DATE_YEARS[1]:
+            return None  # 1001.5 written as text is a figure, not May of the year 1001
         try:
             return dt.datetime(int(year), int(month), int(day or 1), *(int(part or 0) for part in clock[:3]))
         except ValueError:
@@ -247,7 +308,27 @@ def _month_or_quarter(raw):
         if match:
             year = int(match.group(year_at))
             return dt.datetime(year if year > 99 else 2000 + year, (int(match.group(quarter_at)) - 1) * 3 + 1, 1)
-    return None
+    return _fiscal_quarter(raw)
+
+
+def _fiscal_quarter(raw):
+    """Q1 12/13, Q1 FY24 and FY24 Q1: a quarter of a year that spans two. Read as starting in July only to put them in order: a sentence says them as the sheet does."""
+    match = FISCAL_QUARTER_SPAN.fullmatch(raw)
+    if match:
+        start, end = int(match.group(2)), int(match.group(3))
+        if (start + 1) % 100 != end % 100:
+            return None
+        ending = (start if start > 99 else 2000 + start) + 1
+        quarter = int(match.group(1))
+    else:
+        match = FISCAL_QUARTER_FY.fullmatch(raw)
+        if not match:
+            return None
+        year = int(match.group(2) or match.group(3))
+        ending = year if year > 99 else 2000 + year
+        quarter = int(match.group(1) or match.group(4))
+    month = 7 + (quarter - 1) * 3
+    return dt.datetime(ending - 1, month, 1) if month <= 12 else dt.datetime(ending, month - 12, 1)
 
 
 def as_month(raw):
@@ -266,7 +347,7 @@ def as_year(raw):
         raw = str(int(raw))
     match = YEAR_TEXT.fullmatch(raw.strip()) if isinstance(raw, str) else None
     if match:
-        return dt.datetime(int(match.group(1)), 1, 1)
+        return dt.datetime(int(match.group(1) or match.group(2)), 1, 1)
     match = FISCAL_YEAR.fullmatch(raw.strip()) if isinstance(raw, str) else None
     if match:
         century = int(match.group(1)) // 100 * 100
@@ -284,12 +365,60 @@ def as_number(raw):
     match = NUMBER_TEXT.fullmatch(raw) if isinstance(raw, str) else None
     if not match:
         return None
-    number = float(match.group(1).replace(",", ""))
+    number = float(GROUPING.sub("", match.group(1)))
     return int(number) if number.is_integer() else number
 
 
+def _sheet_words(ws, rows=SHEET_WORD_ROWS, columns=SHEET_WORD_COLUMNS):
+    """One vote for each cell of words in the top corner of a sheet, as one letter of the script it is mostly in: 회사 and Hyundai Motor Company count once each, so long English names do not outvote short Korean headings."""
+    found = []
+    for row in range(1, min(ws.max_row, rows) + 1):
+        for column in range(1, min(ws.max_column, columns) + 1):
+            cell = ws._cells.get((row, column))
+            if cell is not None and isinstance(cell.value, str):
+                found.append(cell.value)
+    return _votes(found)
+
+
+def _votes(texts):
+    """Each text as one letter of the script it is mostly in, so a long name counts no more than a short one."""
+    found = []
+    for text in texts:
+        korean, latin = len(HANGUL.findall(text)), len(facts.LATIN.findall(text))
+        if korean or latin:
+            found.append("가" if korean >= latin else "a")
+    return found
+
+
+def figure_number(raw):
+    """What a cell holds as a figure: as_number, and also a loss written as text, △500 or (300) or −500. Only for cells already read as figures: elsewhere (1) is a numbered heading."""
+    number = as_number(raw)
+    if number is not None or not isinstance(raw, str):
+        return number
+    match = NEGATIVE_TEXT.fullmatch(raw.strip())
+    if not match:
+        return None
+    number = -float(GROUPING.sub("", match.group(1) or match.group(2)))
+    return int(number) if number.is_integer() else number
+
+
+def _holds_quarters(ws, ref, line):
+    """The second part of a split date is a quarter when its heading or its words say so: 4 under 분기 is not April."""
+    known = ws.__dict__.setdefault("_quarter_lines", {})
+    key = (ref.by_row, line)
+    if key not in known:
+        words = [cell.value.strip() for cell in (ws._cells.get(ref.at(position, line)) for position in range(1, QUARTER_SCAN + 1)) if cell is not None and isinstance(cell.value, str)]
+        known[key] = any(QUARTER_HEADING.search(word) or QUARTER_WORD.fullmatch(word) for word in words)
+    return known[key]
+
+
+def _unread_figure(raw):
+    """Digits where a figure belongs that cannot be read as one, such as ▲500 or 14000 and 15000 in one cell: leaving them out changes the total, so it must not go unsaid. With letters in it, it is a heading or a note."""
+    return isinstance(raw, str) and any(c.isdigit() for c in raw) and not any(c.isalpha() for c in raw) and figure_number(raw) is None and as_date(raw) is None
+
+
 def as_part_of_date(raw):
-    """A month or a day held in a column of its own: 9, 09, 9월, Sep. None for anything else."""
+    """A month or a day held in a column of its own: 9, 09, 9월, Sep. A quarter too: Q4, 4분기. None for anything else."""
     if isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)) and float(raw).is_integer():
@@ -297,6 +426,9 @@ def as_part_of_date(raw):
     if isinstance(raw, str):
         if raw.strip().isdigit():
             return int(raw.strip())
+        quarter = QUARTER_WORD.fullmatch(raw.strip())
+        if quarter:
+            return int(quarter.group(1) or quarter.group(2))
         return as_month(raw)
     return None
 
@@ -367,6 +499,12 @@ class Series:
     scale: int = 1
     percent: bool = False  # the figure is a share, computed here, and shows as one
     cut_short: tuple = None  # (rows found, rows usual) when the newest period has fewer rows than usual
+    per_cent_unit: bool = False  # the sheet says its figures are per cent, and the cells do not show it
+
+    @property
+    def label(self):
+        """What the figure is called in a sentence. header stays as the sheet has it, for telling which language a file is in."""
+        return facts.readable_name(self.header)
 
     def _cell(self, sheet, position):
         row, column = self.ref.at(position, self.line if self.line is not None else self.ref.date)
@@ -392,7 +530,8 @@ class Series:
         if self.line is None:
             return facts.plain_number
         newest = self.points[-1]
-        return source._prose_show(self.ref.sheets[newest.sheet], *self.ref.at(newest.row, self.line))
+        show = source._prose_show(self.ref.sheets[newest.sheet], *self.ref.at(newest.row, self.line))
+        return _with_per_cent(show) if self.per_cent_unit else show
 
 
 @dataclass
@@ -410,6 +549,12 @@ class Comparison:
     stated: bool
     rate: bool = False
     scale: int = 1
+    basis: str = ""  # budget when the older of two columns is what was planned, not an earlier period
+    wholes: list = field(default_factory=list)  # total lines of unlike things, as Total income and Total expenses: facts.Item each
+
+    @property
+    def label(self):
+        return facts.readable_name(self.header)
 
     def ranked(self):
         return facts.ranked_items(self.items)
@@ -526,14 +671,91 @@ def _sheet_names(ref):
     return ref.sheets[0].title if len(ref.sheets) == 1 else f"{ref.sheets[0].title} … {ref.sheets[-1].title}"
 
 
+def _with_per_cent(show):
+    return lambda value: show(value) + "%"
+
+
+def _unit_notes(ws, rows, columns):
+    """(row, the words as written, the unit alone) for each note saying how figures are measured. (단위: 백만원) says it in one cell; Unit: may leave it to the cell beside or below."""
+    last_row, last_column = min(ws.max_row, rows), min(ws.max_column, columns)
+    for row in range(1, last_row + 1):
+        for column in range(1, last_column + 1):
+            cell = ws._cells.get((row, column))  # only cells that exist: asking for rows makes a cell at every place
+            if cell is None or not isinstance(cell.value, str):
+                continue
+            text = cell.value.strip()
+            match = UNIT_NOTE.search(text)
+            if not match or len(text) > UNIT_NOTE_LENGTH:
+                continue
+            rest = text[match.end():].strip(" )）]:：")
+            if rest:
+                yield row, text, rest
+                continue
+            for place in ((row, column + 1), (row + 1, column)):
+                beside = ws._cells.get(place)
+                words = beside.value.strip() if beside is not None and isinstance(beside.value, str) else ""
+                if words and len(words) <= UNIT_WORD_LENGTH:
+                    yield row, f"{text} {words}", words
+                    break
+
+
+def unit_note(ws, rows, columns):
+    """(the words as written, the unit alone) of the first such note, or ("", "")."""
+    first = next(_unit_notes(ws, rows, columns), None)
+    return first[1:] if first else ("", "")
+
+
+def _reads_backwards(first, second):
+    """Two periods are read first to second. Sheets often put this year first, and 매출 then 전년 read that way turns a rise into a fall with nothing to show for it."""
+    years = [re.search(r"(?:19|20)\d\d", name or "") for name in (first, second)]
+    if all(years):
+        return int(years[0].group(0)) > int(years[1].group(0))
+    return bool(EARLIER_NAME.search(second or "")) and not EARLIER_NAME.search(first or "")
+
+
+def in_per_cent(ws, row=None):
+    """The note that covers this row says per cent, not merely that a % appears somewhere on the sheet. A note covers the rows under it. One with no figures under it is a footnote, and covers what is above. row None asks about the sheet as a whole, which only a footnote can answer."""
+    if "_unit_notes" not in ws.__dict__:
+        ws.__dict__["_unit_notes"] = list(_unit_notes(ws, UNIT_SCAN_ROWS, UNIT_SCAN_COLUMNS))
+        ws.__dict__["_last_figure_row"] = max((place[0] for place, cell in ws._cells.items() if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)), default=0) if ws.__dict__["_unit_notes"] else 0
+    notes = ws.__dict__["_unit_notes"]
+    above = [note for note in notes if row is not None and note[0] < row]
+    note = above[-1] if above else next((note for note in notes if note[0] >= ws.__dict__["_last_figure_row"]), None)
+    return note is not None and PER_CENT_UNIT.fullmatch(note[2]) is not None
+
+
+def _year_beside_months(labels):
+    """The one line for the whole year among lines for its months. Beside anything else, 연간 may be an item of its own, such as a yearly plan beside a monthly one."""
+    names = [label for label in labels if isinstance(label, str)]
+    years = [label for label in names if YEAR_LINE.fullmatch(label.strip())]
+    months = sum(MONTH_LINE.fullmatch(label.strip()) is not None for label in names)
+    return years[0] if len(years) == 1 and months >= MIN_MONTH_LINES else None
+
+
+
+def _stated_day(text):
+    """A date written out in a sentence, or None."""
+    words = DAY_FIRST.search(text)
+    if words:
+        month = MONTH_NUMBERS.get(words.group(2)[:3].lower())
+        numbers = (int(words.group(3)), month, int(words.group(1))) if month else None
+    else:
+        digits = YEAR_FIRST.search(text)
+        numbers = tuple(int(part) for part in digits.groups()) if digits else None
+    try:
+        return dt.date(*numbers) if numbers else None
+    except ValueError:
+        return None
+
+
 def _clean_label(text):
     """A heading as a person reads it: 유\\n효\\n수\\n량 and 일 생 산 능 력 are written apart only to fill a tall or wide cell."""
     parts = str(text).split()
     return "".join(parts) if parts and all(len(part) == 1 for part in parts) else " ".join(parts)
 
 
-def _merged_value(ws, row, column):
-    """The value a person sees in a cell: inside a merged range, that of its first cell."""
+def _merge_origin(ws, row, column):
+    """The first cell of the merged range this cell is in, or None."""
     origins = ws.__dict__.get("_merge_origins")
     if origins is None:
         origins = {}
@@ -542,7 +764,152 @@ def _merged_value(ws, row, column):
                 for c in range(merged.min_col, merged.max_col + 1):
                     origins[(r, c)] = (merged.min_row, merged.min_col)
         ws.__dict__["_merge_origins"] = origins
-    return ws.cell(*origins.get((row, column), (row, column))).value
+    return origins.get((row, column))
+
+
+def _heading_spilled_over(ws, cell):
+    """True when a cell sits inside a merged range that starts higher up, on a row of words only: a heading, not a name for this row."""
+    origin = _merge_origin(ws, *cell)
+    if origin is None or origin[0] >= cell[0]:
+        return False
+    row = origin[0]
+    known = ws.__dict__.setdefault("_rows_of_words", {})  # asked for every line under a merged name, so each row is looked at once
+    if row not in known:
+        known[row] = not any(as_number(found.value) is not None for (r, _c), found in ws._cells.items() if r == row) if len(ws._cells) <= HEADING_SCAN_CELLS else not any(
+            as_number(ws.cell(row, column).value) is not None for column in range(1, min(ws.max_column, HEADING_SCAN_COLUMNS) + 1))
+    return known[row]
+
+
+def _merged_value(ws, row, column):
+    """The value a person sees in a cell: inside a merged range, that of its first cell."""
+    return ws.cell(*(_merge_origin(ws, row, column) or (row, column))).value
+
+
+def _rows_of_an_outer_level(ws, ref, labels):
+    """Closing lines whose label is merged in from the column before: 무료, across 지역 and 시설, adds up the rows above it and is not one more 시설 beside them. Such lines at the top of a table are its main figures, and those stay."""
+    if len(labels) != 1 or labels[0] < 2:
+        return frozenset()
+    _merged_value(ws, 1, 1)  # makes sure the map of merged cells exists
+    origins = ws.__dict__["_merge_origins"]
+    if not origins:
+        return frozenset()
+    line = labels[0]
+    filled, outer, last_own = 0, set(), 0
+    for position in range(ref.start, ref.last(ws) + 1):
+        here = ref.at(position, line)
+        if here in origins and origins[here] == origins.get(ref.at(position, line - 1)):
+            outer.add(position)
+            filled += 1
+        elif ws.cell(*here).value not in (None, ""):
+            filled += 1
+            last_own = position
+    closing = {position for position in outer if position > last_own}
+    return frozenset(closing) if len(outer) < filled * OUTER_LEVEL_SHARE else frozenset()
+
+
+def _rows_in_inner_label_columns(ws, ref, labels, figures):
+    """A table whose levels stand in columns of their own, one label to a line: 경북 in 시·도 with its 시·군·구 in the next column and their 행정동 in the one after, each line with its own sum. Only the outermost level that labels two lines or more is compared, as an indented pivot table is; adding all of them counts every hectare two or three times."""
+    lines = {}
+    for position in range(ref.start, ref.last(ws) + 1):
+        beside = [ws._cells.get(ref.at(position, line)) for line in figures]
+        if not any(other is not None and as_number(other.value) is not None for other in beside):
+            continue
+        named = [index for index, line in enumerate(labels) if (cell := ws._cells.get(ref.at(position, line))) is not None and isinstance(cell.value, str) and cell.value.strip() and as_number(cell.value) is None]
+        if named:
+            lines[position] = named
+    if not lines or sum(len(named) == 1 for named in lines.values()) < len(lines) * ONE_LABEL_SHARE:
+        return frozenset()
+    level = {position: named[0] for position, named in lines.items()}
+    counts = Counter(level.values())
+    outer = min((index for index, count in counts.items() if count >= 2), default=None)
+    if outer is None or len(set(level.values())) < 2:
+        return frozenset()
+    return frozenset(position for position, index in level.items() if index > outer)
+
+
+def _rows_indented_under_others(ws, ref, labels, figures):
+    """A pivot table's lines indented under the one above: schools under regions under terms, all in one column. Only the outermost can stand side by side, and only where more than one line sits at that level. A heading with no figure beside it is not a line of the table."""
+    if len(labels) > 1:
+        return _rows_in_inner_label_columns(ws, ref, labels, figures)
+    if len(labels) != 1:
+        return frozenset()
+    indents = {}
+    for position in range(ref.start, ref.last(ws) + 1):
+        cell = ws._cells.get(ref.at(position, labels[0]))
+        beside = [ws._cells.get(ref.at(position, line)) for line in figures]
+        if cell is not None and isinstance(cell.value, str) and cell.value.strip() and any(other is not None and as_number(other.value) is not None for other in beside):
+            indents[position] = cell.alignment.indent or 0
+    if len(set(indents.values())) < 2:
+        return frozenset()
+    outermost = min(indents.values())
+    top = [position for position, indent in indents.items() if indent == outermost and "".join(str(ws._cells[ref.at(position, labels[0])].value).split()).casefold() not in TOTAL_WORDS and not TOTAL_ROW.match(str(ws._cells[ref.at(position, labels[0])].value).strip()) and not GRAND_TOTAL.fullmatch(str(ws._cells[ref.at(position, labels[0])].value).strip())]
+    if len(top) < 2:
+        return frozenset()
+    return frozenset(position for position, indent in indents.items() if indent > outermost)
+
+
+def _parts_set_apart(ws, ref, labels, parts, kept):
+    """True when the sheet itself marks the rows taken as parts: indented further, written after a space or a bullet, or the rows kept in bold while the parts are not. Rows that only add up may do so by chance, as 300 = 100 + 200, and then a person is asked."""
+    def look(position):
+        cell = next((found for line in labels if position is not None and (found := ws._cells.get(ref.at(position, line))) is not None and found.value not in (None, "")), None)
+        if cell is None:
+            return 0, False, False
+        text = cell.value if isinstance(cell.value, str) else ""
+        return cell.alignment.indent or 0, text[:1].isspace() or facts.PART_MARK.match(text.strip()) is not None, bool(cell.font is not None and cell.font.b)
+
+    part_looks, kept_looks = [look(position) for position in parts], [look(position) for position in kept]
+    if not part_looks:
+        return True
+    if _named_as_parts(ws, ref, labels, parts, kept):
+        return True
+    if max(indent for indent, _spaced, _bold in part_looks) > min(indent for indent, _spaced, _bold in kept_looks or [(0, False, False)]):
+        return True
+    if any(spaced for _indent, spaced, _bold in part_looks) and not all(spaced for _indent, spaced, _bold in kept_looks):
+        return True
+    return any(bold for _indent, _spaced, bold in kept_looks) and not any(bold for _indent, _spaced, bold in part_looks)
+
+
+def _first_parts(rows, kept, row_of):
+    """{parent, parts}: the first row taken as a sum and the names under it, so a person asked can see whether 서울 really is 부산 and 대구 together."""
+    place = lambda item: row_of.get(id(item)) or 0  # noqa: E731
+    parts = [item for item in rows if id(item) not in kept]
+    above = [item for item in rows if id(item) in kept and place(item) < place(parts[0])]
+    if not above:
+        return {}
+    parent = max(above, key=place)
+    following = [item for item in rows if id(item) in kept and place(item) > place(parent)]
+    end = min((place(item) for item in following), default=float("inf"))
+    under = [item.label for item in parts if place(parent) < place(item) < end]
+    return {"parent": parent.label, "parts": ", ".join(under[:4]) + (" …" if len(under) > 4 else "")}
+
+
+def _named_as_parts(ws, ref, labels, parts, kept):
+    """True when every part's name says whose part it is: 611-01 under 611, or 서울 강남 under 서울. The row it belongs to is the nearest row kept above it."""
+    def label(position):
+        for line in labels:
+            cell = ws._cells.get(ref.at(position, line)) if position is not None else None
+            if cell is not None and cell.value not in (None, ""):
+                return str(cell.value).strip()
+        return ""
+
+    above = sorted(position for position in kept if position is not None)
+    for part in parts:
+        parent = max((position for position in above if part is not None and position < part), default=None)
+        if parent is None or not _name_under(label(parent), label(part)):
+            return False
+    return True
+
+
+def _name_under(parent, part):
+    """611-01 가정용 under 611 급수수익, 1-2 under 1, 서울 강남 under 서울."""
+    if not parent or not part:
+        return False
+    codes = [PART_CODE.match(text) for text in (parent, part)]
+    if all(codes) and any(c.isdigit() for c in codes[0].group(1)):
+        whole, piece = codes[0].group(1), codes[1].group(1)
+        if len(piece) > len(whole) and piece.startswith(whole) and piece[len(whole)] in "-.":
+            return True
+    return len(part) > len(parent) and part.startswith(parent) and (part[len(parent)].isspace() or part[len(parent)] in "-·(/")
 
 
 def _exact_exists(ws, ref, line, wanted):
@@ -559,6 +926,9 @@ def _matches(ws, ref, position, line, wanted):
     value = _merged_value(ws, *ref.at(position, line))
     if value is None:
         return False
+    year = as_year(wanted)
+    if year is not None and as_year(value) == year:
+        return True  # 2024 asked for finds [2024] and 2024년 as well: one year written three ways
     if _exact_exists(ws, ref, line, wanted):
         return str(value).strip().casefold() == wanted.casefold()
     return wanted.casefold() in str(value).casefold()
@@ -575,7 +945,7 @@ def _aggregate_value(ws, ref, position, spec, from_text=None):
         return None if value in (None, "") else int(_matches(ws, ref, position, *spec.numerator))
     if spec.kind == "count":
         return 1 if any(cell.value not in (None, "") for cell in cells) else None
-    numbers = [as_number(cell.value) for cell in cells]
+    numbers = [figure_number(cell.value) for cell in cells]
     if from_text is not None:
         from_text.extend(cell for cell, number in zip(cells, numbers) if number is not None and isinstance(cell.value, str))
     if spec.product:
@@ -591,22 +961,50 @@ def _years_only(ws, ref, position, specs):
 
 def _plain_value(ws, ref, position, line, from_text):
     cell = ws.cell(*ref.at(position, line))
-    number = as_number(cell.value)
+    number = figure_number(cell.value)
     if number is not None and isinstance(cell.value, str):
         from_text.append(cell)
     return number
 
 
-def _total_kind(ws, ref, position, before):
-    """total or subtotal if a cell before the values says so. 합계 may sit in a column left of the names, as with merged cells."""
+def _total_kind(ws, ref, position, before, chosen=()):
+    """total or subtotal if a cell before the values says so. 합계 may sit in a column left of the names, as with merged cells. A column the reference chose a row by says which rows it wants, and says nothing about them being a total of the rest."""
     for line in range(1, before):
-        value = _merged_value(ws, *ref.at(position, line))
-        if isinstance(value, str):
-            word = "".join(value.split()).casefold()
-            if word in SUBTOTAL_WORDS:
-                return "subtotal"
-            if word in TOTAL_WORDS or word.startswith("total") or word.endswith(("합계", "총계")):
-                return "total"
+        if line in chosen:
+            continue
+        kind = total_word_kind(_merged_value(ws, *ref.at(position, line)))
+        if kind:
+            return kind
+    return None
+
+
+def _several_totals(names, totals):
+    """The total lines of a table that totals unlike things, as an operating statement does with Total income and Total expenses, as facts.Item each. Empty when there is one whole.
+    The lines between them are income, expenses and results, so ranking them against one another says nothing."""
+    found, seen = [], set()
+    for name, numbers in zip(names, totals):
+        label = _clean_label(name) if isinstance(name, str) else ""
+        if not label or numbers[-1] is None:
+            continue
+        bare = lambda text: "".join(text.split()).casefold() in TOTAL_WORDS  # noqa: E731
+        if label.casefold() in seen or any(item.value == numbers[-1] and (bare(label) or bare(item.label)) for item in found):  # 합계 on top and 총계 below, both the same whole
+            continue
+        seen.add(label.casefold())
+        found.append(facts.Item(label, numbers[-1], numbers[0] if len(numbers) == 2 else None))
+    return found if len(found) >= 2 else []
+
+
+def total_word_kind(value):
+    """subtotal or total when a cell's word says its row adds up others, else None."""
+    if not isinstance(value, str):
+        return None
+    word = "".join(value.split()).casefold()
+    if word in SUBTOTAL_WORDS:
+        return "subtotal"
+    if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계", "전체")):  # 공원관리사업소 전체 is the whole office
+        return "total"
+    if ":" in value and TOTAL_ROW.match(value.rpartition(":")[2].strip()):  # Administered Income: Total administered income, a statement's heading before its line
+        return "total"
     return None
 
 
@@ -649,25 +1047,56 @@ def is_insight_key(key):
     return INSIGHT.fullmatch(key) is not None
 
 
+def _without_empty_edges(wb):
+    """The workbook without cells far past the last value that hold only a format. A format given to a whole column leaves one on row 1,048,576, and every line read up to the sheet's last row would then run a million times.
+    Only far past: a column of formulas Excel never worked out has no values either, and right beside the figures it must still be seen and warned about."""
+    for ws in wb.worksheets:
+        cells = getattr(ws, "_cells", None)
+        if not cells:
+            continue
+        filled = {key for key, cell in cells.items() if cell.value is not None}
+        last_row = max((row for row, _column in filled), default=0)
+        last_column = max((column for _row, column in filled), default=0)
+        for merged in ws.merged_cells.ranges:  # a merged heading reaches as far as it is drawn
+            if (merged.min_row, merged.min_col) in filled:
+                last_row, last_column = max(last_row, merged.max_row), max(last_column, merged.max_col)
+        far_row = last_row + EMPTY_EDGE_ROWS if ws.max_row > last_row + EMPTY_EDGE_ROWS else ws.max_row
+        far_column = last_column + EMPTY_EDGE_COLUMNS if ws.max_column > last_column + EMPTY_EDGE_COLUMNS else ws.max_column
+        for key in [key for key in cells if key[0] > far_row or key[1] > far_column]:
+            del cells[key]
+    return wb
+
+
 class ExcelSource:
     """Read-only view of a workbook: resolves keys and renders cells as Excel displays them."""
 
     def __init__(self, path):
-        _check_file(path, (".xlsx", ".xlsm"), "excel")
+        _check_file(path, readers.ALL_TYPES, "excel")
         self.path = path
+        self._converted = None
         self.wb = self._load(True)
+        self.thousands = False  # a template promises what Excel shows; a report laid out here should match its own sentences
+        self._table_lang = "ko"
         self._formula_wb = None
         self._calculated = None
         self._sheets = {ws.title.casefold(): ws for ws in self.wb.worksheets}
+        for ws in self.wb.worksheets:  # nobody can see the space at the end of a sheet's name when typing it
+            self._sheets.setdefault(ws.title.strip().casefold(), ws)
         self._dated = {}
         self._made = {}
 
     def _load(self, data_only):
         try:
-            return openpyxl.load_workbook(self.path, data_only=data_only)
+            if os.path.splitext(self.path)[1].lower() in readers.OTHER_TYPES:
+                if self._converted is None:  # no formulas to tell apart from their values, so once will do
+                    self._converted = readers.load(self.path)
+                return self._converted
+            return _without_empty_edges(openpyxl.load_workbook(self.path, data_only=data_only))
         except PermissionError:
             raise SlideFillError("file_locked", path=self.path)
-        except Exception as exc:  # openpyxl raises many types on damaged or unusual files
+        except readers.Protected:
+            raise SlideFillError("file_protected", path=self.path)
+        except Exception as exc:  # the readers raise many types on damaged or unusual files
             raise SlideFillError("file_unreadable", path=self.path, detail=str(exc))
 
     def locate(self, key):
@@ -678,6 +1107,8 @@ class ExcelSource:
         return self._locate_name(key)
 
     def _sheet(self, name):
+        if name.casefold() in self._sheets:  # a sheet's name can end in a space
+            return self._sheets[name.casefold()]
         name = name.strip()
         if len(name) >= 2 and name[0] == name[-1] == "'":
             name = name[1:-1].replace("''", "'")
@@ -739,11 +1170,10 @@ class ExcelSource:
             self._calculated = False
             self._formula_wb = self._formula_wb or self._load(False)
             for ws in self._formula_wb.worksheets:
-                for row in ws.iter_rows():
-                    for cell in row:
-                        if cell.data_type == "f" and self.wb[ws.title][cell.coordinate].value is not None:
-                            self._calculated = True
-                            return False
+                for cell in list(ws._cells.values()):  # only cells that exist: iter_rows would make every one a sheet's range covers, and one reaching column XFC is billions
+                    if cell.data_type == "f" and self.wb[ws.title][cell.coordinate].value is not None:
+                        self._calculated = True
+                        return False
         return not self._calculated
 
     def _has_formula(self, ws, row, col):
@@ -870,6 +1300,8 @@ class ExcelSource:
         others = [as_part_of_date(ws.cell(*ref.at(position, line)).value) for line in ref.date_parts[1:]]
         if year is None or None in others:
             return None
+        if _holds_quarters(ws, ref, ref.date_parts[1]):
+            return year.replace(month=(others[0] - 1) * 3 + 1) if len(others) == 1 and 1 <= others[0] <= 4 else None
         try:
             return year.replace(month=others[0], day=others[1] if len(others) > 1 else 1)
         except ValueError:
@@ -879,6 +1311,8 @@ class ExcelSource:
         """(raw, text, format) of a row's date as a person should read it. A date split across cells is shown joined."""
         if ref.date_parts:
             date = self._date_from_parts(ref.sheets[sheet], ref, position)
+            if _holds_quarters(ref.sheets[sheet], ref, ref.date_parts[1]):
+                return date, f"{date.year} Q{(date.month - 1) // 3 + 1}", "General"
             text = date.strftime("%Y-%m-%d" if len(ref.date_parts) == 3 else "%Y-%m")
             return date, text, "General"
         return self.read(ref.sheets[sheet], *ref.at(position, ref.date))[:3]
@@ -921,7 +1355,7 @@ class ExcelSource:
     def _has_figure(self, ws, row, column):
         """A number, a date, or a cell read() must report: anything but text, which may only be a label waiting for figures."""
         cell = ws.cell(row, column)
-        if cell.data_type == "e" or isinstance(cell.value, (dt.date, dt.time)) or as_number(cell.value) is not None:
+        if cell.data_type == "e" or isinstance(cell.value, (dt.date, dt.time)) or figure_number(cell.value) is not None:
             return True
         return cell.value is None and self._filled(ws, row, column)
 
@@ -996,21 +1430,33 @@ class ExcelSource:
         saved = self.wb.properties.modified
         return min(saved.date(), dt.date.today()) if saved else dt.date.today()
 
-    def _period_issues(self, points, date_header=""):
+    def _period_issues(self, points, date_header="", ws=None, ref=None):
         """Warn when the newest figure covers less than the figures it is compared with."""
         months = facts.partial_year(points)
         if months:
             return [Issue("latest_partial_year", {"date": points[-1].date.strftime("%Y-%m"), "months": months})]
         as_of = self._as_of()
+        if ws is not None and not ref.date_parts and self._fiscal_years(ws, ref):  # 2025-26 is read as 2026, and it is over long before 2026 is
+            if as_of >= dt.date(points[-1].date.year, *FISCAL_YEAR_ENDS):
+                return []
+            return [self._unfinished_issue(points, as_of)]
         # 학년도 2026 is not the calendar year 2026, so a calendar cannot say it is unfinished.
         if not SCHOOL_YEAR.search(date_header) and facts.unfinished(points, as_of):
-            return [Issue("latest_unfinished", {"date": points[-1].date.date().isoformat(), "saved": as_of.isoformat()})]
+            return [self._unfinished_issue(points, as_of)]
         return []
+
+    def _unfinished_issue(self, points, as_of):
+        params = {"date": points[-1].date.date().isoformat(), "saved": as_of.isoformat()}
+        stated = self._stated_as_of()
+        # The date the file itself gives says more than the day it was saved, if it falls where it could: another date in a note must not move the period.
+        if stated and stated <= as_of and len(points) >= 2 and stated > points[-2].date.date():
+            params["as_at"] = stated.isoformat()
+        return Issue("latest_unfinished", params)
 
     def _prose_show(self, ws, row, column):
         """How a figure reads in a sentence: the cell's own format, but a cell with no format gets sensible digits rather than all of them."""
         fmt = self._cell_format(ws.cell(row, column))
-        if fmt in ("General", "@"):
+        if fmt in ("General", "@", "0"):
             return facts.plain_number
         return lambda value: format_value(value, fmt, self.wb.epoch)[0]
 
@@ -1019,8 +1465,19 @@ class ExcelSource:
         date, i, position = self._latest_rows(ref)[-1]
         return self._date_cell(ref, i, position)[1], f"{date.date().isoformat()} · {ref.sheets[i].title}!{_line_name(ref, ref.date)}", self._row_notes(ref, date)
 
+    def _fully_filled(self, rows, ref):
+        """The rows filled as a row of this sheet usually is. Asked only for the date, there is no column to judge by, and a month ahead with only its target written must not pass for the latest."""
+        counts = []
+        for _date, i, position in rows:
+            ws = ref.sheets[i]
+            counts.append(sum(self._has_figure(ws, *ref.at(position, line)) for line in self._other_lines(ws, ref)))
+        usual = Counter(counts).most_common(1)[0][0]
+        return [row for row, count in zip(rows, counts) if count >= usual] or rows
+
     def _latest_text(self, ref, key):
         rows = self._latest_rows(ref)
+        if not ref.plain:
+            rows = self._fully_filled(rows, ref)
         if len(ref.plain) > 1:
             raise IssueError("range_for_text", key=key, source=key)
         newest = rows[-1][0]
@@ -1036,27 +1493,53 @@ class ExcelSource:
 
     def _header(self, ws, ref, top, line):
         """The nearest filled cell before the first data row or column, or the line's name when the sheet has no header."""
-        names = [(position, _clean_label(text)) for position in range(top - 1, 0, -1)
-                 if (text := self.read(ws, *ref.at(position, line))[1]) and "," not in text.replace(", ", "")[:6] and (as_number(ws.cell(*ref.at(position, line)).value) is None or as_year(ws.cell(*ref.at(position, line)).value))]
+        found = ((position, _clean_label(text)) for position in range(top - 1, 0, -1)
+                 if (text := self.read(ws, *ref.at(position, line))[1]) and "," not in text.replace(", ", "")[:6] and (as_number(ws.cell(*ref.at(position, line)).value) is None or as_year(ws.cell(*ref.at(position, line)).value)))
+        names, useful_seen = [], 0
+        for place, text in found:  # the nearest and two that are not codes are all it uses: a table that starts on row 5,000 need not read every row above
+            names.append((place, text))
+            useful_seen += not ID_CODE.fullmatch(text)
+            if useful_seen >= 2:
+                break
         if not names:
             return _line_name(ref, line)
         position, name = names[0]
         if "".join(name.split()).casefold() in TOTAL_WORDS | SUBTOTAL_WORDS:
             parent = self._heading_over(ws, ref, position - 1, line)
+            if parent and "".join(parent.split()).casefold() in TOTAL_WORDS and "".join(name.split()).casefold() in TOTAL_WORDS:
+                return parent  # 계 under 합계 is one total
             return f"{parent} {name}" if parent else name
         useful = [later for _place, later in names if not ID_CODE.fullmatch(later)]
         chosen = useful[0] if useful else name
         if UNIT_HEADING.fullmatch(chosen) and len(useful) > 1:  # (Billion Kilowatthours) says how it is measured, not what it is
             return f"{useful[1]} {chosen}"
-        return chosen
+        return self._with_merged_heading(ws, ref, next(place for place, later in names if later == chosen), line, chosen)
+
+    def _with_merged_heading(self, ws, ref, position, line, name):
+        """건수 under 일반수출신고, with another 건수 under 간이수출신고: alone it reads as the whole. Only a heading placed over this very column counts, so a sheet's title is not borrowed."""
+        if position < 2:
+            return name
+        last = min(ws.max_column if ref.at(1, 2)[1] == 2 else ws.max_row, MAX_LINES_FOR_A_REPEAT)
+        if not any(other != line and _clean_label(self.read(ws, *ref.at(position, other))[1] or "") == name for other in range(1, last + 1)):
+            return name
+        above = _merged_value(ws, *ref.at(position - 1, line))
+        if above in (None, "") or as_number(above) is not None:
+            return name
+        above = _clean_label(str(above))
+        return f"{above} {name}" if len(above) >= MIN_HEADING_LENGTH and above != name else name  # C over 제조업 is an industry's code letter
 
     def _heading_over(self, ws, ref, position, line):
-        """A heading merged across several columns sits in the first of them, so a 소계 under it looks back along the row above."""
+        """A heading merged across several columns sits in the first of them, so a 소계 under it looks back along the row above. A title alone on that row is about the sheet, not this column."""
         if position < 1:
             return ""
         for back in range(line, 0, -1):
             text = self.read(ws, *ref.at(position, back))[1]
             if text:
+                if PIVOT_HEADING.fullmatch(text.strip()):  # Column Labels says nothing about the figure
+                    return ""
+                alone =not any(self.read(ws, *ref.at(position, other))[1] for other in range(1, line + HEADING_LOOK_AHEAD) if other != back)
+                if back != line and alone and (back == 1 or _merged_value(ws, *ref.at(position, line)) in (None, "")):
+                    return ""
                 return _clean_label(text)
         return ""
 
@@ -1066,10 +1549,13 @@ class ExcelSource:
         issues = self._row_notes(ref, picked[-1][0])
         if len(picked) != count:
             issues.append(Issue("latest_fewer", {"wanted": count, "found": len(picked)}))
+        gaps = [date for date, i, position in picked if any(ref.sheets[i].cell(*ref.at(position, line)).value in (None, "") for line in ref.plain)]
+        if gaps and len(ref.plain) > 1:  # targets written for the months ahead: their actual figures show as blanks
+            issues.append(Issue("latest_partial_rows", {"count": len(gaps), "first": gaps[0].date().isoformat()}))
         first_sheet = ref.sheets[picked[0][1]]
         top = self._dated_rows(first_sheet, ref)[0][1]
         lines = (ref.date, *ref.plain)
-        names = [self._date_header(first_sheet, ref, top)] + [self._header(first_sheet, ref, top, line) for line in ref.plain]
+        names = [self._report_date_heading(first_sheet, ref, top)] + [self._report_heading(self._header(first_sheet, ref, top, line)) for line in ref.plain]
         table = [[(text, text, "General") for text in names]]
         for _date, i, position in picked:
             line_cells = [self._date_cell(ref, i, position)]
@@ -1082,6 +1568,19 @@ class ExcelSource:
         first, last = picked[0][0].date().isoformat(), picked[-1][0].date().isoformat()
         dates = last if first == last else f"{first} ~ {last}"
         return table, f"{dates} · {_sheet_names(ref)}!{letters}", issues
+
+    def _report_heading(self, name):
+        """A template shows the sheet's own heading. A report laid out here says it as its sentences do."""
+        return facts.readable_name(name) if self.thousands else name
+
+    def _report_date_heading(self, ws, ref, top):
+        """What a laid-out table calls its first column. Across a row, the cell before the dates names the row's items, not the dates. The same goes for a sheet's name written there."""
+        name = self._date_header(ws, ref, top)
+        if not self.thousands:
+            return name
+        if ref.by_row or name.casefold() == ws.title.casefold() or name == _line_name(ref, ref.date):
+            return PERIOD_WORD[self._table_lang]
+        return TRAILING_TOTAL.sub("", name)
 
     def _latest_sum_text(self, ref, count, key):
         """{{최신:시트!A,합계(D)}}: the newest date's total. Returns (text, source, issues)."""
@@ -1102,7 +1601,7 @@ class ExcelSource:
             issues.append(Issue("latest_fewer", {"wanted": count, "found": len(picked)}))
         top_ws = ref.sheets[picked[0].sheet]
         top = self._dated_rows(top_ws, ref)[0][1]
-        names = (self._date_header(top_ws, ref, top), found.header)
+        names = (self._report_date_heading(top_ws, ref, top), self._report_heading(found.header))
         table = [[(text, text, "General") for text in names]]
         show = found.show(self)
         for point in picked:
@@ -1139,9 +1638,10 @@ class ExcelSource:
         if rows[-1][0] == (rows[-2][0] if len(rows) > 1 else None):
             raise IssueError("latest_ambiguous", date=rows[-1][0].date().isoformat(), count=sum(row[0] == rows[-1][0] for row in rows))
         points, from_text = [], []
+        unread = [raw for date, i, position in self._all_rows(ref) if date <= rows[-1][0] and _unread_figure(raw := ref.sheets[i].cell(*ref.at(position, line)).value)] + self._unread_dates(ref)
         for date, i, position in rows:
             cell = ref.sheets[i].cell(*ref.at(position, line))
-            number = as_number(cell.value)
+            number = figure_number(cell.value)
             if number is not None:
                 points.append(facts.Point(date, number, position, i))
                 if isinstance(cell.value, str):
@@ -1150,7 +1650,10 @@ class ExcelSource:
         repeated = sorted(date for date, times in Counter(p.date for p in points).items() if times > 1)
         if repeated:
             raise IssueError("latest_duplicates", date=repeated[-1].date().isoformat(), count=len(repeated))
+        points = self._with_period_names(points, ref)
         notes = [Issue("number_from_text", {"cell": f"{from_text[-1].parent.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)})] if from_text else []
+        if unread:
+            notes.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
             notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
         newest = rows[-1]
@@ -1160,19 +1663,43 @@ class ExcelSource:
         found = Series(ref, points, (newest[1], newest[2]), line, header, notes)
         if not points:
             return found
-        found.notes = self._row_notes(ref, points[-1].date) + self._period_issues(points, self._date_header(top_ws, ref, top)) + notes
+        found.notes = self._row_notes(ref, points[-1].date) + self._period_issues(points, self._date_header(top_ws, ref, top), top_ws, ref) + notes
         newest_point = points[-1]
         fmt = self._cell_format(ref.sheets[newest_point.sheet].cell(*ref.at(newest_point.row, line)))
         found.rate = self._is_rate_series(top_ws, ref, top, line, header, fmt) or AMOUNT_HEADING.search(header) is not None
         found.scale = 100 if "%" in fmt else facts.AMOUNT if AMOUNT_HEADING.search(header) else 1
+        found.per_cent_unit = "%" not in fmt and in_per_cent(top_ws, ref.at(top, line)[0])
         return found
+
+    def _unread_dates(self, ref):
+        """Cells between the first and last date that hold digits but no date, such as 2026_: their rows are left out of every period, and that must not go unsaid."""
+        if ref.date_parts:
+            return []
+        found = []
+        for ws in ref.sheets:
+            dated = self._dated_rows(ws, ref)
+            if dated:
+                at = {position for _date, position in dated}
+                found += [raw for position in range(dated[0][1], dated[-1][1] + 1) if position not in at and _unread_figure(raw := ws.cell(*ref.at(position, ref.date)).value)]
+        return found
+
+    def _with_period_names(self, points, ref):
+        """A financial year or its quarter is read as a date so that it can be sorted, but a sentence must call it what the sheet does."""
+        if not points or ref.date_parts:
+            return points
+        if self._fiscal_years(ref.sheets[points[0].sheet], ref):
+            return [replace(point, label=f"{point.date.year - 1}-{point.date.year % 100:02d}") for point in points]
+        raws = [ref.sheets[point.sheet].cell(*ref.at(point.row, ref.date)).value for point in points]
+        if all(isinstance(raw, str) and _fiscal_quarter(DATE_MARK.sub("", raw.strip())) for raw in raws):
+            return [replace(point, label=" ".join(raw.split())) for point, raw in zip(points, raws)]
+        return points
 
     def _summed_series(self, ref):
         """Rows added up per calendar day: the person asked for this by writing 합계( ) or 건수( ). Nothing is summed unasked."""
         spec = ref.values[0]
         if len(ref.values) != 1:
             raise IssueError("calc_columns", key=spec.word)
-        groups, owners, from_text = {}, {}, []
+        groups, owners, from_text, unread = {}, {}, [], []
         for i, ws in enumerate(ref.sheets):
             dated = dict((position, date) for date, position in self._dated_rows(ws, ref))
             current, current_position = None, None
@@ -1185,6 +1712,8 @@ class ExcelSource:
                     continue
                 number = _aggregate_value(ws, ref, position, spec, from_text)
                 if number is None:
+                    if spec.kind in ("sum", "mean"):
+                        unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in spec.lines) if _unread_figure(raw)]
                     continue
                 day = dt.datetime.combine(current.date(), dt.time())
                 if owners.setdefault(day, i) != i:
@@ -1197,6 +1726,7 @@ class ExcelSource:
                     group[4] = max(group[4] or 0, moment)
         if not groups:
             raise IssueError("latest_no_dates", sheet=ref.sheets[0].title, column=_line_name(ref, ref.date))
+        unread += self._unread_dates(ref)
         days = sorted(groups)
         points = [facts.Point(day, groups[day][0], groups[day][3], groups[day][2]) for day in days]
         top_ws = ref.sheets[groups[days[0]][2]]
@@ -1205,27 +1735,32 @@ class ExcelSource:
         name = _aggregate_name(spec, names)
         if spec.kind in ("mean", "rate"):
             points = [facts.Point(p.date, p.value / groups[p.date][1], p.row, p.sheet) for p in points]
+        points = self._with_period_names(points, ref)
         newest = points[-1]
         found = Series(ref, points, (newest.sheet, newest.row), None if spec.kind in ("count", "rate") or spec.product else spec.lines[0], name, [])
-        found.notes = self._period_issues(points, self._date_header(top_ws, ref, top)) + _group_notes(days, groups)
+        found.notes = self._period_issues(points, self._date_header(top_ws, ref, top), top_ws, ref) + _group_notes(days, groups)
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
             found.notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
         found.percent = spec.kind == "rate"
-        found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, ""))
-        found.scale = 100 if spec.kind == "rate" else 1
+        first_fmt = self._cell_format(top_ws.cell(*ref.at(top, spec.lines[0]))) if spec.kind in ("sum", "mean") and spec.lines else ""
+        found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, first_fmt))
+        found.scale = 100 if spec.kind == "rate" or "%" in first_fmt else 1  # 0.92 to 0.93 is one point, not 0.01
+        found.per_cent_unit = spec.kind in ("sum", "mean") and in_per_cent(top_ws, ref.at(top, spec.lines[0])[0])
         usual = _usual_rows(days, groups)
         if usual is not None and groups[days[-1]][1] < usual and spec.kind in ("sum", "count"):
             found.cut_short = (groups[days[-1]][1], usual)
         if from_text:
             found.notes.append(Issue("number_from_text", {"cell": f"{from_text[-1].parent.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)}))
+        if unread:
+            found.notes.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         return found
 
     @staticmethod
     def _is_rate_series(ws, ref, top, line, header, fmt):
         """True when the figures are rates, scores or changes already, so they move in points. Judged from the heading, the format, the sheet's name, and plain words above the table."""
-        if "%" in fmt or RATE_HEADING.search(header) or RATE_TITLE.search(ws.title):
+        if "%" in fmt or RATE_HEADING.search(header) or RATE_TITLE.search(ws.title) or in_per_cent(ws, ref.at(top, line)[0]):
             return True
-        above = " ".join(str(ws.cell(*ref.at(position, other)).value or "") for position in range(top - 1, 0, -1) for other in (line, 1))
+        above =" ".join(str(ws.cell(*ref.at(position, other)).value or "") for position in range(top - 1, 0, -1) for other in (line, 1))
         return RATE_EXPLICIT.search(above) is not None
 
     def _series_words(self, found, lang):
@@ -1233,22 +1768,59 @@ class ExcelSource:
 
         Warnings stay in the app. Only the sentence reaches the slide, so a period that is not whole has to say so there.
         """
-        points, show = found.points, found.show(self)
+        points, show, label = found.points, found.show(self), found.label
         if found.cut_short:
             text = facts.cut_short_text(points, *found.cut_short, show, lang)
-            head = f"{facts.point_text(points[-1].date, points, lang)} {found.header} {show(points[-1].value)}."
+            head = f"{facts.point_text(points[-1].date, points, lang)} {label} {show(points[-1].value)}."
             fact = facts.Fact("read_cut_short", text, tuple(facts.NUMBER.findall(text)))
             return f"{head} {text}", [fact], [fact, facts.Fact("value", head, tuple(facts.NUMBER.findall(head)))]
+        if len(points) >= 2 and any(issue.code == "latest_unfinished" for issue in found.notes):
+            return self._unfinished_words(found, show, lang)
         if found.rate:
-            note, read, pack = (facts.rate_sentence(points, found.header, show, lang, found.scale), facts.rate_readings(points, show, lang, found.scale),
-                                facts.rate_pack(points, found.header, show, lang, found.scale))
+            note, read, pack = (facts.rate_sentence(points, label, show, lang, found.scale), facts.rate_readings(points, show, lang, found.scale),
+                                facts.rate_pack(points, label, show, lang, found.scale))
         else:
-            note, read, pack = facts.sentence(points, found.header, show, lang), facts.readings(points, show, lang), facts.fact_pack(points, found.header, show, lang)
+            note, read, pack = facts.sentence(points, label, show, lang), facts.readings(points, show, lang), facts.fact_pack(points, label, show, lang)
         lead = self._leads(found, lang)
         if lead:
             fact = facts.Fact("read_lead", lead, tuple(facts.NUMBER.findall(lead)))
             return f"{lead} {note}", [fact] + list(read), [fact] + list(pack)
         return note, list(read), list(pack)
+
+    def _unfinished_words(self, found, show, lang):
+        """A period still running says what it holds so far, and the readings come from the periods that have ended. Three months of a year set against whole years would read as a collapse, however well warned."""
+        points, label = found.points, found.label
+        ended = points[:-1]
+        now = points[-1]
+        ko = lang == "ko"
+        lead = self._leads(found, lang)
+        head = f"{facts.point_text(now.date, points, lang)} {label} {show(now.value)}."
+        last = f"{facts.point_text(ended[-1].date, points, lang)} {show(ended[-1].value)}"
+        settled = f"끝난 기간 중 가장 최근은 {last}입니다." if ko else f"The latest period that has ended is {last}."
+        earlier = facts.rate_readings(ended, show, lang, found.scale) if found.rate else facts.readings(ended, show, lang)
+        # One statement: apart, -25.1% against the year before reads as being about the period still running.
+        words = " ".join([settled] + [fact.text for fact in earlier])
+        reading = facts.Fact("read_ended", words, tuple(facts.NUMBER.findall(words)))
+        warning = facts.Fact("read_lead", lead, tuple(facts.NUMBER.findall(lead)))
+        value = facts.Fact("value", f"{facts.point_text(now.date, points, lang)} {label}: {show(now.value)}", tuple(facts.NUMBER.findall(show(now.value))))
+        return f"{lead} {head}", [reading], [warning, reading, value]
+
+    def _stated_as_of(self):
+        """The date a workbook says its data runs to, on any sheet: Data as at 30-Sep-2025. None when it does not say."""
+        if not hasattr(self, "_as_at"):
+            self._as_at = None
+            for ws in self.wb.worksheets:
+                columns = min(ws.max_column, AS_AT_COLUMNS)
+                for row in range(1, min(ws.max_row, AS_AT_ROWS) + 1):
+                    for column in range(1, columns + 1):
+                        cell = ws._cells.get((row, column))
+                        text = cell.value if cell is not None and isinstance(cell.value, str) else ""
+                        match = AS_AT.search(text) if len(text) <= AS_AT_LENGTH else None
+                        day = _stated_day(text[match.end():]) if match else None
+                        if day:
+                            self._as_at = day
+                            return day
+        return self._as_at
 
     @staticmethod
     def _leads(found, lang):
@@ -1261,8 +1833,13 @@ class ExcelSource:
                 parts.append(f"그 뒤 {issue.params['count']}개 기간은 '{issue.params['text']}'이라 {day} 값을 썼습니다." if ko else
                              f"The {issue.params['count']} periods after it say '{issue.params['text']}', so this uses {day}.")
             elif issue.code == "latest_unfinished":
-                parts.append(f"{day}은 파일을 저장한 {issue.params['saved']}에 아직 끝나지 않은 기간이라 값이 덜 쌓였을 수 있습니다." if ko else
-                             f"{day} had not ended when the file was saved on {issue.params['saved']}, so the value may be incomplete.")
+                as_at = issue.params.get("as_at")
+                if as_at:
+                    parts.append(f"{day}은 자료 기준일 {as_at}에 아직 끝나지 않은 기간이라 값이 덜 쌓였을 수 있어, 다른 기간과 비교하지 않았습니다." if ko else
+                                 f"{day} had not ended when the data was taken on {as_at}, so the value may be incomplete and is not compared with other periods.")
+                else:
+                    parts.append(f"{day}은 파일을 저장한 {issue.params['saved']}에 아직 끝나지 않은 기간이라 값이 덜 쌓였을 수 있어, 다른 기간과 비교하지 않았습니다." if ko else
+                                 f"{day} had not ended when the file was saved on {issue.params['saved']}, so the value may be incomplete and is not compared with other periods.")
             elif issue.code == "latest_partial_day":
                 parts.append(f"그날 마지막 기록이 {issue.params['last']}로 평소 {issue.params['usual']}보다 일러 값이 덜 쌓였을 수 있습니다." if ko else
                              f"The last entry that day is at {issue.params['last']}, while days usually run to {issue.params['usual']}, so the value may be incomplete.")
@@ -1297,7 +1874,8 @@ class ExcelSource:
             top = facts.extreme(points, int(count or 30), highest=name == "peak")
             return self._date_cell(ref, top.sheet, top.row)[1], f"{top.date.date().isoformat()} · {found.cell_text(top)}", issues
         if name in ("읽는법", "reading"):
-            read = self._series_words(found, "ko" if name == "읽는법" else "en")[1]
+            note, read, _pack = self._series_words(found, "ko" if name == "읽는법" else "en")
+            read = [fact for fact in read if fact.text not in note] or read  # a rate's sentence already holds its change, and the slide shows both
             if not read:
                 return None, f"{when} · {cell}", issues + [Issue("calc_no_base", {"date": when})]
             return " ".join(fact.text for fact in read), f"{when} · {cell}", issues
@@ -1337,33 +1915,42 @@ class ExcelSource:
         labels, specs = ref.label_lines, ref.specs
         lower = min(spec.lines[0] if isinstance(spec, Aggregate) else spec for spec in specs)
         items, counts, order, totals, unlabeled, from_text, first = {}, {}, [], [], 0, [], None
+        unread, places, total_names = [], {}, []
         heading = self._heading_row(ws, ref, labels, specs)
+        outer = _rows_of_an_outer_level(ws, ref, labels)
+        chosen = {line for spec in specs if isinstance(spec, Aggregate) for line, _word in spec.filters}
+        indented = _rows_indented_under_others(ws, ref, labels, [spec.lines[0] if isinstance(spec, Aggregate) else spec for spec in specs])
         for position in range(ref.start, ref.last(ws) + 1):
-            if position == heading:
+            if position == heading or position in indented:
                 continue
             texts_so_far = len(from_text)
             numbers = [_aggregate_value(ws, ref, position, spec, from_text) if isinstance(spec, Aggregate) else _plain_value(ws, ref, position, spec, from_text) for spec in specs]
             if all(number is None for number in numbers):
+                wanted = [line for spec in specs if not isinstance(spec, Aggregate) or spec.kind in ("sum", "mean") for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]  # 건수( ) counts rows and reads no figure
+                unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in wanted) if _unread_figure(raw)]
                 continue
-            if first is None and _years_only(ws, ref, position, specs):
+            if first is None and _years_only(ws, ref, position, specs) and not _years_only(ws, ref, position + 1, specs):
                 del from_text[texts_so_far:]
-                continue  # 2023, 2024 heading the value columns, not an item
+                continue  # 2023, 2024 heading the value columns, not an item. 1987 and 1994 under 건수 on row after row are counts
             first = first or position
-            kind = _total_kind(ws, ref, position, lower)
+            kind = _total_kind(ws, ref, position, lower, chosen)
             if kind == "total":
                 totals.append(numbers)
+                total_names.append(self._label(ws, ref, position, labels))
                 continue
-            if kind == "subtotal":
+            if kind == "subtotal" or position in outer:
                 continue
             label = self._label(ws, ref, position, labels)
             if not label:
                 unlabeled += 1
                 continue
             if any(isinstance(spec, Aggregate) for spec in specs) and label in items:
+                places.setdefault(label, position)
                 items[label] = [(a or 0) + (b or 0) if a is not None or b is not None else None for a, b in zip(items[label], numbers)]
                 counts[label] = [c + (b is not None) for c, b in zip(counts[label], numbers)]
             else:
                 key = label if label not in items else (label, position)
+                places[key] = position
                 items[key] = numbers
                 counts[key] = [int(b is not None) for b in numbers]
                 order.append(key)
@@ -1371,20 +1958,42 @@ class ExcelSource:
         for key in order:  # a mean or a rate is worked out once every row of the item is in
             items[key] = [value / count if value is not None and isinstance(spec, Aggregate) and spec.kind in ("mean", "rate") else value
                           for value, count, spec in zip(items[key], counts[key], specs)]
+        year_line = _year_beside_months(order)
+        if year_line:  # 1월 to 12월 and 연간: the year is their whole, not a thirteenth month to rank them against
+            order.remove(year_line)
+            totals.append(items[year_line])
+            total_names.append(year_line)
         if len(order) < 2:
             raise IssueError("cross_no_items", sheet=ws.title, column=_line_name(ref, labels[0]))
         rows = [facts.Item(key if isinstance(key, str) else key[0], items[key][-1], items[key][0] if len(specs) == 2 else None) for key in order]
+        row_of = {id(item): places.get(key) for item, key in zip(rows, order)}
         first_line = specs[-1].lines[0] if isinstance(specs[-1], Aggregate) else specs[-1]
         header = self._header(ws, ref, first or ref.start, first_line)
         fmt_cell = ws.cell(*ref.at(first or ref.start, first_line))
         fmt = self._cell_format(fmt_cell)
         last_spec = specs[-1]
+        priced = facts.is_price(header) and not (isinstance(last_spec, Aggregate) and last_spec.kind == "sum")  # each row's fee: 합계( ) written out asks to add them anyway
         is_rate_kind = isinstance(last_spec, Aggregate) and last_spec.kind == "rate"
         if isinstance(last_spec, Aggregate) and (last_spec.kind in ("mean", "rate", "count") or last_spec.filters):
             header = _aggregate_name(last_spec, [header])
         if is_rate_kind:
             fmt = "0.0%"
-        issues = []
+        elif isinstance(last_spec, Aggregate) and last_spec.kind == "count":
+            fmt = "General"  # rows counted by a date column are a number of rows, not a date: 2, not 01월 02일
+        issues = [Issue("cross_total_found", {"label": year_line})] if year_line else []
+        basis = ""
+        if unread:
+            issues.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
+        if len(specs) == 2:
+            first_name = self._header(ws, ref, first or ref.start, specs[0].lines[0] if isinstance(specs[0], Aggregate) else specs[0])
+            second_name = self._header(ws, ref, first or ref.start, first_line)
+            if _reads_backwards(first_name, second_name):
+                issues.append(Issue("cross_backwards", {"first": first_name, "second": second_name}))
+            if BUDGET_NAME.search(first_name) and not BUDGET_NAME.search(second_name):
+                basis = "budget"  # 2024-25 Published Budget beside 2024-25 Actual: the same year, what was planned and what happened
+        whole_lines = _several_totals(total_names, totals)
+        if whole_lines:
+            issues.append(Issue("cross_several_totals", {"count": len(whole_lines), "names": ", ".join(item.label for item in whole_lines[:3])}))
         if from_text:
             issues.append(Issue("number_from_text", {"cell": f"{ws.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)}))
         if unlabeled:
@@ -1396,16 +2005,23 @@ class ExcelSource:
                 rows = [item for item in rows if item is not largest]
                 stated = [largest.before, largest.value] if len(specs) == 2 else [largest.value]
                 issues.append(Issue("cross_total_found", {"label": largest.label}))
-        rate = is_rate_kind or (isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)
+        per_cent = not is_rate_kind and in_per_cent(ws, ref.at(first or ref.start, first_line)[0])
+        # A price is not added, but it moves in percent: +300포인트 says nothing about 1,000 to 1,300.
+        rate = is_rate_kind or per_cent or (not priced and ((isinstance(last_spec, Aggregate) and last_spec.kind == "mean") or facts.is_rate(f"{header} {ws.title}", fmt)))
         levels = facts.top_level(rows)
         if levels:  # 자산 and its parts, numbered by level: only the top level can stand side by side, and none of it adds up to a whole
             rows = levels
             issues.append(Issue("cross_outline", {"count": len(rows)}))
         nested = facts.without_parts(rows) if not levels else None
         if nested:  # a row that is the sum of the rows under it: they are its parts, not its rivals
+            kept = {id(item) for item in nested}
+            marked = _parts_set_apart(ws, ref, labels, [row_of.get(id(item)) for item in rows if id(item) not in kept], [row_of.get(id(item)) for item in nested])
+            params = {"count": len(nested), "by_sum": not marked}
+            if not marked:
+                params.update(_first_parts(rows, kept, row_of))
             rows = nested
-            issues.append(Issue("cross_nested", {"count": len(rows)}))
-        additive = not levels and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
+            issues.append(Issue("cross_nested", params))
+        additive = not levels and not per_cent and not priced and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
         total = before_total = None
         added = sum(item.value for item in rows)
         has_total = False
@@ -1429,10 +2045,12 @@ class ExcelSource:
         # A rate shown as 4 and 6 cannot explain +1.8 points, so a rate keeps its digits unless the cell is a real percentage.
         plain = fmt in ("General", "@") or (rate and "%" not in fmt)
         show = facts.plain_number if plain else (lambda value: format_value(value, fmt, self.wb.epoch)[0])
+        if per_cent and "%" not in fmt:
+            show = _with_per_cent(show)
         source = f"{ws.title}!{','.join(_line_name(ref, line) for line in labels)}," + ",".join(spec.word if isinstance(spec, Aggregate) else _line_name(ref, spec) for spec in specs) + f" · {len(rows)}"
         label_header = self._header(ws, ref, first or ref.start, labels[-1])
         label_header = "" if label_header == _line_name(ref, labels[-1]) else label_header  # no heading: blank, not a column letter
-        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1)
+        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1, basis, whole_lines)
 
     def _heading_row(self, ws, ref, labels, specs):
         """When rows are counted, the row of headings would count as one more item: a name that appears once among names that repeat."""
@@ -1449,9 +2067,13 @@ class ExcelSource:
         return names[first][0] if len(names[first]) == 1 and max(len(places) for places in names.values()) > 1 else None
 
     def _label(self, ws, ref, position, lines):
-        """The most specific name a row has: the last filled cell of its label columns."""
+        """The most specific name a row has: the last filled cell of its label columns.
+        A heading merged down over the first line of figures is not that line's name: 구 분 over A3:C5, with the sheet's total of 7,164 on row 5."""
         for line in reversed(lines):
-            value = _merged_value(ws, *ref.at(position, line))
+            here = ref.at(position, line)
+            if _heading_spilled_over(ws, here):
+                continue
+            value = _merged_value(ws, *here)
             # A bare number is a figure or a code, not a name a reader could use.
             if value not in (None, "") and as_number(value) is None:
                 return _clean_label(value) if isinstance(value, str) else self.read(ws, *ref.at(position, line))[1]
@@ -1461,9 +2083,9 @@ class ExcelSource:
         found = self._comparison(ref)
         lang = "ko" if name in ("읽는법", "해설") else "en"
         if name in ("읽는법", "reading"):
-            text = " ".join(fact.text for fact in facts.item_readings(found.items, found.show, lang, found.total, found.additive, found.before_total, limit=5, stated=found.stated, rate=found.rate, scale=found.scale))
+            text = " ".join(fact.text for fact in facts.item_readings(found.items, found.show, lang, found.total, found.additive, found.before_total, limit=5, stated=found.stated, rate=found.rate, scale=found.scale, basis=found.basis, wholes=found.wholes))
         else:
-            text = facts.item_sentence(found.items, found.header, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale)
+            text = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes)
         return text, found.source, found.issues
 
     def _rank_text(self, key):
@@ -1499,7 +2121,10 @@ class ExcelSource:
             raise IssueError("cross_not_additive", header=found.header)
         ordered = found.ranked()
         picked = ordered[:count]
-        names = [found.label_header, found.header] + ([SHARE_HEADER] if with_share else [])
+        label_header = found.label_header
+        if self.thousands and not label_header:
+            label_header = ITEM_WORD[self._table_lang]
+        names = [label_header, self._report_heading(found.header)] + ([SHARE_HEADER] if with_share else [])
         table = [[(text, text, "General") for text in names]]
         for item in picked:
             line = [(item.label, item.label, "General"), (item.value, found.show(item.value), "General")]
@@ -1515,12 +2140,12 @@ class ExcelSource:
     def insight_request(self, key, template_text=""):
         """First stage for {{통찰:시트!A,B}}. Returns (InsightRequest or None, source, issues)."""
         ref = self._parse_ref(INSIGHT.fullmatch(key.translate(SMART_QUOTES)).group(1), key)
-        words = [template_text] + [sheet.title for sheet in self.wb.worksheets]
+        words = [template_text] + [vote for sheet in self.wb.worksheets for vote in _votes([sheet.title]) + _sheet_words(sheet)]  # sheets named Question1 to Question8 over Korean answers are Korean
         if self._is_comparison(ref):
             found = self._comparison(ref)
             lang = facts.detect_language(words + [found.header])
-            pack = tuple(facts.item_pack(found.items, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale))
-            fallback = facts.item_sentence(found.items, found.header, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale)
+            pack = _with_sheet(facts.item_pack(found.items, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes), ref, lang, found.label)
+            fallback = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes)
             return InsightRequest(key, lang, pack, facts.fingerprint(pack, lang), fallback, found.source), found.source, found.issues
         if ref.spec_count != 1:
             raise IssueError("calc_columns", key=key)
@@ -1534,7 +2159,7 @@ class ExcelSource:
         newest = points[-1]
         lang = facts.detect_language(words + [found.header])
         note, read, pack = self._series_words(found, lang)
-        pack = tuple(pack)
+        pack = _with_sheet(pack, ref, lang, found.label, _period_of(pack, found.label))
         source = f"{newest.date.date().isoformat()} · {found.cell_text(newest)}"
         fallback = " ".join([note] + [fact.text for fact in read if fact.text not in note])  # a rate's sentence already holds its readings
         request = InsightRequest(key, lang, pack, facts.fingerprint(pack, lang), fallback, source)
@@ -1570,6 +2195,11 @@ class ExcelSource:
 
     def range_cells(self, key):
         """Resolve a range. Returns (rows of (raw, text, format), source, issues). A latest or ranked key's first row is its header."""
+        self._table_lang = "ko" if HANGUL.search(key.partition(":")[0]) else "en"  # the words a table adds itself follow the language it was asked for in, as its sentences do
+        rows, source, issues = self._range_cells(key)
+        return (_with_commas(rows) if self.thousands else rows), source, issues
+
+    def _range_cells(self, key):
         if is_rank_key(key):
             return self._rank_range(key)
         if is_latest_key(key):
@@ -1581,6 +2211,10 @@ class ExcelSource:
             line = []
             for c in range(col, max_col + 1):
                 raw, text, fmt, cell_issues = self.read(ws, r, c)
+                if raw in (None, ""):  # 지역 merged over two rows, with the range starting on the second: a person sees the word there
+                    origin = _merge_origin(ws, r, c)
+                    if origin and not (row <= origin[0] <= max_row and col <= origin[1] <= max_col):
+                        raw, text, fmt, cell_issues = self.read(ws, *origin)
                 line.append((raw, text, fmt))
                 issues.extend(cell_issues)
             rows.append(line)
@@ -1765,6 +2399,17 @@ def _drawn_height(tbl):
     return total
 
 
+def _can_resize_merged(tbl, wanted):
+    """Rows come and go at the bottom, so cells merged down in a heading stay whole: a two-row heading is the usual company table. Merged in the body, a copied or removed row would tear a merge apart."""
+    trs = tbl.tr_lst
+    merged = [place for place, tr in enumerate(trs) if any(tc.get("rowSpan") or tc.get("vMerge") for tc in tr.tc_lst)]
+    if not merged:
+        return True
+    heading = merged[-1] + 1
+    total = 1 if tbl.tblPr is not None and tbl.tblPr.get("lastRow") == "1" else 0
+    return merged == list(range(heading)) and len(trs) - heading - total >= 1 and wanted - heading - total >= 1
+
+
 def fill_table(shape, rows, slide_height, in_group, skip=0):
     """Fill a table from its top-left cell, leaving the first skip rows as they are. Returns issues.
 
@@ -1774,9 +2419,9 @@ def fill_table(shape, rows, slide_height, in_group, skip=0):
     n_cols = len(tbl.tblGrid.gridCol_lst)
     if len(rows[0]) != n_cols:
         return [Issue("column_mismatch", {"range": len(rows[0]), "table": n_cols})]
-    spans_rows = any(tc.get("rowSpan") or tc.get("vMerge") for tr in tbl.tr_lst for tc in tr.tc_lst)
-    if spans_rows and len(rows) != len(tbl.tr_lst):
+    if len(rows) != len(tbl.tr_lst) and not _can_resize_merged(tbl, len(rows)):
         return [Issue("merged_resize", {})]
+    bottom_before = shape.top + _drawn_height(tbl) if not in_group else 0
     _resize_rows(tbl, len(rows))
     issues = []
     for tr, line in zip(tbl.tr_lst[skip:], rows[skip:]):
@@ -1790,7 +2435,21 @@ def fill_table(shape, rows, slide_height, in_group, skip=0):
         shape.height = sum(tr.h for tr in tbl.tr_lst)
         if shape.top + _drawn_height(tbl) > slide_height:
             issues.append(Issue("table_overflow", {"rows": len(rows)}))
+        covered = _shape_now_covered(shape, bottom_before, shape.top + _drawn_height(tbl))
+        if covered:
+            issues.append(Issue("table_covers", {"rows": len(rows), "name": covered}))
     return issues
+
+
+def _shape_now_covered(table, bottom_before, bottom_after):
+    """The name of a shape that was clear below a table and is under it now that it has grown. A table that grew last month is the usual cause, and the slide looks wrong with no error anywhere."""
+    for other in table._parent:
+        if other.shape_id == table.shape_id or None in (other.top, other.left, other.width):
+            continue
+        beside = other.left < table.left + table.width and other.left + other.width > table.left
+        if beside and bottom_before <= other.top < bottom_after:
+            return other.name
+    return ""
 
 
 def _chart_number_format(rows):
@@ -1868,6 +2527,7 @@ class _Run:
         self.items = {}
         self.done_parts = set()
         self.filled_paragraphs = set()  # table cells we just wrote: their data must not be scanned for placeholders
+        self.words_of_template()  # now, while they are its own words and not what has been filled in
 
     def item(self, kind, key, where):
         item = self.items.setdefault((kind, key.casefold()), Item(kind, key))
@@ -1955,7 +2615,7 @@ class _Run:
             self.add_issues(item, [exc.issue])
             return
         item.source = source
-        item.value = f"{len(rows)} × {len(rows[0])}"
+        item.value = f"{len(rows) - 1} × {len(rows[0])}"  # rows of data: the first is the heading
         if kind == "chart":
             issues = [_chart_error_as_warning(i) for i in issues]
         else:
@@ -2008,10 +2668,19 @@ class _Run:
                 continue
             if isinstance(part, XmlPart) and not name.startswith(("/ppt/diagrams/", "/ppt/charts/")):
                 continue
+            if name.startswith("/ppt/diagrams/drawing"):  # PowerPoint's drawn copy of the SmartArt beside it, not a second place to fix
+                continue
             if not PLACEHOLDER.search(part.blob.decode("utf-8", "ignore")):
                 continue
             item = self.item("unsupported", name, ("part", name))
-            self.add_issues(item, [Issue("unsupported_location", {"part": name})])
+            self.add_issues(item, [Issue("unsupported_location", {"part": name, "slide": self.slide_holding(part)})])
+
+    def slide_holding(self, part):
+        """The number of the slide that uses a part, so a person can find it."""
+        for number, slide in enumerate(self.prs.slides, start=1):
+            if any(not rel.is_external and rel.target_part is part for rel in slide.part.rels.values()):
+                return number
+        return "?"
 
 
 def _chart_error_as_warning(issue):
@@ -2029,13 +2698,297 @@ def open_template(path):
         raise SlideFillError("file_unreadable", path=path, detail=str(exc))
 
 
-def run(template, excel, output=None, insights=None, source=None):
+FILE_MARK = re.compile(r"@(\d+)@")
+ALL_FILES = "@all@"
+DOCUMENT_MARK = "@doc@"
+DOCUMENT_LINKS = 6  # lines of a document's line-up that a slide can hold, and that a model is given
+DOCUMENT_PARAGRAPHS = 5
+
+
+def _read_document(path):
+    _check_file(path, readers.DOCUMENT_TYPES, "document")
+    try:
+        return documents.read(path, os.path.splitext(os.path.basename(path))[0])
+    except PermissionError:
+        raise SlideFillError("file_locked", path=path)
+    except documents.NotAWordFile as exc:
+        raise SlideFillError("file_unreadable", path=path, detail=str(exc))
+    except etree.XMLSyntaxError as exc:
+        raise SlideFillError("file_unreadable", path=path, detail=str(exc))
+FACTS_PER_FILE = 13  # the first facts are the readings; a model's memory is short, and several files have to fit
+FACTS_WITH_DOCUMENT = 6
+SHEET_TITLE_ROWS = 6
+SHEET_TITLE_COLUMNS = 30
+SHEET_TITLE_SHORTEST, SHEET_TITLE_LONGEST = 8, 120
+
+
+class Sources:
+    """Several workbooks behind one reader. A key says which with @1@ before its sheet."""
+
+    def __init__(self, paths):
+        workbooks = [path for path in paths if os.path.splitext(path)[1].lower() not in readers.DOCUMENT_TYPES]
+        if not workbooks:
+            raise SlideFillError("doc_needs_workbook")
+        self.sources = [ExcelSource(path) for path in workbooks]
+        self.names = [os.path.splitext(os.path.basename(path))[0] for path in workbooks]
+        self.documents = [_read_document(path) for path in paths if path not in workbooks]
+        self._links = None
+        self._values = None
+
+    def links(self):
+        """What each document's dated entries line up with: [(document, links)]. suggest knows how a sheet is laid out, and it needs this module first, so it comes in here."""
+        if self._links is None:
+            import suggest
+            self._links = [(document, documents.link_all(document.events, suggest.document_items(self, document.events))) for document in self.documents]
+        return self._links
+
+    def _all_values(self):
+        if self._values is None:
+            self._values = set()
+            for source in self.sources:
+                for ws in source.wb.worksheets:
+                    # Only the cells that exist. Asking for rows makes a cell at every place, and a sheet whose range reaches column XFC has sixteen thousand to a row.
+                    for cell in ws._cells.values():
+                        value = cell.value
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            self._values.update((float(value), round(float(value), 6)))
+        return self._values
+
+    def _document_text(self, key):
+        lang = "ko" if key.strip().startswith(("읽는법", "해설")) else "en"
+        number, _hash, paragraph = key.partition(DOCUMENT_MARK)[2].partition("#")
+        document, links = self.links()[int(number or 0)]
+        if paragraph:
+            chosen = documents.key_paragraphs(document)
+            return (chosen[int(paragraph) - 1] if int(paragraph) <= len(chosen) else None), document.name, []
+        if key.strip().startswith(("해설", "note")):
+            return documents.headline(document, links, lang), document.name, []
+        found, missing = documents.check_figures(document, self._all_values())
+        words = " ".join(part for part in (documents.caution(lang) if links else "", documents.figures_sentence(found, missing, lang)) if part)
+        return words or None, document.name, []
+
+    def _document_facts(self, lang):
+        """What the model may read from the documents: each line-up with its figures, and failing those the document's own long paragraphs."""
+        pack = []
+        for number, (document, links) in enumerate(self.links(), start=1):
+            for place, found in enumerate(documents.highlights(links, DOCUMENT_LINKS), start=1):
+                period = documents.period_text(found.event.date, lang)
+                text = (f"[{document.name}] {period}에 적힌 일: {found.event.text} 같은 항목 {found.item.name}의 전 {found.window}개 기간 평균 {found.before:,.0f}, 후 {found.window}개 기간 평균 {found.after:,.0f}, {documents.change_text(found)}." if lang == "ko"
+                        else f"[{document.name}] Entered for {period}: {found.event.text} {found.item.name} averaged {found.before:,.0f} over the {found.window} periods before and {found.after:,.0f} over the {found.window} after, {documents.change_text(found)}.")
+                pack.append(facts.Fact(f"doc{number}_link{place}", text, tuple(facts.NUMBER.findall(f"{found.before:,.0f} {found.after:,.0f} {documents.change_text(found)}"))))
+            if not links:
+                long = [text for text in document.paragraphs if len(text) >= documents.LONG_PARAGRAPH][:DOCUMENT_PARAGRAPHS]
+                pack += [facts.Fact(f"doc{number}_text{place}", f"[{document.name}] {text}", tuple(facts.NUMBER.findall(text))) for place, text in enumerate(long, start=1)]
+        return pack
+
+    @property
+    def thousands(self):
+        return self.sources[0].thousands
+
+    @thousands.setter
+    def thousands(self, value):
+        for source in self.sources:
+            source.thousands = value
+
+    def _route(self, key):
+        match = FILE_MARK.search(key)
+        number = int(match.group(1)) if match else 0
+        if number >= len(self.sources):
+            raise IssueError("missing_sheet", sheet=key)
+        return number, self.sources[number], key[:match.start()] + key[match.end():] if match else key
+
+    def _named(self, number, where):
+        return f"{self.names[number]} · {where}" if where else self.names[number]
+
+    def text_value(self, key):
+        if DOCUMENT_MARK in key:
+            return self._document_text(key)
+        if ALL_FILES in key:
+            word, _mark, references = key.partition(ALL_FILES)
+            lang = "ko" if word.strip().startswith(("읽는법", "해설")) else "en"
+            readings, _pack, _notes, issues, used, _lang = self._gather(references, word, "", lang)
+            return " ".join(fact.text for fact in readings) or None, ", ".join(used), issues
+        number, source, plain = self._route(key)
+        text, where, issues = source.text_value(plain)
+        return text, self._named(number, where), issues
+
+    def _gather(self, references, word, template_text, lang=None):
+        """Each file's readings, and what can be calculated across them. word is any prefix that reads a reference as an insight."""
+        pack, notes, issues, used, entries = [], [], [], [], []
+        for reference in references.split("|"):
+            number, source, plain = self._route(reference)
+            request, _where, found = source.insight_request(f"통찰:{plain}", template_text)
+            issues += found
+            if request is None:
+                continue
+            lang = lang or request.lang
+            name = self.names[number]
+            figure = _lead_figure(request)
+            if figure and figure not in name and not _WHOLE.fullmatch(figure):  # a file called 대구 지하철 승차 whose figure is one station: saying only the file's name would claim the whole system
+                name = f"{name} ({figure})"
+            used.append(name)
+            # With a document in play its line-up is the point, and a model follows whichever it is given the most of.
+            pack += [replace(fact, id=f"file{number + 1}_{fact.id}", text=f"[{name}] {fact.text}") for fact in (_kept_with_document(request.facts) if self.documents else request.facts[:FACTS_PER_FILE])]
+            notes.append(f"[{name}] {request.fallback}")
+            entries.append((name,) + _lead_change(request, lang or request.lang))
+        return facts.cross_file_readings(entries, lang or "ko"), pack, notes, issues, used, lang or "ko"
+
+    def range_cells(self, key):
+        if DOCUMENT_MARK in key:
+            head, _mark, tail = key.partition(DOCUMENT_MARK)
+            number, _colon, count = tail.partition(":")
+            document, links = self.links()[int(number or 0)]
+            return documents.table_rows(links, int(count or DOCUMENT_LINKS), "ko" if head.startswith("ko") else "en"), document.name, []
+        number, source, plain = self._route(key)
+        rows, where, issues = source.range_cells(plain)
+        return rows, self._named(number, where), issues
+
+    def insight_request(self, key, template_text=""):
+        if ALL_FILES in key:
+            return self._all_files_request(key, template_text)
+        number, source, plain = self._route(key)
+        request, where, issues = source.insight_request(plain, template_text)
+        where = self._named(number, where)
+        if request is None:
+            return None, where, issues
+        return InsightRequest(key, request.lang, request.facts, request.fingerprint, request.fallback, where), where, issues
+
+    def _all_files_request(self, key, template_text):
+        """What the model is given to write about the files together: each one's readings, marked with the file they came from."""
+        word, _mark, references = key.partition(ALL_FILES)
+        readings, pack, notes, issues, used, lang = self._gather(references, word, template_text)
+        if not pack:
+            raise IssueError("calc_columns", key=key)
+        about = ""
+        if len(used) >= 2:
+            about = (f"이 보고서는 서로 다른 파일 {len(used)}개를 함께 봅니다: {', '.join(used)}. cross로 시작하는 항목이 파일을 함께 계산한 결과이니 이것을 먼저 쓰세요. 한 파일만 설명하지 마세요. 파일 사이의 인과나 상관은 계산 결과에 없으므로 쓰지 마세요." if lang == "ko"
+                     else f"This report looks at {len(used)} different files together: {', '.join(used)}. Items starting with cross were calculated across the files, so use them first. Do not describe one file alone. Whether one file affects another is not in the results, so do not say it.")
+        extra = self._document_facts(lang) if self.documents else []
+        if extra:
+            about += (" doc로 시작하는 항목은 문서에 적힌 일과 그 전후 수치입니다. 문장마다 doc 항목을 하나 이상 인용해, 문서에 적힌 일과 그 시기의 수치를 함께 쓰세요. 같은 시기라는 사실만 쓰고, 그 일 때문에 수치가 변했다고 쓰지 마세요." if lang == "ko"
+                      else " Items starting with doc are what a document records, with the figures around that time. Cite at least one doc item in each sentence, and give what the document records together with the figures from that time. Say only that they came at the same time, never that one caused the other.")
+        pack = tuple([facts.Fact("files", about, ())] + readings + extra + pack)
+        where = ", ".join(used)
+        return InsightRequest(key, lang, pack, facts.fingerprint(pack, lang), " ".join(notes), where), where, issues
+
+
+_WHOLE = re.compile(r"합계|총계|전체|total|sum", re.I)  # the whole of the file: its name already says what
+
+
+def _lead_figure(request):
+    """The name of the figure a request is about, from its calculated value: 설화명곡 in 2026년 9월 설화명곡: 144,653."""
+    fact = next((fact for fact in request.facts if fact.id == "value"), None)
+    if fact is None or ":" not in fact.text:
+        return ""
+    return re.sub(r"^\s*(?:\d{4}년\s*(?:\d+월\s*(?:\d+일\s*(?:\(.\)\s*)?)?|\d분기\s*)?|\d+월\s*\d+일\s*(?:\(.\)\s*)?|\d{4}-\d{2}(?:-\d{2})?\s*|Q\d \d{4}\s*|Q[1-4]\s*\d{2,4}/\d{2}\s*|Q[1-4]\s*FY\s*'?\d{2,4}\s*|FY\s*'?\d{2,4}\s*Q[1-4]\s*|\d{4}\s+|[A-Z][a-z]{2} \d{4}\s*|[A-Z][a-z]{2} \d+ (?:\(\w+\) )?)", "", fact.text.partition(":")[0]).strip()
+
+
+def _lead_change(request, lang):
+    """(percent change, period, basis) of a figure, from the facts already calculated for it. A change in points, or no change to give, is None: it cannot stand beside percentages."""
+    found = {fact.id: fact for fact in request.facts}
+    fact, basis = (found["year"], "year") if "year" in found else (found.get("prev"), "prev")
+    match = re.search(r"([+-]?\d[\d,.]*)%", fact.text) if fact else None  # 0.0% has no sign, and no change is still a change to give
+    period = next((fact.period for fact in request.facts if fact.period), "")  # as the figure's own sentence says it: yearly data has no month
+    return (float(match.group(1).replace(",", "")) if match else None), _period_in(period, lang), basis
+
+
+def _period_in(period, lang):
+    """A file's period in the report's language: one English file among Korean ones must not make 2023 beside 2021년 8월."""
+    if lang == "ko":
+        year = re.fullmatch(r"(?:19|20)\d\d", period)
+        month = re.fullmatch(r"([A-Z][a-z]{2}) ((?:19|20)\d\d)", period)
+        quarter = re.fullmatch(r"Q(\d) ((?:19|20)\d\d)", period)
+        if year:
+            return f"{period}년"
+        if month and month.group(1) in facts.MONTHS:
+            return f"{month.group(2)}년 {facts.MONTHS.index(month.group(1)) + 1}월"
+        if quarter:
+            return f"{quarter.group(2)}년 {quarter.group(1)}분기"
+        return period
+    year = re.fullmatch(r"((?:19|20)\d\d)년", period)
+    month = re.fullmatch(r"((?:19|20)\d\d)년 (\d{1,2})월", period)
+    quarter = re.fullmatch(r"((?:19|20)\d\d)년 (\d)분기", period)
+    if year:
+        return year.group(1)
+    if month:
+        return f"{facts.MONTHS[int(month.group(2)) - 1]} {month.group(1)}"
+    if quarter:
+        return f"Q{quarter.group(2)} {quarter.group(1)}"
+    return period
+
+
+def _period_of(pack, header):
+    """The period the newest value belongs to, as the value's own fact writes it: 2026년 8월 in 2026년 8월 내국인: 192."""
+    fact = next((fact for fact in pack if fact.id == "value"), None)
+    return fact.text.partition(":")[0].replace(header, "").strip() if fact else ""
+
+
+def _value_of(pack):
+    fact = next((fact for fact in pack if fact.id == "value"), None)
+    return fact.text.partition(":")[2].strip() if fact else ""
+
+
+def _kept_with_document(pack):
+    """What a file keeps when a document shares the model's short memory: what it is, its current value, and its first readings."""
+    must = [fact for fact in pack if fact.id in ("subject", "sheet", "value")]
+    return must + [fact for fact in pack if fact not in must][:FACTS_WITH_DOCUMENT - len(must)]
+
+
+def _with_sheet(pack, ref, lang, figure="", period=""):
+    """What was counted and when, for the model and for the checks. A column headed 외국인 in a sheet of sales is not a number of foreigners, and only the sheet's name says so."""
+    name = _sheet_names(ref)
+    title = _sheet_title(ref.sheets[0])
+    value = _value_of(pack)
+    if lang != "ko" and figure == COUNT_WORD_KO:  # the notation follows the window's language; the sentence follows the data's
+        figure = "the number of rows"
+    if lang == "ko":
+        now = f"이번 기간은 {period}이고 이번 값은 {value}입니다. " if period and value else ""
+    else:
+        now = f"The current period is {period} and its value is {value}. " if period and value else ""
+    whole = _WHOLE.fullmatch(figure or "") is not None
+    if lang == "ko":
+        subject = f"{now}이 수치는 시트 전체의 합계입니다." if whole else f"{now}이 파일의 수치 이름은 {figure}이고 전체가 아닐 수 있으니 문장에 이 이름을 쓰세요."
+        subject += " 다른 기간의 값은 비교 대상일 뿐입니다."
+        sheet = f"이 수치가 있는 시트의 이름: {name}" + (f". 시트 제목: {title}" if title else "")
+    else:
+        subject = f"{now}This figure is the total of the sheet." if whole else f"{now}The figure in this file is called {figure}, which may not be the whole, so use that name in each sentence."
+        subject += " Values for other periods are only for comparing."
+        sheet = f"The sheet these figures are on is named: {name}" + (f". Its title says: {title}" if title else "")
+    return (facts.Fact("subject", subject, (), figure, period), facts.Fact("sheet", sheet, ())) + tuple(pack)
+
+
+def _sheet_title(ws):
+    """A line alone at the top of a sheet, which often says what is being counted when the column headings do not: Quarterly Passenger Statistics."""
+    for row in ws.iter_rows(min_row=1, max_row=SHEET_TITLE_ROWS, max_col=min(ws.max_column, SHEET_TITLE_COLUMNS), values_only=True):
+        filled = [cell for cell in row if cell not in (None, "")]
+        if len(filled) == 1 and isinstance(filled[0], str) and SHEET_TITLE_SHORTEST <= len(filled[0].strip()) <= SHEET_TITLE_LONGEST:
+            return " ".join(filled[0].split())
+    return ""
+
+
+def _with_commas(rows):
+    """493,434 for a number in General format, leaving the first column alone: years and codes live there."""
+    done = []
+    for row in rows:
+        cells = [row[0]]
+        for raw, text, fmt in row[1:]:
+            if fmt in ("General", "0") and isinstance(raw, (int, float)) and not isinstance(raw, bool) and abs(raw) >= 1000:
+                text = re.sub(r"^(-?)(\d+)", lambda m: f"{m.group(1)}{int(m.group(2)):,}", text)
+            cells.append((raw, text, fmt))
+        done.append(cells)
+    return done
+
+
+def run(template, excel, output=None, insights=None, source=None, thousands=False):
     """Fill the template. Without output this is the preview: same work, nothing written.
 
     insights holds sentences a person chose earlier. No model is called here, so preview and report always agree.
     source is a workbook already read from excel, so a large one need not be read twice in a row.
+    thousands writes plain large numbers in tables with commas, for a report SlideFill laid out itself.
     """
-    source = source if source is not None else ExcelSource(excel)
+    if source is None:
+        source = Sources(excel) if isinstance(excel, (list, tuple)) else ExcelSource(excel)
+    source.thousands = thousands
     prs = open_template(template)
     work = _Run(source, prs, insights)
     work.walk()

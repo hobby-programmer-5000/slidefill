@@ -34,11 +34,24 @@ OTHER_ITEM = re.compile(r"기타|그\s*외|others?|misc\.?|etc\.?", re.I)
 AMOUNT = 0  # the scale of a series whose changes are plain amounts rather than points
 PART_MARK = re.compile(r"[-–·•]\s")
 NESTED_TOLERANCE = 0.001  # a parent's figure is the exact sum of its parts, give or take rounding
+MACHINE_NAME = re.compile(r"[A-Za-z]+(?:_[A-Za-z0-9-]+)+|[a-z]+[A-Z][A-Za-z0-9]*")  # tourStatConfirmManageBiz, RETAINED_CATCH_KG: exported names, in no one's language
+SNAKE_NAME = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])")
+NAME_UNITS = {"kg": "kg", "g": "g", "mj": "MJ", "kj": "kJ", "kcal": "kcal", "km": "km", "m2": "m²", "m3": "m³", "kwh": "kWh", "mwh": "MWh", "usd": "USD", "aud": "AUD", "krw": "KRW", "pct": "%", "percent": "%"}
+LEGEND_MARK = re.compile(r"(?<=[^\s(])\([A-Z]\)(?=\s)")  # 제주(A) 2025년 points to a formula in a table's footnote. 시나리오(A) ends with it, and it may be all that tells it from 시나리오(B)
+COUNT_MARK = re.compile(r"^\s*#\s+")
+KOREAN_UNIT_MARK = re.compile(r"(?<=[가-힣])_(원|천원|만원|백만원|억원|명|건|톤|개|회)$")  # 수수료_원
+PRICE_NAME = re.compile(r"^(?!.*(?:총|합계|누계|\b(?:total|sum)\b))(?=.*(?:수수료|요금|가격|단가|이용료|사용료|입장료|참가비|회비|\b(?:price|fee|tariff)s?\b)\s*[_( ]?\s*(?:원|천원|만원|달러|krw|usd|aud|\$)?\s*\)?\s*$)", re.I)
+MIN_NESTED_PARENT = 100  # among hospitals with 1, 2 or 3 doctors, 2 = 1 + 1 says nothing: it took 38 doctors out of a list of 127
+MAX_NESTED_ITEMS = 100  # among thousands of companies, one is bound to equal the sum of the next few by chance, and they are not its parts
 CLOSE_SECOND = 1.1  # the first is less than this many times the second: a multiple like 1.0 says nothing
 OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]+\.\s")), ("dash", re.compile(r"\d+-\d+\.")), ("number", re.compile(r"\d+\.(?!\d)")),
            ("paren", re.compile(r"\(\d+\)")), ("hangul", re.compile(r"[가-하]\.")))
 SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
-RATE_WORD = re.compile(r"율|률|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
+MAX_LISTED = 6
+SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
+SEPARATE_TOTALS = {"ko": "합계 줄이 여러 개 있어(수입과 지출 등) 줄끼리 크기를 비교하지 않았습니다.", "en": "There are several total lines, as with income and expenses, so the lines were not ranked against one another."}
+RATE_SYLLABLE = r"(?<![법규자])[율률](?![가-힣])"  # 달성률 and 환율, not 법률상담건수 or 자율주행
+RATE_WORD = re.compile(RATE_SYLLABLE + r"|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
 WEEKDAYS = {"ko": ["월", "화", "수", "목", "금", "토", "일"], "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
 WEEKDAY_PLURALS = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -58,6 +71,7 @@ class Point:
     value: float
     row: int = 0
     sheet: int = 0
+    label: str = ""  # how the period is written when a date cannot say it: 2025-26 is a financial year, not the year 2026
 
 
 @dataclass(frozen=True)
@@ -66,11 +80,31 @@ class Fact:
     id: str
     text: str
     numbers: tuple
+    figure: str = ""  # on a subject fact: which figure all of a file's facts are about
+    period: str = ""  # and which period is "now"; any other period is only something to compare with
+
+
+def readable_name(name):
+    """A heading as a report should say it: Retained catch (kg) for RETAINED_CATCH_KG, 제주 for 제주(A), EAF Items for # EAF Items. Only the marks of a machine or of a table's own footnotes go; the words stay the sheet's."""
+    text = LEGEND_MARK.sub("", COUNT_MARK.sub("", name or ""))
+    return KOREAN_UNIT_MARK.sub(r"(\1)", SNAKE_NAME.sub(_words_of_snake, text))
+
+
+def _words_of_snake(match):
+    words = match.group(0).split("_")
+    if not all(word.isalpha() and len(word) >= 2 for word in words):  # E_0000_WH is a code, and words made from it would be no clearer
+        return match.group(0)
+    unit = NAME_UNITS.get(words[-1].casefold()) if len(words) > 1 else None
+    if unit:
+        words = words[:-1]
+    text = " ".join(words).lower()
+    text = text[:1].upper() + text[1:]
+    return f"{text} ({unit})" if unit else text
 
 
 def detect_language(texts):
     """The router: which language the report is mostly in, by counting letters. Needs no model and no memory."""
-    joined = " ".join(texts)
+    joined = MACHINE_NAME.sub(" ", " ".join(texts))
     return "ko" if len(HANGUL.findall(joined)) >= len(LATIN.findall(joined)) else "en"
 
 
@@ -151,7 +185,8 @@ def same_weekday(points, weeks=8):
     if len(earlier) < 3:
         return None
     level = median(earlier)
-    return level, max(1.4826 * median(abs(value - level) for value in earlier), abs(level) * 0.01), len(earlier)
+    spread = max(1.4826 * median(abs(value - level) for value in earlier), abs(level) * 0.01)
+    return (level, spread, len(earlier)) if spread else None  # every Sunday 0, closed: there is no usual range to stand outside
 
 
 def rank(points, count=30):
@@ -209,6 +244,10 @@ def partial_year(points):
 def point_text(date, points, lang):
     """A date as the data's own rhythm calls for: a monthly series is about months, not the first of each."""
     ko = lang == "ko"
+    if points[-1].label:
+        named = next((point.label for point in points if point.date == date), "")
+        if named:
+            return named
     if partial_year(points) and date == points[-1].date:
         return f"{date.year}년 {date.month}월까지" if ko else f"{MONTHS[date.month - 1]} {date.year} year to date"
     if is_yearly(points):
@@ -372,6 +411,10 @@ def readings(points, show, lang="ko", limit=3):
     months = partial_year(points)
     if months:
         per_month = ratio(newest.value / months, before.value / 12)
+        if prev_change is None or per_month is None:  # a year of 0 before it: nothing to take a percentage of
+            found.append(("read_partial_year", f"{day(newest)} 값은 {months}개월치로 보입니다. 직전 {day(before)} 값이 {show(before.value)}이라 변화율을 낼 수 없습니다." if ko else
+                          f"{day(newest)} looks like {months} months. {day(before)} was {show(before.value)}, so no percentage can be given."))
+            return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found]
         found.append(("read_partial_year", (
             f"{day(newest)} 값은 {months}개월치로 보입니다. 12개월치인 {day(before)} {show(before.value)} 대비 {percent(prev_change)}는 기간이 달라 그대로 읽을 수 없고, 월평균으로 맞추면 {percent(per_month)}입니다." if ko else
             f"{day(newest)} looks like {months} months, so {percent(prev_change)} against the 12 months of {day(before)}, {show(before.value)}, cannot be read as it stands. Per month it is {percent(per_month)}.")))
@@ -466,7 +509,7 @@ def readings(points, show, lang="ko", limit=3):
         trusted = week_change
         if week_was_odd and usual:
             trusted = ratio(newest.value, usual[0])
-            if trusted is not None:
+            if trusted is not None and week_change is not None:  # a holiday's 0 last week gives no change to set this against
                 found.append(("read_week_odd", f"전주 같은 요일 {day(week)} {show(week.value)}가 그 요일 평소보다 {_size(week_was_odd[1])} {low_high(week_was_odd[1])}았으니, 전주 대비 {percent(week_change)} 대신 평소 {name}요일 중앙값 대비 {percent(trusted)}로 읽으세요." if ko else
                               f"Last week's {day(week)}, {show(week.value)}, was itself {_size(week_was_odd[1])} {low_high(week_was_odd[1])} usual for that weekday. Read {percent(trusted)} against the usual {name} rather than {percent(week_change)} against last week."))
         by_same_day = "같은 요일 기준" if not week_was_odd else "평소 같은 요일 기준"
@@ -637,6 +680,11 @@ def is_rate(header, fmt=""):
     return RATE_WORD.search(header or "") is not None or "%" in (fmt or "")
 
 
+def is_price(header):
+    """The price of one thing per row: a fee list's 수수료_원, not 수수료 수입 or 총수수료, which are money taken and do add up."""
+    return PRICE_NAME.search(header or "") is not None
+
+
 def is_additive(header, fmt, values):
     """True when items can be shares of a whole. A rate, an index or a mean cannot, and neither can negative figures."""
     return not is_rate(header, fmt) and all(value >= 0 for value in values) and sum(values) > 0
@@ -656,12 +704,85 @@ def top_level(items):
     return kept if len(kept) >= 2 else None
 
 
+def cross_file_readings(entries, lang="ko"):
+    """What can be said of several files together by calculation alone. entries: (name, change in percent or None, period text, basis). Which way each moved, or why they cannot be compared. How they relate is not in the data, so it is never said."""
+    ko = lang == "ko"
+    known = [entry for entry in entries if entry[1] is not None]
+    if len(known) < 2:
+        return []
+    periods = list(dict.fromkeys(entry[2] for entry in known))
+    if len(periods) > 1:  # each file's slide says what it is about, so this only has to say why they cannot stand side by side
+        listed = ", ".join(periods)
+        return [Fact("cross_periods", f"파일마다 최신 시점이 달라({listed}) 변화 방향을 나란히 비교할 수 없습니다." if ko else f"The files end at different times ({listed}), so which way they moved cannot be compared side by side.", ())]
+    bases = {entry[3] for entry in known}
+    if len(bases) > 1:
+        return [Fact("cross_basis", "파일마다 비교 기준이 달라 변화 방향을 나란히 비교할 수 없습니다." if ko else "The files compare against different periods, so which way they moved cannot be compared side by side.", ())]
+    basis = known[0][3]
+    word = {"year": "전년 같은 기간보다" if ko else "against a year earlier", "prev": "직전보다" if ko else "against the period before"}[basis]
+    moved = []
+    for name, change, _period, _basis in known:
+        if ko:
+            moved.append(f"{name} {abs(change):.1f}% {'증가' if change > 0 else '감소'}" if change else f"{name} 변동 없음")
+        else:
+            moved.append(f"{name} {'up' if change > 0 else 'down'} {abs(change):.1f}%" if change else f"{name} unchanged")
+    signs = {(change > 0) - (change < 0) for _name, change, _period, _basis in known}
+    if signs == {1}:
+        ending = "모두 늘었습니다" if ko else "all rose"
+    elif signs == {-1}:
+        ending = "모두 줄었습니다" if ko else "all fell"
+    elif signs == {1, -1} or len(signs) > 1:
+        ending = "방향이 서로 다릅니다" if ko else "they moved in different directions"
+    else:
+        ending = "변동이 없습니다" if ko else "none changed"
+    text = f"{periods[0]} {word} {', '.join(moved)}로 {ending}." if ko else f"{periods[0]} {word}: {', '.join(moved)}; {ending}."
+    return [Fact("cross_direction", text, tuple(NUMBER.findall(", ".join(moved))))]
+
+
+def separate_lists(items):
+    """True when numbers repeat among the top level, as with I. 유동자산 and I. 유동부채: separate lists on one sheet, whose lines are not rivals."""
+    marks = []
+    for item in items:
+        label = item.label.strip()
+        match = next((pattern.match(label) for _kind, pattern in OUTLINE if pattern.match(label)), None)
+        if match:
+            marks.append(match.group(0).strip())
+    return len(marks) >= 2 and len(set(marks)) < len(marks)
+
+
 def _share(value, total):
     return format_value(value / total, "0.0%")[0]
 
 
 def without_parts(items):
-    """Items with the rows that are parts of another taken out: a bullet in front of the name, or rows that add up exactly to the row above them. None when nothing is nested."""
+    """Items with the rows that are parts of another taken out: a bullet in front of the name, or rows that add up exactly to the row above them. None when nothing is nested.
+
+    In a long list one row can equal the next few by chance. There it counts only when most of the list turns out to be parts, level under level, as in a pivot table of terms, regions and schools.
+    """
+    if len(items) <= MAX_NESTED_ITEMS:
+        return _one_level_of_parts(items, True)
+    kept = _every_level_of_parts(items)
+    if len(kept) * 2 <= len(items) and len(kept) >= 2:
+        return kept
+    return _one_level_of_parts(items, False)
+
+
+def _every_level_of_parts(items):
+    """From the bottom up, so a school is taken into its region before the region is taken into its term."""
+    below = []  # the rows still standing, last row first
+    for item in reversed(items):
+        added = 0
+        for count, later in enumerate(reversed(below), start=1):
+            added += later.value
+            if count >= 2 and item.value and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
+                del below[-count:]
+                break
+            if item.value >= 0 and added > item.value * (1 + NESTED_TOLERANCE):
+                break
+        below.append(item)
+    return below[::-1]
+
+
+def _one_level_of_parts(items, by_sums):
     kept, skip, changed = [], 0, False
     for place, item in enumerate(items):
         if skip:
@@ -672,11 +793,11 @@ def without_parts(items):
             changed = True
             continue
         added = 0
-        for count, later in enumerate(items[place + 1:], start=1):
+        for count, later in enumerate(items[place + 1:] if by_sums else (), start=1):
             if PART_MARK.match(later.label):
                 continue
             added += later.value
-            if count >= 2 and item.value and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
+            if count >= 2 and abs(item.value) >= MIN_NESTED_PARENT and abs(added - item.value) <= abs(item.value) * NESTED_TOLERANCE:
                 skip = count
                 break
             if item.value >= 0 and added > item.value * (1 + NESTED_TOLERANCE):
@@ -685,22 +806,52 @@ def without_parts(items):
     return kept if changed and len(kept) >= 2 else None
 
 
-def item_readings(items, show, lang="ko", total=None, additive=True, before_total=None, limit=3, stated=True, rate=False, scale=1):
+def _against_budget(item, show, lang):
+    """A line set against its budget: 실적 33,037, 예산 28,120 대비 +17.5%. A budget of 0 or less gives no percentage."""
+    ko = lang == "ko"
+    change = f", {percent(ratio(item.value, item.before))}" if item.before > 0 else ""
+    if ko:
+        return f"{item.label} 실적 {show(item.value)}, 예산 {show(item.before)}" + (f" 대비 {change[2:]}" if change else "") + "."
+    return f"{item.label} came to {show(item.value)} against a budget of {show(item.before)}{change}."
+
+
+def item_readings(items, show, lang="ko", total=None, additive=True, before_total=None, limit=3, stated=True, rate=False, scale=1, basis="", wholes=()):
     """What a table of named items says, by fixed rules. Largest and its share, or what moved most when there are two periods.
 
     stated says the whole came from the sheet. Otherwise the items were added up here, and the wording does not call it the whole.
+    basis is budget when the older column is what was planned for the same period: the words then say actual against budget, not a rise or a fall.
+    wholes are the total lines of a table that totals unlike things (Total income, Total expenses). Its lines are not ranked against one another, and only the wholes are set against their budget.
     """
     ko = lang == "ko"
+    budget = basis == "budget"
     whole = ("전체" if stated else "항목 합계") if ko else ("the total" if stated else "the items' sum")
     if len(items) < 2:
         return []
     found = []
+    if len(wholes) >= 2:
+        paired = [item for item in wholes if item.before is not None]
+        if paired and budget:
+            found = [("read_whole_budget", _against_budget(item, show, lang)) for item in paired]
+        elif paired:
+            found = [("read_whole_change", f"{item.label}는 {show(item.before)} → {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}입니다." if item.before > 0 else "입니다.") if ko else
+                      f"{item.label} went from {show(item.before)} to {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}." if item.before > 0 else ".")) for item in paired]
+        else:
+            found = [("read_separate", SEPARATE_TOTALS[lang])]
+        return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
     if any(item.before is not None for item in items):
         pairs = [item for item in items if item.before is not None]
+        if budget:
+            pair = lambda item, change: f"예산 {show(item.before)}, 실적 {show(item.value)}, {change}" if ko else f"{show(item.value)} against a budget of {show(item.before)}, {change}"  # noqa: E731
+        else:
+            pair = lambda item, change: f"{show(item.before)} → {show(item.value)}, {change}" if ko else f"from {show(item.before)} to {show(item.value)}, {change}"  # noqa: E731
         if not rate:
             if additive and total is not None and before_total:
-                found.append(("read_total_change", f"{whole}는 {show(before_total)} → {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
-                              f"{whole.capitalize()} went from {show(before_total)} to {show(total)}, {percent(ratio(total, before_total))}."))
+                if budget:
+                    found.append(("read_total_change", f"{whole}는 예산 {show(before_total)} 대비 실적 {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
+                                  f"{whole.capitalize()} came to {show(total)} against a budget of {show(before_total)}, {percent(ratio(total, before_total))}."))
+                else:
+                    found.append(("read_total_change", f"{whole}는 {show(before_total)} → {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
+                                  f"{whole.capitalize()} went from {show(before_total)} to {show(total)}, {percent(ratio(total, before_total))}."))
             # A tiny item can double and mean nothing, so only items of some size are named.
             size = max(max(item.value, item.before) for item in pairs)
             moves = [(ratio(item.value, item.before), item) for item in pairs if item.before > 0 and max(item.value, item.before) >= size * SMALL_ITEM]
@@ -711,25 +862,37 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
         ups, downs = [m for m in moves if m[0] > 0], [m for m in moves if m[0] < 0]
         if ups:
             change, item = max(ups, key=lambda m: m[0])
-            found.append(("read_most_up", f"가장 크게 늘어난 항목은 {item.label}({show(item.before)} → {show(item.value)}, {word(change)})입니다." if ko else
-                          f"{item.label} rose most, from {show(item.before)} to {show(item.value)}, {word(change)}."))
+            if budget:
+                found.append(("read_most_up", f"예산보다 가장 크게 웃돈 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} ran furthest over budget, {pair(item, word(change))}."))
+            else:
+                found.append(("read_most_up", f"가장 크게 늘어난 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} rose most, {pair(item, word(change))}."))
             if additive and total is not None:  # A small item can lead by percent while another adds far more. With overlapping rows the sum says nothing.
                 biggest = max(ups, key=lambda m: m[1].value - m[1].before)[1]
                 if biggest is not item:
-                    found.append(("read_most_added", f"증가량이 가장 큰 항목은 {biggest.label}({show(biggest.before)} → {show(biggest.value)}, {percent(ratio(biggest.value, biggest.before))})입니다." if ko else
-                                  f"{biggest.label} added the most, from {show(biggest.before)} to {show(biggest.value)}, {percent(ratio(biggest.value, biggest.before))}."))
+                    grew = percent(ratio(biggest.value, biggest.before))
+                    if budget:
+                        found.append(("read_most_added", f"예산 초과액이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} went over budget by the most, {pair(biggest, grew)}."))
+                    else:
+                        found.append(("read_most_added", f"증가량이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} added the most, {pair(biggest, grew)}."))
         if downs:
             change, item = min(downs, key=lambda m: m[0])
-            found.append(("read_most_down", f"가장 크게 줄어든 항목은 {item.label}({show(item.before)} → {show(item.value)}, {word(change)})입니다." if ko else
-                          f"{item.label} fell most, from {show(item.before)} to {show(item.value)}, {word(change)}."))
+            if budget:
+                found.append(("read_most_down", f"예산에 가장 크게 못 미친 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell furthest short of budget, {pair(item, word(change))}."))
+            else:
+                found.append(("read_most_down", f"가장 크게 줄어든 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell most, {pair(item, word(change))}."))
         # A percentage of a negative base means nothing, but a loss that moved is often the most important line of the table.
         negative = sorted((item for item in pairs if item.before < 0 and not rate), key=lambda item: -abs(item.value - item.before))[:2]
         if negative:
             named = ", ".join(f"{item.label}({show(item.before)} → {show(item.value)})" for item in negative)
             found.append(("read_negative_base", f"기준값이 음수라 비율을 낼 수 없는 항목: {named}." if ko else f"A negative base gives no percentage for: {named}."))
         if not moves and not negative:
-            found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
+            if budget:
+                found.append(("read_no_change", "실적과 예산이 같습니다." if ko else "The actuals match the budget."))
+            else:
+                found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
         return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
+    if separate_lists(items):
+        return [Fact("read_separate", SEPARATE_LISTS[lang], ())]
     ordered = ranked_items(items)
     named = [item for item in ordered if not OTHER_ITEM.fullmatch(item.label.strip())] or ordered
     top, second, bottom = ordered[0], ordered[1], named[-1]
@@ -751,12 +914,16 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
 
 
-def item_sentence(items, header, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1):
+def item_sentence(items, header, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1, basis="", wholes=()):
     """A plain report sentence for a table of named items. It only states figures."""
     ko = lang == "ko"
     if any(item.before is not None for item in items):
-        first = item_readings(items, show, lang, total, additive, before_total, limit=1, stated=stated, rate=rate, scale=scale)
+        first = item_readings(items, show, lang, total, additive, before_total, limit=1, stated=stated, rate=rate, scale=scale, basis=basis, wholes=wholes)
         return f"{header}: {first[0].text}" if first else f"{header}."
+    if len(wholes) >= 2:  # income, expenses and results are not rivals: their totals are what the table says
+        return f"{header}: " + ", ".join(f"{item.label} {show(item.value)}" for item in wholes[:MAX_LISTED]) + "."
+    if separate_lists(items):
+        return f"{header}: " + ", ".join(f"{item.label} {show(item.value)}" for item in items[:MAX_LISTED]) + "."
     ordered = ranked_items(items)
     if additive and total:
         tops = ", ".join(f"{item.label} {_share(item.value, total)}" for item in ordered[:3])
@@ -767,15 +934,27 @@ def item_sentence(items, header, show, lang="ko", total=None, additive=True, bef
     return f"{header}: {tops}."
 
 
-def item_pack(items, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1):
-    """The calculated statements about a table of named items, numbered so that a later step can cite them."""
-    ordered = ranked_items(items)
+def item_pack(items, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1, basis="", wholes=()):
+    """The calculated statements about a table of named items, numbered so that a later step can cite them.
+    With several total lines the lines are given in the sheet's order, not as places in a ranking."""
+    ko = lang == "ko"
+    readings = item_readings(items, show, lang, total, additive, before_total, limit=9, stated=stated, rate=rate, scale=scale, basis=basis, wholes=wholes)
     pack = []
-    for place, item in enumerate(ordered[:10], start=1):
+    if len(wholes) >= 2:
+        for number, item in enumerate(wholes[:10], start=1):
+            planned = (f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}") if basis == "budget" and item.before is not None else (f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}") if item.before is not None else ""
+            pack.append((f"whole_{number}", f"합계 줄 {item.label} {show(item.value)}{planned}" if ko else f"total line {item.label} {show(item.value)}{planned}"))
+        return readings + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
+    for place, item in enumerate(ranked_items(items)[:10], start=1):
         share = f", {_share(item.value, total)}" if additive and total else ""
-        earlier = f", 이전 {show(item.before)}" if lang == "ko" and item.before is not None else f", from {show(item.before)}" if item.before is not None else ""
-        pack.append((f"item_{place}", f"{place}위 {item.label} {show(item.value)}{share}{earlier}" if lang == "ko" else f"number {place} {item.label} {show(item.value)}{share}{earlier}"))
-    return item_readings(items, show, lang, total, additive, before_total, limit=9, stated=stated, rate=rate, scale=scale) + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
+        if item.before is None:
+            earlier = ""
+        elif basis == "budget":
+            earlier = f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}"
+        else:
+            earlier = f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}"
+        pack.append((f"item_{place}", f"{place}위 {item.label} {show(item.value)}{share}{earlier}" if ko else f"number {place} {item.label} {show(item.value)}{share}{earlier}"))
+    return readings + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
 
 
 def rate_found(points, show, lang="ko", scale=1):

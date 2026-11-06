@@ -14,15 +14,31 @@ import traceback
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox, ttk
 
+import contents
 import core
 import i18n
 import insight
+import readers
 import suggest
 
 STATUS_ORDER = {"error": 0, "warn": 1, "ok": 2}
 STATUS_COLOR = {"error": "#B3261E", "warn": "#9A6700", "ok": "#1A7F37"}
 FONT_FAMILY = "Malgun Gothic"
 SETTINGS_KEYS = ("template", "excel", "output", "lang")
+DOUBTFUL = object()  # what a run returns in place of a report when a person should look first
+FILE_PATTERN = " ".join("*" + ext for ext in readers.ALL_TYPES + readers.DOCUMENT_TYPES)
+
+
+def is_document(path):
+    return os.path.splitext(path)[1].lower() in readers.DOCUMENT_TYPES
+
+
+def is_one_workbook(files):
+    return len(files) == 1 and not is_document(files[0])
+
+
+def first_workbook(files):
+    return next((path for path in files if not is_document(path)), files[0])
 
 
 def app_dir():
@@ -43,14 +59,63 @@ def system_language():
 
 @dataclass
 class AutoReport:
-    """The report SlideFill laid out itself, for when the person brought only a workbook."""
-    excel: str
+    """The report SlideFill laid out itself, for when the person brought only workbooks."""
+    excel: tuple  # every file it reads
     stamp: float
     lang: str
     path: str  # a working file in a temporary folder; the person only ever sees the report made from it
     what: str
     labels: dict = field(default_factory=dict)
     chosen: bool = False  # the person picked these contents, so they stay until another workbook is chosen
+    figures_left: int = 0
+    sheets_left: int = 0
+    title: str = ""
+    sections: list = field(default_factory=list)
+    asks: dict = field(default_factory=dict)  # what the model can be asked, by reference: (request, figure)
+    stale: bool = True  # the working file needs making again
+    files_left: list = field(default_factory=list)
+    doubts: list = field(default_factory=list)  # why a person should look at what was chosen, until they have
+
+
+class DoubtWindow:
+    """Says in plain words why the choice may be wrong and shows what it gave, then leaves the decision to the person. Nothing has been made yet."""
+
+    def __init__(self, app, auto):
+        self.app = app
+        window = self.window = tk.Toplevel(app.root)
+        window.title(app.t("doubt_title"))
+        window.transient(app.root)
+        body = ttk.Frame(window, padding=app.px(16))
+        body.pack(fill="both", expand=True)
+        width = app.px(620)
+        ttk.Label(body, text=app.t("doubt_intro"), wraplength=width, justify="left").pack(anchor="w")
+        ttk.Label(body, text=app.t("doubt_chosen", what=auto.what), wraplength=width, justify="left", style="Summary.TLabel").pack(anchor="w", pady=(app.px(10), 0))
+        self.reasons = []
+        for code, params in auto.doubts:
+            words = app.t("doubt_" + code, **{"figure": "", **params})
+            if params.get("file"):
+                words = f"{params['file']}: {words}"
+            self.reasons.append(words)
+            ttk.Label(body, text="• " + words, wraplength=width, justify="left").pack(anchor="w", pady=(app.px(6), 0))
+        foot = ttk.Frame(body)
+        foot.pack(anchor="e", pady=(app.px(16), 0))
+        self.change_button = ttk.Button(foot, text=app.t("doubt_change"), style="Accent.TButton", command=lambda: self.answer("change"))
+        self.change_button.pack(side="left")
+        self.keep_button = ttk.Button(foot, text=app.t("doubt_keep"), command=lambda: self.answer("keep"))
+        self.keep_button.pack(side="left", padx=(app.px(4), 0))
+        self.cancel_button = ttk.Button(foot, text=app.t("doubt_cancel"), command=lambda: self.answer(None))
+        self.cancel_button.pack(side="left", padx=(app.px(4), 0))
+        window.bind("<Escape>", lambda _e: self.answer(None))
+        window.protocol("WM_DELETE_WINDOW", lambda: self.answer(None))
+        window.update_idletasks()
+        window.geometry(f"+{app.root.winfo_rootx() + app.px(40)}+{app.root.winfo_rooty() + app.px(40)}")
+        window.grab_set()
+        self.change_button.focus_set()
+
+    def answer(self, what):
+        self.window.grab_release()
+        self.window.destroy()
+        self.app.doubts_answered(what)
 
 
 class App:
@@ -61,9 +126,11 @@ class App:
         self.insights = core.load_settings(self.insights_file)
         self.insight_window = None
         self.helper_window = None
+        self.doubt_window = None
         saved = core.load_settings(self.settings_file)
         self.lang = saved.get("lang") if saved.get("lang") in i18n.STRINGS else system_language()
         self.vars = {key: tk.StringVar(value=str(saved.get(key) or "")) for key in ("template", "excel", "output")}
+        self.more_files = [str(path) for path in saved.get("more_excels") or []]
         self.own_template = tk.BooleanVar(value=bool(saved.get("use_template", saved.get("template"))))
         self.auto = None
         self.work_dir = None
@@ -80,6 +147,9 @@ class App:
         self.build()
         self.apply_language()
         self.bind_keys()
+        self.vars["excel"].trace_add("write", lambda *_a: self.show_files())
+        self.show_files()
+        self.drop = contents.DropTarget(root, self.add_files)
         root.after(50, self.poll)
         if self.ready():
             self.preview()
@@ -127,8 +197,24 @@ class App:
         files.grid(row=1, column=0, sticky="ew")
         files.columnconfigure(1, weight=1)
         self.file_labels, self.browse_buttons = {}, {}
-        commands = {"template": self.pick_template, "excel": self.pick_excel, "output": self.pick_output}
-        for row, key in ((0, "excel"), (1, "output"), (3, "template")):
+        self.file_labels["excel"] = ttk.Label(files)
+        self.file_labels["excel"].grid(row=0, column=0, sticky="nw", padx=(0, self.px(10)), pady=self.px(3))
+        holder = ttk.Frame(files)
+        holder.grid(row=0, column=1, sticky="ew", pady=self.px(3))
+        holder.columnconfigure(0, weight=1)
+        self.file_list = tk.Listbox(holder, height=3, activestyle="none", exportselection=False, font=(FONT_FAMILY, 10), selectmode="extended")
+        self.file_list.grid(row=0, column=0, sticky="ew")
+        self.file_list.bind("<<ListboxSelect>>", lambda _e: self.show_files_state())
+        self.file_list.bind("<Delete>", lambda _e: self.remove_files())
+        self.drop_hint = ttk.Label(self.file_list, style="Muted.TLabel", background="white", justify="center")
+        side = ttk.Frame(files)
+        side.grid(row=0, column=2, sticky="n", padx=(self.px(6), 0), pady=self.px(3))
+        self.browse_buttons["excel"] = ttk.Button(side, command=self.pick_excel)
+        self.browse_buttons["excel"].pack(fill="x")
+        self.remove_button = ttk.Button(side, command=self.remove_files, state="disabled")
+        self.remove_button.pack(fill="x", pady=(self.px(3), 0))
+        commands = {"template": self.pick_template, "output": self.pick_output}
+        for row, key in ((1, "output"), (3, "template")):
             label = ttk.Label(files)
             label.grid(row=row, column=0, sticky="w", padx=(0, self.px(10)), pady=self.px(3))
             entry = ttk.Entry(files, textvariable=self.vars[key])
@@ -149,9 +235,9 @@ class App:
         self.generate_button = ttk.Button(actions, style="Accent.TButton", command=self.generate)
         self.generate_button.grid(row=0, column=0, ipady=self.px(3))
         self.preview_button = ttk.Button(actions, command=self.preview)
-        self.preview_button.grid(row=0, column=1, padx=self.px(6), ipady=self.px(3))
+        self.preview_button.grid(row=0, column=1, padx=(self.px(6), 0), ipady=self.px(3))
         self.insight_button = ttk.Button(actions, command=self.open_insight, state="disabled")
-        self.insight_button.grid(row=0, column=2, ipady=self.px(3))
+        self.insight_button.grid(row=0, column=2, padx=(self.px(6), 0), ipady=self.px(3))
         self.helper_button = ttk.Button(actions, command=self.open_helper)
         self.helper_button.grid(row=0, column=3, padx=(self.px(6), 0), ipady=self.px(3))
         self.summary = ttk.Label(actions, style="Summary.TLabel", anchor="e")
@@ -208,7 +294,9 @@ class App:
         self.lang_button.configure(text=self.t("language"))
         for key, label in self.file_labels.items():
             label.configure(text=self.t(key))
-            self.browse_buttons[key].configure(text=self.t("browse"))
+            self.browse_buttons[key].configure(text=self.t("add_files" if key == "excel" else "browse"))
+        self.remove_button.configure(text=self.t("remove_files"))
+        self.drop_hint.configure(text=self.t("drop_hint"))
         self.template_check.configure(text=self.t("own_template"))
         self.generate_button.configure(text=self.t("generate"))
         self.preview_button.configure(text=self.t("preview"))
@@ -249,21 +337,26 @@ class App:
         self.tree.delete(*self.tree.get_children())
         self.tree_items = {}
         report = self.report
-        self.insight_button.configure(state="normal" if report and report.requests and not self.busy else "disabled")
+        self.insight_button.configure(state="normal" if self.insight_requests() and not self.busy else "disabled")
         if report is None:
             self.summary.configure(text="")
             return
-        for item in sorted(report.items, key=lambda i: STATUS_ORDER[i.status]):
+        order = {key: place for place, key in enumerate(self.auto.labels)} if self.auto and not self.template_path() else {}  # as the report reads
+        for item in sorted(report.items, key=lambda i: (STATUS_ORDER[i.status], order.get(i.key.casefold(), 0))):
             value = self.issue_text(item.issues[0]) if item.issues and (item.status == "error" or not item.value) else item.value
-            label = item.key if item.kind == "text" else f"{self.t('kind_' + item.kind)}: {item.key}"
-            code = self.auto.labels.get(item.key.casefold()) if self.auto and not self.template_path() else None
-            if code:
-                label = self.t("suggest_" + code)
+            label, source = self.plain_words(item)
             row = self.tree.insert("", "end", tags=(item.status,), values=(
-                self.t("status_" + item.status), label, value, item.source, self.where_text(item.wheres)))
+                self.t("status_" + item.status), label, value, source, self.where_text(item.wheres)))
             self.tree_items[row] = item
         self.summary.configure(text=self.t(
             "summary", ok=report.count("ok"), warn=report.count("warn"), error=report.count("error")))
+
+    def plain_words(self, item):
+        """(what it is, where it comes from). Someone with a template wrote the notation; someone with only a workbook should never meet it."""
+        named = self.auto.labels.get(item.key.casefold()) if self.auto and not self.template_path() else None
+        if named:
+            return " · ".join(part for part in (named[1], self.t("suggest_" + named[0])) if part), item.source.rpartition("!")[0] or item.source
+        return (item.key if item.kind == "text" else f"{self.t('kind_' + item.kind)}: {item.key}"), item.source
 
     def show_detail(self):
         selected = self.tree.selection()
@@ -272,7 +365,8 @@ class App:
             return
         lines = [self.issue_text(issue) for issue in item.issues]
         if not lines:
-            lines = [f"{item.key} → {item.value}" + (f"  ({item.source})" if item.source else "")]
+            label, source = self.plain_words(item)
+            lines = [f"{label} → {item.value}" + (f"  ({source})" if source else "")]
         self.status = ("detail", {})
         self.message.configure(text="\n".join(lines[:4]))
 
@@ -298,16 +392,72 @@ class App:
             self.after_pick()
 
     def pick_excel(self):
-        path = filedialog.askopenfilename(
+        paths = filedialog.askopenfilenames(
             title=self.t("pick_excel"), initialdir=self.start_dir("excel"),
-            filetypes=[(self.t("filetype_excel"), "*.xlsx *.xlsm")])
-        if path:
-            old_dir = os.path.dirname(self.vars["excel"].get())
+            filetypes=[(self.t("filetype_excel"), FILE_PATTERN)])
+        if paths:
+            self.add_files(paths)
+
+    def add_files(self, paths):
+        """From the file dialog or from a drop. A file of another kind is said out loud, not ignored."""
+        known = {os.path.normcase(path) for path in self.inputs()}
+        added, refused = 0, []
+        for path in paths:
             path = os.path.normpath(path)
-            self.vars["excel"].set(path)
-            if not self.vars["output"].get() or os.path.normcase(self.vars["output"].get()) == os.path.normcase(old_dir):
-                self.vars["output"].set(os.path.dirname(path))
+            if os.path.splitext(path)[1].lower() not in readers.ALL_TYPES + readers.DOCUMENT_TYPES or os.path.isdir(path):
+                refused.append(os.path.basename(path))
+            elif os.path.normcase(path) not in known:
+                known.add(os.path.normcase(path))
+                added += 1
+                if self.vars["excel"].get().strip():
+                    self.more_files.append(path)
+                else:
+                    self.vars["excel"].set(path)
+                if not self.vars["output"].get():
+                    self.vars["output"].set(os.path.dirname(path))
+        self.show_files()
+        if added:
             self.after_pick()
+        if refused:
+            self.show_refused(refused, added)
+
+    def show_refused(self, refused, added):
+        if added:
+            messagebox.showinfo(self.t("error_title"), self.t("drop_refused", names=", ".join(refused)))
+        else:
+            self.set_status("drop_refused", names=", ".join(refused))
+
+    def remove_files(self):
+        chosen = set(self.file_list.curselection())
+        kept = [path for place, path in enumerate(self.inputs()) if place not in chosen]
+        self.more_files = kept[1:]
+        self.vars["excel"].set(kept[0] if kept else "")
+        self.show_files()
+        self.save_settings()
+        if kept:
+            self.preview()
+        else:
+            self.report = None
+            self.auto = None
+            self.render_report()
+            self.set_status("start_hint")
+
+    def inputs(self):
+        first = self.vars["excel"].get().strip()
+        return [first] + self.more_files if first else list(self.more_files)
+
+    def show_files(self):
+        self.file_list.delete(0, "end")
+        for path in self.inputs():
+            self.file_list.insert("end", f"{os.path.basename(path)}    ({os.path.dirname(path)})")
+        if self.inputs():
+            self.drop_hint.place_forget()
+        else:
+            self.drop_hint.place(relx=0.5, rely=0.5, anchor="center")
+        self.show_files_state()
+
+    def show_files_state(self):
+        self.remove_button.configure(state="normal" if self.file_list.curselection() else "disabled")
 
     def toggle_template(self):
         if self.own_template.get() and not self.vars["template"].get().strip():
@@ -325,6 +475,10 @@ class App:
                 widget.grid()
             else:
                 widget.grid_remove()
+        if self.own_template.get():  # with no template, choosing a workbook already previews it
+            self.preview_button.grid()
+        else:
+            self.preview_button.grid_remove()
         self.helper_button.configure(text=self.t("helper_button" if self.own_template.get() else "helper_button_auto"))
 
     def template_path(self):
@@ -346,10 +500,11 @@ class App:
             self.preview()
 
     def ready(self):
-        return bool(self.vars["excel"].get().strip())
+        return bool(self.inputs())
 
     def save_settings(self):
         data = {key: self.vars[key].get().strip() for key in ("template", "excel", "output")}
+        data["more_excels"] = self.more_files
         data["lang"] = self.lang
         data["use_template"] = self.own_template.get()
         try:
@@ -394,39 +549,70 @@ class App:
         state = "disabled" if busy else "normal"
         self.generate_button.configure(state=state)
         self.preview_button.configure(state=state)
-        usable = not busy and self.report is not None and self.report.requests
-        self.insight_button.configure(state="normal" if usable else "disabled")
+        self.insight_button.configure(state="normal" if not busy and self.insight_requests() else "disabled")
 
-    def auto_template(self, excel, lang):
-        """(working template, workbook already read or None). Runs on the worker: choosing what to show means reading the workbook."""
+    @staticmethod
+    def read_files(files):
+        return core.ExcelSource(files[0]) if is_one_workbook(files) else core.Sources(files)
+
+    def auto_template(self, files, lang):
+        """(working template, workbooks already read or None). Runs on the worker: choosing what to show means reading them."""
         known = self.auto
-        stamp = os.path.getmtime(excel) if os.path.exists(excel) else 0
-        if known and known.excel == excel and (known.chosen or (known.stamp, known.lang) == (stamp, lang)):
-            return known.path, None
-        source = core.ExcelSource(excel)
-        shape, base, found = suggest.first_choice(source, lang=lang)
-        if shape is None:
+        files = tuple(files)
+        stamp = max((os.path.getmtime(path) for path in files if os.path.exists(path)), default=0)
+        if known and known.excel == files and (known.chosen or (known.stamp, known.lang) == (stamp, lang)):
+            if not known.stale:
+                return known.path, None
+            source = self.read_files(files)
+            self.make_auto(known, source)
+            return known.path, source
+        source = self.read_files(files)
+        plan = suggest.plan_report(source, lang) if is_one_workbook(files) else suggest.plan_files(source, lang)
+        if plan is None:
             raise core.SlideFillError("auto_nothing")
-        path = self.auto_path(excel)
-        suggest.make_starter(path, self.report_title(excel), found)
-        self.auto = AutoReport(excel, stamp, lang, path, suggest.describe(shape, suggest.default_value(base)), suggest.labels(found))
-        return path, source
+        self.auto = AutoReport(files, stamp, lang, self.auto_path(files, lang), plan.what, figures_left=plan.figures_left, sheets_left=plan.sheets_left,
+                               title=self.report_name(files, plan.sections, lang), sections=plan.sections, files_left=plan.files_left, doubts=plan.doubts)
+        self.make_auto(self.auto, source)
+        return self.auto.path, source
 
-    def auto_path(self, excel):
+    @staticmethod
+    def report_name(files, sections, lang):
+        first = suggest.title_of(first_workbook(files), sections)
+        return first if len(files) == 1 else i18n.text(lang, "report_many", first=first, more=len(files) - 1)
+
+    def make_auto(self, auto, source):
+        """The working file, with any sentence the person chose in place of the calculated one."""
+        auto.asks = suggest.ask_insights(source, auto.sections, auto.title, auto.lang)
+        sections = suggest.choose_insights(auto.sections, auto.asks, dict(self.insights))
+        suggest.make_report(auto.path, auto.title, sections)
+        auto.labels = suggest.labels(item for section in sections for item in section.items)
+        auto.stale = False
+
+    def auto_path(self, files, lang):
         if self.work_dir is None:
             self.work_dir = tempfile.mkdtemp(prefix="SlideFill-")
             atexit.register(shutil.rmtree, self.work_dir, ignore_errors=True)
-        return os.path.join(self.work_dir, self.report_title(excel) + ".pptx")  # the report is named after this file
+        stem = self.report_title(first_workbook(files))
+        if len(files) > 1:
+            stem = i18n.text(lang, "report_many_file", first=stem, more=len(files) - 1)
+        return os.path.join(self.work_dir, stem + ".pptx")  # the report is named after this file
 
     @staticmethod
     def report_title(excel):
         return os.path.splitext(os.path.basename(excel))[0]
 
-    def use_contents(self, excel, found, what):
+    def use_contents(self, excel, found, what, words=""):
         """The person chose what the report shows, in the helper."""
-        path = self.auto_path(excel)
-        suggest.make_starter(path, self.report_title(excel), found)
-        self.auto = AutoReport(excel, 0, self.lang, path, what, suggest.labels(found), chosen=True)
+        sections = [suggest.one_section(found, words)]
+        files = (excel,)
+        self.auto = AutoReport(files, 0, self.lang, self.auto_path(files, self.lang), what, chosen=True, title=suggest.title_of(excel, sections), sections=sections)
+        self.preview()
+
+    def use_sections(self, files, sections, what):
+        """The person chose what the report shows, in the contents window."""
+        files = tuple(files)
+        real = [section for section in sections if section.file >= 0]
+        self.auto = AutoReport(files, 0, self.lang, self.auto_path(files, self.lang), what, chosen=True, title=self.report_name(files, real, self.lang), sections=sections)
         self.preview()
 
     def preview(self):
@@ -436,13 +622,14 @@ class App:
         if not self.ready():
             self.set_status("missing_inputs")
             return
-        template, excel, lang = self.template_path(), self.vars["excel"].get().strip(), self.lang
+        template, files, lang = self.template_path(), self.inputs(), self.lang
+        excel = first_workbook(files) if template or is_one_workbook(files) else files
         self.save_settings()
         insights = dict(self.insights)
 
         def work():
-            path, source = (template, None) if template else self.auto_template(excel, lang)
-            return core.run(path, excel, insights=insights, source=source)
+            path, source = (template, None) if template else self.auto_template(files, lang)
+            return core.run(path, excel, insights=insights, source=source, thousands=not template)
 
         self.start(work, self.preview_done, "working" if template else "helper_working")
 
@@ -456,7 +643,18 @@ class App:
         self.report = report
         self.render_report()
         if not self.template_path():
-            self.set_status("auto_ready", what=self.auto.what)
+            auto = self.auto
+            if auto.doubts:
+                self.set_status("auto_ready_doubt", what=auto.what, count=len(auto.doubts))
+            elif auto.files_left:
+                self.set_status("auto_ready_unread", what=auto.what, names=", ".join(auto.files_left))
+            elif auto.figures_left or auto.sheets_left:
+                self.set_status("auto_ready_left", what=auto.what, figures=auto.figures_left, sheets=auto.sheets_left)
+            else:
+                self.set_status("auto_ready", what=auto.what)
+            return
+        if len(self.inputs()) > 1:
+            self.set_status("template_first_file", name=os.path.basename(self.inputs()[0]))
             return
         self.set_status("select_hint" if report.items else "no_placeholders")
 
@@ -466,27 +664,35 @@ class App:
         if not self.ready():
             self.set_status("missing_inputs")
             return
-        template, excel, lang = self.template_path(), self.vars["excel"].get().strip(), self.lang
-        folder = self.vars["output"].get().strip() or os.path.dirname(template or excel)
+        template, files, lang = self.template_path(), self.inputs(), self.lang
+        excel = first_workbook(files) if template or is_one_workbook(files) else files
+        folder = self.vars["output"].get().strip() or os.path.dirname(template or files[0])
         self.save_settings()
         insights = dict(self.insights)
 
         def work():
-            path, source = (template, None) if template else self.auto_template(excel, lang)
-            preview = core.run(path, excel, insights=insights, source=source)
+            path, source = (template, None) if template else self.auto_template(files, lang)
+            preview = core.run(path, excel, insights=insights, source=source, thousands=not template)
+            if not template and self.auto.doubts:
+                return path, preview, DOUBTFUL
             problems = preview.count("error")
             if problems:
                 return path, preview, None
-            return path, preview, core.run(path, excel, core.output_path(folder, path), insights)
+            return path, preview, core.run(path, excel, core.output_path(folder, path), insights, thousands=not template)
 
-        self.start(work, lambda result, error: self.generate_checked(result, error, excel, folder), "generating")
+        self.start(work, lambda result, error: self.generate_checked(result, error, excel, folder, not template), "generating")
 
-    def generate_checked(self, result, error, excel, folder):
+    def generate_checked(self, result, error, excel, folder, thousands):
         if error:
             self.show_error(error)
             self.set_status("start_hint")
             return
         template, preview, made = result
+        if made is DOUBTFUL:
+            self.report = preview
+            self.render_report()
+            self.ask_about_doubts()
+            return
         if made is None:
             self.report = preview
             self.render_report()
@@ -495,7 +701,7 @@ class App:
                 self.set_status("select_hint")
                 return
             insights = dict(self.insights)
-            self.start(lambda: core.run(template, excel, core.output_path(folder, template), insights),
+            self.start(lambda: core.run(template, excel, core.output_path(folder, template), insights, thousands=thousands),
                        self.generate_done, "generating")
             return
         self.generate_done(made, None)
@@ -511,6 +717,25 @@ class App:
         self.update_result_buttons()
         self.set_status("saved", path=report.output)
 
+    def ask_about_doubts(self):
+        """The rules could not be sure of what they chose, so a person looks before it becomes a report."""
+        auto = self.auto
+        self.set_status("auto_ready_doubt", what=auto.what, count=len(auto.doubts))
+        self.doubt_window = DoubtWindow(self, auto)
+
+    def doubts_answered(self, answer):
+        """change: choose the figures. keep: this is what was meant, so make it and do not ask again."""
+        self.doubt_window = None
+        if answer == "change":
+            self.open_helper()
+        elif answer == "keep":
+            auto = self.auto
+            notes = [(params.get("file", ""), i18n.text(auto.lang, "doubt_report_note", reason=i18n.text(auto.lang, "doubt_" + code, **{"figure": "", **params}))) for code, params in auto.doubts]
+            auto.sections = suggest.with_doubt_notes(auto.sections, notes)
+            auto.stale = True
+            auto.doubts = []
+            self.generate()
+
     def show_error(self, error):
         key, params = error
         messagebox.showerror(self.t("error_title"), self.t(key, **params))
@@ -521,16 +746,37 @@ class App:
 
     # ------------------------------------------------------------ insight candidates
 
+    def insight_requests(self):
+        """What the model can be asked about. A template asks by its 통찰 placeholders; a report made from the workbook alone can ask about each figure."""
+        if self.report is None:
+            return {}
+        if self.template_path() or not self.auto:
+            return self.report.requests
+        return {request.key: request for request, _figure in self.auto.asks.values()}
+
     def open_insight(self):
-        if self.busy or not (self.report and self.report.requests):
+        requests = self.insight_requests()
+        if self.busy or not requests:
             return
         if self.insight_window and self.insight_window.window.winfo_exists():
             self.insight_window.window.lift()
             return
         selected = self.tree.selection()
         item = self.tree_items.get(selected[0]) if selected else None
-        request = self.report.requests.get(item.key) if item else None
-        self.insight_window = InsightWindow(self, request or next(iter(self.report.requests.values())))
+        if self.template_path() or not self.auto:
+            request = requests.get(item.key) if item else None
+            self.insight_window = InsightWindow(self, request or next(iter(requests.values())))
+            return
+        asks = self.auto.asks
+        choices = [(self.insight_label(request, figure), request) for request, figure in asks.values()]
+        chosen = asks.get(item.key.partition(":")[2].casefold() if item else "") or asks.get(core.ALL_FILES) or next(iter(asks.values()))
+        self.insight_window = InsightWindow(self, chosen[0], self.insight_label(*chosen), choices)
+
+    def insight_label(self, request, figure):
+        if core.ALL_FILES in request.key:
+            return self.t("insight_all_files", files=request.source)
+        place = request.source.rpartition("!")[0] or request.source
+        return " · ".join(part for part in (figure, place) if part)
 
     def apply_insight(self, request, text):
         """Save the person's sentence for exactly these figures. Clearing it goes back to the calculated sentence."""
@@ -543,21 +789,28 @@ class App:
             core.save_settings(self.insights_file, self.insights)
         except OSError:
             pass  # the choice still holds until the app closes
+        if self.auto and not self.template_path():
+            self.auto.stale = True
         self.preview()
 
     def open_helper(self):
-        """Works from the workbook alone: a template is what it helps to make."""
-        excel = self.vars["excel"].get().strip()
-        if not excel:
+        """With no template it changes what the report holds; with one it helps to mark it."""
+        files = self.inputs()
+        if not files:
             self.set_status("helper_no_excel")
             return
         plain = not self.template_path()
+        key = (tuple(files), plain)
         if self.helper_window and self.helper_window.window.winfo_exists():
-            if (self.helper_window.excel, self.helper_window.plain) == (excel, plain):
+            if self.helper_window.key == key:
                 self.helper_window.window.lift()
                 return
-            self.helper_window.window.destroy()  # it was reading another workbook, or speaking to someone with a template
-        self.helper_window = HelperWindow(self, excel, plain)
+            self.helper_window.window.destroy()  # it was reading other workbooks, or speaking to someone with a template
+        self.helper_window = contents.ContentsWindow(self, files, self.open_detail) if plain else HelperWindow(self, first_workbook(files))
+
+    def open_detail(self):
+        """The finer choices, such as which rows count, for one file."""
+        self.helper_window = HelperWindow(self, first_workbook(self.inputs()), True)
 
     def use_template(self, path):
         """The starter template has just been made from this workbook, so a report can follow at once."""
@@ -592,8 +845,10 @@ class App:
 class InsightWindow:
     """Shows the calculated results and the model's candidates. Nothing reaches the report until the person applies it."""
 
-    def __init__(self, app, request):
+    def __init__(self, app, request, title=None, choices=None):
         self.app, self.request = app, request
+        self.choices = choices or []
+        self.round = 0
         self.results = queue.Queue()
         self.next_seed = 0
         self.working = False
@@ -610,10 +865,28 @@ class InsightWindow:
         body.rowconfigure(7, weight=1)
         small = app.px(4)
 
-        ttk.Label(body, text=f"{request.key}   ({request.source})", style="Summary.TLabel").grid(row=0, column=0, sticky="w")
+        if len(self.choices) > 1:  # which figure the sentence is about, or all the files together
+            about = ttk.Frame(body)
+            about.grid(row=0, column=0, sticky="ew")
+            about.columnconfigure(1, weight=1)
+            ttk.Label(about, text=app.t("insight_about"), style="Summary.TLabel").grid(row=0, column=0, padx=(0, app.px(8)))
+            self.about = ttk.Combobox(about, state="readonly", values=[label for label, _request in self.choices])
+            self.about.grid(row=0, column=1, sticky="ew")
+            self.about.current(next(i for i, (_label, other) in enumerate(self.choices) if other is request))
+            self.about.bind("<<ComboboxSelected>>", lambda _e: self.switch())
+        else:
+            ttk.Label(body, text=title or f"{request.key}   ({request.source})", style="Summary.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(body, text=app.t("insight_warning"), style="Muted.TLabel", wraplength=app.px(780), justify="left").grid(
             row=1, column=0, sticky="w", pady=(small, small))
-        ttk.Label(body, text=app.t("insight_candidates")).grid(row=2, column=0, sticky="w")
+        # What is happening goes right above the list it is filling: the eye is on the list, not the bottom of the window.
+        progress = ttk.Frame(body)
+        progress.grid(row=2, column=0, sticky="ew")
+        progress.columnconfigure(2, weight=1)
+        ttk.Label(progress, text=app.t("insight_candidates"), style="Summary.TLabel").grid(row=0, column=0, sticky="w", padx=(0, app.px(10)))
+        self.status = ttk.Label(progress, wraplength=app.px(600), justify="left")
+        self.status.grid(row=0, column=1, sticky="w", padx=(0, app.px(10)))
+        self.bar = ttk.Progressbar(progress, mode="indeterminate")
+        self.bar.grid(row=0, column=2, sticky="ew")
         self.listbox = tk.Listbox(body, font=(FONT_FAMILY, 10), activestyle="none", exportselection=False)
         self.listbox.grid(row=3, column=0, sticky="nsew", pady=(small, small))
         self.listbox.bind("<<ListboxSelect>>", lambda _e: self.show_basis())
@@ -638,12 +911,7 @@ class InsightWindow:
         ttk.Label(body, text=app.t("insight_chosen")).grid(row=6, column=0, sticky="w")
         self.chosen = tk.Text(body, height=4, wrap="word", font=(FONT_FAMILY, 10))
         self.chosen.grid(row=7, column=0, sticky="nsew", pady=(small, small))
-        saved = app.insights.get(request.key.casefold())
-        if saved and saved.get("fingerprint") == request.fingerprint:
-            self.chosen.insert("1.0", saved.get("text", ""))
-
-        self.status = ttk.Label(body, wraplength=app.px(780), justify="left")
-        self.status.grid(row=8, column=0, sticky="w")
+        self.load_saved()
 
         foot = ttk.Frame(body)
         foot.grid(row=9, column=0, sticky="e", pady=(small, 0))
@@ -653,10 +921,29 @@ class InsightWindow:
         window.bind("<Escape>", lambda _e: window.destroy())
         window.after(50, self.poll)
         self.show_facts()
+        self.show_calculated()
+        self.make()
+
+    def load_saved(self):
+        self.chosen.delete("1.0", "end")
+        saved = self.app.insights.get(self.request.key.casefold())
+        if saved and saved.get("fingerprint") == self.request.fingerprint:
+            self.chosen.insert("1.0", saved.get("text", ""))
+
+    def switch(self):
+        """Another figure: start over for it. An answer still on its way for the last one is ignored when it comes."""
+        self.request = self.choices[self.about.current()][1]
+        self.shown, self.hypotheses = [], []
+        self.listbox.delete(0, "end")
+        self.add_button.configure(state="disabled")
+        self.load_saved()
+        self.show_facts()
+        self.show_calculated()
+        self.working = False
         self.make()
 
     def show_facts(self):
-        self.set_basis("\n".join(fact.text for fact in self.request.facts))
+        self.set_basis("\n".join(fact.text for fact in self.request.facts if fact.id != "files" and not fact.id.endswith("subject")))  # those are instructions to the model, not results
 
     def set_basis(self, text):
         self.basis.configure(state="normal")
@@ -669,17 +956,20 @@ class InsightWindow:
             return
         self.working = True
         self.again_button.configure(state="disabled")
-        self.status.configure(text=self.app.t("insight_working", model=insight.MODELS[self.request.lang]))
+        self.bar.grid()
+        self.bar.start(20)
+        self.show_progress(1, insight.RUNS)
         seed, self.next_seed = self.next_seed, self.next_seed + insight.RUNS
-        request, results = self.request, self.results
+        self.round += 1
+        request, results, turn = self.request, self.results, self.round
 
         def work():
             try:
-                results.put(("done", insight.make_candidates(request.facts, request.lang, first_seed=seed)))
+                results.put((turn, "done", insight.make_candidates(request.facts, request.lang, first_seed=seed, on_run=lambda done, runs, found: results.put((turn, "run", (done, runs, found))))))
             except insight.InsightError as exc:
-                results.put(("error", exc))
+                results.put((turn, "error", exc))
             except Exception as exc:  # a thread has no one else to tell
-                results.put(("error", insight.InsightError("other", detail=repr(exc))))
+                results.put((turn, "error", insight.InsightError("other", detail=repr(exc))))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -687,11 +977,23 @@ class InsightWindow:
         if not self.window.winfo_exists():
             return
         try:
-            kind, value = self.results.get_nowait()
+            turn, kind, value = self.results.get_nowait()
         except queue.Empty:
             self.window.after(100, self.poll)
             return
+        if turn != self.round:
+            self.window.after(10, self.poll)
+            return
+        if kind == "run":
+            done, runs, found = value
+            self.add_candidates(found)
+            if done < runs:
+                self.show_progress(done + 1, runs)
+            self.window.after(100, self.poll)
+            return
         self.working = False
+        self.bar.stop()
+        self.bar.grid_remove()
         self.again_button.configure(state="normal")
         if kind == "error":
             self.status.configure(text=self.app.t("insight_err_" + value.code, **value.params))
@@ -699,18 +1001,33 @@ class InsightWindow:
             self.show_candidates(value)
         self.window.after(100, self.poll)
 
-    def show_candidates(self, result):
+    def show_calculated(self):
+        """There from the first moment, needing no model: the program's own sentences, marked apart from what a model writes."""
+        self.add_candidates(insight.Candidates("", insight.calculated_candidates(self.request.facts, self.request.lang)))
+
+    def show_progress(self, run, runs):
+        self.status.configure(text=self.app.t("insight_working", run=run, runs=runs, count=sum(not c.calculated for c in self.shown)))
+
+    def add_candidates(self, result):
+        """They go up as they come. A long wait is easier with something to read."""
         known = {c.statement for c in self.shown}
         for candidate in result.candidates:
             if candidate.statement not in known:
+                known.add(candidate.statement)
                 self.shown.append(candidate)
-                self.listbox.insert("end", candidate.statement)
+                self.listbox.insert("end", self.app.t("insight_mark_calculated" if candidate.calculated else "insight_mark_model") + candidate.statement)
+                if candidate.calculated:
+                    self.listbox.itemconfigure("end", foreground="#1F3864")
         for hypothesis in result.hypotheses:
             if hypothesis not in self.hypotheses:
                 self.hypotheses.append(hypothesis)
-        key = "insight_done" if self.shown else "insight_none"
-        self.status.configure(text=self.app.t(key, count=len(self.shown), rejected=result.rejected, model=result.model))
-        if self.hypotheses:
+
+    def show_candidates(self, result):
+        self.add_candidates(result)
+        written = sum(not c.calculated for c in self.shown)
+        key = "insight_done" if written else "insight_none"
+        self.status.configure(text=self.app.t(key, count=written, rejected=result.rejected, model=result.model))
+        if self.hypotheses and not self.listbox.curselection():
             self.set_basis(self.app.t("insight_hypotheses") + "\n" + "\n".join(self.hypotheses))
 
     def show_basis(self):
@@ -747,6 +1064,7 @@ class HelperWindow:
     def __init__(self, app, excel, plain=False):
         self.app, self.excel = app, excel
         self.plain = plain  # no template in play: choosing what the report shows, with no notation in sight
+        self.key = ((excel,), plain)
         self.source = None
         self.shape = None
         self.found = []
@@ -886,31 +1204,35 @@ class HelperWindow:
         """Fill the choices from what was read, with the same defaults the first suggestions used."""
         self.shape = shape
         self.bases = shape.bases
-        self.boxes["base"]["values"] = [self.base_text(b) for b in self.bases]
+        self.boxes["base"]["values"] = [self.choice(b.spec, b.name, [o.name for o in self.bases]) for b in self.bases]
         self.boxes["base"].current(self.bases.index(base))
         self.fill_base(base)
         self.show_found(found)
 
-    def base_text(self, base):
-        return f"{base.spec} · {base.name or self.app.t('helper_no_name')}"
+    def choice(self, spec, name, names):
+        """How a column is offered: by its heading alone, with its letter only when the heading cannot tell it apart. A template's author needs the letter."""
+        shown = name or self.app.t("helper_no_name")
+        if not self.plain:
+            return f"{spec} · {shown}"
+        return shown if name and names.count(name) == 1 else f"{shown} ({spec})"
 
-    def value_text(self, value):
+    def value_text(self, value, base):
         if value.every_row:
             return self.app.t("helper_every_row")
         if value.counted:
             return self.app.t("helper_counted")
-        return f"{value.spec} · {value.name}"
+        return self.choice(value.spec, value.name, [v.name for v in base.values])
 
     def fill_base(self, base):
         value = suggest.default_value(base)
-        self.boxes["value"]["values"] = [self.value_text(v) for v in base.values]
+        self.boxes["value"]["values"] = [self.value_text(v, base) for v in base.values]
         if value is not None:
             self.boxes["value"].current(base.values.index(value))
         how = suggest.default_how(base, value)
         self.boxes["how"]["values"] = [self.app.t("helper_how_" + name) for name in self.HOWS]
         self.boxes["how"].current(self.HOWS.index(how))
         none = self.app.t("helper_none")
-        names = [none] + [f"{g.spec} · {g.name}" for g in base.groups]
+        names = [none] + [self.choice(g.spec, g.name, [o.name for o in base.groups]) for g in base.groups]
         for number, group_box in (("1", "group1"), ("2", "group2")):
             self.boxes[group_box]["values"] = names
             self.boxes[group_box].current(0)
@@ -921,7 +1243,7 @@ class HelperWindow:
             self.boxes[f"group{number}"].current(at + 1)
             self.boxes[f"word{number}"]["values"] = base.groups[at].values
             self.boxes[f"word{number}"].set(text)
-        line = self.app.t("helper_shape_dates" if base.kind == "date" else "helper_shape_names", sheet=self.shape.sheet, spec=base.spec, first=base.first, last=base.last, count=base.count)
+        line = self.app.t("helper_shape_dates" if base.kind == "date" else "helper_shape_names", sheet=self.shape.sheet, spec=base.name if self.plain and base.name else base.spec, first=base.first, last=base.last, count=base.count)
         if self.shape.glob and base.kind == "date":
             line += " " + self.app.t("helper_shape_joined", pattern=self.shape.glob)
         for code, params in base.notes:
@@ -984,7 +1306,10 @@ class HelperWindow:
     def show_found(self, found):
         self.found = found
         self.tree.delete(*self.tree.get_children())
+        shown = suggest.in_report(found) if self.plain else found  # with no template to paste into, only what the report will hold
         for number, item in enumerate(found):
+            if not any(item is other for other in shown) and any(i.status != "error" for i in found):
+                continue
             result = item.result if item.status != "error" else self.app.issue_text(item.issues[0])
             place = self.app.t("helper_place_" + item.place)
             self.tree.insert("", "end", iid=str(number), tags=(item.status,), values=(self.app.t("suggest_" + item.code), result, place))
@@ -995,8 +1320,7 @@ class HelperWindow:
         self.key_var.set("")
         self.detail.configure(text=self.app.t("select_hint" if self.plain else "helper_pick_row") if works else self.app.t("helper_nothing"))
         if found and works:
-            first = next(i for i, item in enumerate(found) if item.status != "error")
-            self.tree.selection_set(str(first))
+            self.tree.selection_set(self.tree.get_children()[0])
 
     def picked(self):
         chosen = self.tree.selection()
@@ -1028,7 +1352,7 @@ class HelperWindow:
             self.detail.configure(text=self.app.t("helper_working"))
             return
         value = self.base().values[self.boxes["value"].current()] if self.base().values else None
-        self.app.use_contents(self.excel, self.found, suggest.describe(self.shape, value))
+        self.app.use_contents(self.excel, self.found, suggest.describe(self.shape, value), suggest.heading(self.source, self.shape))
         self.window.destroy()
 
     def make_starter(self):
@@ -1036,7 +1360,7 @@ class HelperWindow:
         path = suggest.starter_path(folder, self.excel)
         title = os.path.splitext(os.path.basename(self.excel))[0]
         try:
-            suggest.make_starter(path, title, self.found)
+            suggest.make_starter(path, title, self.found, suggest.heading(self.source, self.shape))
         except OSError as exc:
             self.detail.configure(text=self.app.t("err_cannot_save", path=path, detail=str(exc)))
             return

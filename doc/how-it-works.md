@@ -70,23 +70,36 @@ Nothing below is guessed: each one is something you write in the placeholder. Ro
 
 Dates are also read as `2026 Aug`, `Aug. 2026`, `Aug-26`, `26년 8월`, `2026 Q3`, `3Q26`, `01월` under a merged `2024년`, and `January` under a heading row `Year 2026`. A month with no year anywhere is not guessed.
 
-A cell such as `362(37%)`, `1,234` written as text, or `15건` gives its leading number with a warning. `78.5%` written as text, `-` and `해당없음` give none.
+A cell such as `362(37%)`, `1,234` written as text, or `15건` gives its leading number with a warning. `78.5%` written as text, `-` and `해당없음` give none. Commas count as thousands only every three digits: `1,2,3` and `12,34` are not one number, so they are cells it could not read, and it asks. Spaces that group thousands, as a statistics yearbook writes `39 925`, are read the same way; `12 34` and `2019 2020` are still not one number. So it does for a cell between the first and last date that holds digits but no date it can read, such as `2026_`: its row falls in no period.
 
 When summing:
 
-- **A date on the first row of a group** covers the rows below it, until the next date or a row such as `Total`.
+- **A date on the first row of a group** covers the rows below it, until the next date or a row such as `Total`. When `서울`, `부산` and `소계` sit under a merged date, the automatic choice uses only the `소계` line: adding all three would count everything twice. By item, the `소계` line is left out and `서울` is set against `부산`.
 - **The same date on two sheets** is refused, because it would count twice.
 - **A line headed differently on another sheet** is refused, because row 7 may be something else there.
 - **Warnings:** the newest date has a different number of rows than usual, or its last time of day is over an hour earlier than usual. Times need the date cell to hold them.
 
 For a table with no dates:
 
-- **The whole** is the total the sheet states. Without one, the items are added and the sentence says "the items' sum", with a warning, because SlideFill cannot know that every column can be added.
+- **The whole** is the total the sheet states. Besides `합계` and `총계`, a line whose name ends in `전체`, `합계` or `총계`, such as `공원관리사업소 전체`, is a total line and is left out of the items, as are `전국` over regions and `전산업` over industries. Without one, the items are added and the sentence says "the items' sum", with a warning, because SlideFill cannot know that every column can be added.
 - **A stated total that differs from the items' sum** by over 0.5% means rows overlap, so no shares are given.
 - **Rates, indexes and means** get no shares. This is judged from headings and the sheet's name, so a column with no such word can still be added wrongly.
-- **`소계`** rows are left out of the items, and a catch-all such as `기타` is ranked last.
+- **`소계`** rows are left out of the items, and a catch-all such as `기타` is ranked last. Closing lines merged in from the left column, such as `유료` and `무료`, count as subtotals too.
+- **In a table with a kind on each row**, if the kind column has a line meaning all of them (`FY Subtotal`, `00:소계`, `5합계`), only that line is used. A line with another name counts too if its value equals the other lines added up, date after date (within 2%, at least 90% of the time). The line chosen is written beside the figure's name. Adding the parts to the whole would double the value. When kinds split each name (`월계` and `누계`, `건수` and `연면적`), only the first is used. A column headed `지표` or `Measures` holds different units, so it is split in tables by date as well.
+- **Tables stacked on one sheet** (the same heading and names coming back further down, or a table with headings of its own starting under a blank row): only the first is read, and it asks before making the report. **Lines indented as in a pivot table** are parts of the line above, so only the outermost level is compared. So it is when the levels stand in columns of their own, with one name to a line (시·도, then its 시·군·구 in the next column, then their 행정동): adding every level counts each hectare two or three times.
+- **A table beyond an empty column**: when a column of names of its own stands beyond the gap, its figures belong to that table (`수량` beside `제품` is not a figure of `지점`). An empty column with no names beyond it is read as one table.
+- **A row equal to the sum of the rows under it** takes them as its parts and leaves them out of the comparison. When the sheet does not mark them as parts, by indenting, a leading space or bold, the sum may match by chance (300 = 100 + 200), so it asks first. When their names say whose parts they are, `611-01` under `611` or `서울 강남` under `서울`, it does not ask. When it asks, it names the row and the rows it seemed to add up.
+- **An average over time for an amount**, such as `분기별 평균 수출금액`, adds up across items. `평균 단가` and `평균 점수` are averaged.
+- **Identifiers and codes** are not chosen as figures: columns whose name says so (`ABN`, `ISBN`, `FILE NUMBER`, postcodes, latitude), columns that repeat one to one with the words beside them (a species code, an area repeated for each region), and whole numbers of nine or more digits that are all different. Neither are places in an order (`발생차수`, rank, a running number that starts again), dates stored as numbers (`Group End Date`), columns where every line is a year, or lists that mix 0.003 with 6,378,137 in one column. Nor is a column where every item has the same value (a fee of 0 for each member): there is no highest or lowest to tell, and the total line under them may be all it holds. Ages are not added; people are counted instead. If no figure is left, rows are counted or the file is said to be unreadable. This is judged from names and contents, so it can miss one or drop the wrong one, and the window says which figure was taken.
+- **A column saying when each item came to be** (`설치년도`, `준공`, `건립`, `설립`, `취득`, `출생`, `지정일자`, installed, built, established, designated) is not used as the dates: the list is read as a table of named items. Read by the year each street light was put up, a ledger becomes a series that "fell every year".
+- **A heading that repeats** takes the merged heading right above it (`일반수출신고 건수`), so a figure for one part does not read as the whole.
+- **A heading merged down over the first line of figures**, such as `구 분` over A3:C5 with the sheet's total on row 5, is not that line's name, so the total is not ranked as one more item.
+- **Lines sharing one merged name**: when several lines with figures of their own sit under one name merged down over them, such as switchboards under a road, each is compared under that name, and one switchboard's value can read as the whole road. It asks before making the report, naming the road and how many lines share it.
 - **Two periods** name the largest rise in percent, the largest in amount if different, and the largest fall. Items under 1% of the largest are not named for moving most. Rates move in points.
 
+- **Actuals beside a budget**: when the chosen figure is what happened (`2024-25 Actual`) and another column is a budget, target or plan for the same year, the reading sets the actual against that budget, in words that say so: "예산보다 가장 크게 웃돈 항목", not "가장 크게 늘어난 항목". With several budgets it takes the one a `Variation to published budget` column names, then a published or original one.
+- **Several total lines of different things**, as an operating statement has for income and expenses (`Total income from transactions`, `Total expenses from transactions`, also after a heading such as `Administered Income: Total administered income`): the lines between them are not ranked against one another, no top-five table or chart is made, and the sentences state the total lines, against the budget when there is one ("Total income from transactions 실적 33,037, 예산 28,120 대비 +17.5%").
+- **A whole left on a nameless line**: when a figure is the same on every item, so it is not chosen, and a line with no name right under them holds something else (each member's `Total expenditure $` of 0, the committee's $1,910.43 below), it asks before making the report, giving that value.
 - **Level numbers** (`I.`, `1.`, `1-1.`, `(1)`), in two or more kinds, mean only the top level is compared and no shares are given, because adding a parent to its parts means nothing.
 - **A negative base** gives no percentage, so that item is stated apart with its amounts.
 
@@ -98,7 +111,24 @@ Warnings appear only in the app's list. So where a figure must be read different
 
 - **A period with fewer rows than usual**: instead of comparing totals, the sentence says it looks incomplete and gives a per-row mean. That does not allow for the season of the missing rows, so with a month column, a monthly series through `A+B` is more accurate.
 - **Newest values that are words** (`(결측)`, `집계중`): it says how many periods were passed over and which value was used.
-- **A period not over when the file was saved, a day cut short, a 0 filled in ahead**: stated first. `학년도` and `회계연도` are not calendar years, so they are not called unfinished.
+- **A period not over when the file was saved**: stated first, and not compared with other periods. The reading comes from the periods that have ended, since three months set against whole years reads as a collapse however well warned. If the file gives a date such as `Data as at 30-Sep-2025` and it falls within that period, that date is used instead of the day it was saved.
+- **A day cut short, a 0 filled in ahead**: stated first. `학년도` and `회계연도` are not calendar years, so they are not called unfinished.
+- **Financial years** (`2025-26`) are read as the ending year only for sorting. A sentence says them as the sheet does. Financial quarters such as `Q1 12/13`, `Q1 FY24` and `FY24 Q1` are taken to start in July for sorting, and written as the sheet writes them. The file does not say when its year starts, so calling a period unfinished can be a few months off.
+- **Different kinds in one column**: if the value's name says nothing, such as `값` or `value`, and a column of kinds such as 항목 or 구분 sits beside it, only the first kind is used. A named figure whose kinds differ in size by over 100 times is asked about.
+- **A number column beside a year**: it reads as months only if its heading says 월, 기간 or month, and as quarters if it says 분기 or quarter or holds `Q4` or `4분기`. A heading naming something else, such as a branch number, is not part of a date.
+- **Numbers that look like years**: a column of numbers such as 1987 reads as years only under a heading such as 연도, year or period, under no heading, or when they run a year at a time. 1987 to 2036 under `건수` are counts. A date written as text or digits is read only for the years 1800 to 2199, so `1001.5` is not a date. `[2023]`, as a catalogue writes a year it worked out, is 2023.
+- **Year-like numbers along a row** follow the same rule as a column: they read as years only after words such as year or 구분 at the start of the row, or when they run a year at a time. 2,026, 1,957 and 2,072 on a line of a statement are amounts.
+- **Digits kept as text with a leading zero** (`02`, `0715`) are codes for a district or an office and are not chosen as figures. So is a column of digits all one width with leading zeros, such as industry codes `01` to `99`.
+- **A period with most of its values missing**: if a past period that a comparison uses has under half the cells its line usually has (3 months of 12), it asks before making the report, since a change from missing months means nothing.
+- **Over 100 in a per-cent column**: a line over 100 in a column whose heading or format says per cent, such as `Population estimates (n)`, may be a count of people among the shares, so it asks.
+- **Last year and this year**: with `전년 실적` beside `당년 실적`, this year's is chosen. `전년 대비` and `전년비` are changes up to now, so they stay.
+- **Blank cells with only a format** past the last value are not read, such as the one a format given to a whole column leaves on row 1,048,576. A merged cell keeps the area it is drawn over.
+- **`률` and `율`**: only at the end of a word do they mean a rate. `법률상담건수` is not one.
+- **Prices per item**: a heading ending in `수수료`, `요금`, `가격`, `단가`, `price` or `fee` is ranked, not added. `수수료 수입` and `총수수료` are money taken, so they add up. Writing `합계( )` adds them anyway.
+- **Period columns it cannot read**: with four or more columns differing only in their digits, such as `H1 21/22`, choosing the first asks before making the report, since it may not be the newest.
+- **Values that cannot be added**: a name meaning a level, such as a heating value, a concentration or a temperature, is averaged rather than added. A column of kinds, such as 항목 or type, narrows it to one kind first.
+- **A sheet in per cent**: if it says so, as `Per cent` under `Unit:` or `(단위: %)`, values are written in per cent, changes in points, and no shares are given. A unit note covers the table under it, or, with no figures under it, is a footnote to what is above. A % merely somewhere on the sheet is asked about.
+- **A figure that stops early**: if the first choice has no value for the sheet's newest period, the largest total that does is used. The newest period is the latest where most actual figures are filled in. A figure named as a target, plan or budget is not chosen while an actual one exists, and months with only a target written ahead do not count as the newest.
 
 ## Reading rules
 
@@ -146,8 +176,8 @@ The monthly, yearly and large-move rules came from a case study of 17 public wor
 Three stages, with a person at the end. `core.run` never calls a model, and does not even import the module that can. So the preview and the report always agree, and a report never changes because a model answered differently.
 
 1. **Code calculates.** `facts.py` works out the figures. It also finds what is worth noticing: comparisons that point different ways, a value outside the usual range for its weekday, the day least like its usual level.
-2. **The router picks a model.** It counts Hangul and Latin letters in the template and the sheets. A rule does this rather than another model, because it needs no memory and has been right so far.
-3. **The model writes, and checks filter.** The model cites the facts it used, from a list fixed by the output format. A sentence is left out if it holds a number its cited facts do not, states a cause, leaks an internal name, is in the wrong language, or makes a known misreading. A possible cause goes in a separate field, is shown as something to check, and never enters the report.
+2. **The router picks a model.** It counts Hangul and Latin letters in the template, and gives each sheet name and each cell of words in the top corner of a sheet one vote, so long English names do not outvote short Korean headings. A rule does this rather than another model, because it needs no memory and has been right so far.
+3. **The model writes, and checks filter.** The model cites the facts it used, from a list fixed by the output format. A sentence is left out if it holds a number its cited facts do not, makes a comparison they do not (a change against last week written as "a year earlier"), gives the sum or another item's value as one item's, names the figure from a sheet's title or by a guess ("households"), gives a change or a low in a period that had not ended without saying so, judges ("highly concentrated"), states a cause, leaks an internal name, is in the wrong language, or makes a known misreading. A possible cause goes in a separate field, is shown as something to check, and never enters the report.
 
 The person's choice is saved with a fingerprint of the calculated results. When the figures change, the fingerprint no longer matches, and the report goes back to the calculated sentence and says so.
 
@@ -166,8 +196,16 @@ A.X 4.0 Light is used for Korean. Qwen 3.5 4B is used for English, where its sen
 
 ## Tables
 
-Rows are added by copying an existing body row, so new rows look like the others. If the table has PowerPoint's "Total Row" turned on, the last row stays last. Tables with vertically merged cells cannot change their row count, because copying part of a merge would break it.
+Rows are added by copying an existing body row, so new rows look like the others. If the table has PowerPoint's "Total Row" turned on, the last row stays last. If cells are merged down only in the heading rows, rows come and go at the bottom and the merges stay. A table merged down in its body cannot change its row count, because copying part of a merge would break it. A table that grows as far as a shape that was below it gets a warning.
 
 ## Charts
 
 SlideFill replaces the chart's data and its embedded workbook, which is what PowerPoint's "Edit Data" opens. The chart's own formatting is not touched.
+
+## Several files
+
+With two or more files, each is read on its own and gets its own slides, and one overview slide goes first.
+
+The overview's first sentence comes from the code, not the model. It takes each file's lead figure and its change from a year earlier (or from the period before), and says whether they all rose, all fell, or moved in different directions. If the files end at different times, or compare against different periods, it says so and does not compare them.
+
+Whether one file affects another cannot be calculated, so it is never said. In a test with the real model, leaving the comparison to the model gave about 3 sentences out of 24 that truly compared the files, and wrong readings passed the checks. So the code compares, the model only reads the result and suggests sentences, and only a sentence someone chooses goes in the report.
