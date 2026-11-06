@@ -65,7 +65,7 @@ DATE_TEXT = re.compile(r"(\d{4})\s*[-/.년]\s*(\d{1,2})\s*(?:[-/.월]\s*(\d{1,2}
 DATE_DIGITS = re.compile(r"(\d{4})(\d{2})(\d{2})")
 EMPTY_EDGE_ROWS, EMPTY_EDGE_COLUMNS = 1000, 100  # cells with only a format this far past the last value are dropped on loading
 DATE_YEARS = (1800, 2199)  # the years a date written as text or digits may have
-YEAR_TEXT = re.compile(r"((?:19|20)\d\d)\s*(?:년도?)?")
+YEAR_TEXT = re.compile(r"((?:19|20)\d\d)\s*(?:년도?)?|\[\s*((?:19|20)\d\d)\s*\]")  # [2023] is how a catalogue writes a year it worked out
 DATE_MARK = re.compile(r"\s*(?:\((?:p|r|e|est)\)|\*+)\s*$", re.I)  # Jul. 2026(p): preliminary and revised marks
 MONTH_WORDS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january", "february", "march", "april", "june",
                "july", "august", "september", "october", "november", "december"}
@@ -85,7 +85,8 @@ MONTH_QUARTER = re.compile(r"([A-Za-z]{3,9})\s+quarter\s+(\d{4})", re.I)
 YEAR_SPAN = re.compile(r"((?:19|20)\d\d)\s*[-/–—]\s*(\d{2})")
 FISCAL_YEAR = re.compile(r"(?:fy\s*)?((?:19|20)\d\d)\s*[–—]\s*(\d{2})", re.I)  # 2007–08, named by the year it ends. 2007-08 with a plain hyphen reads as a month
 MONTH_ALONE = re.compile(r"0?(\d{1,2})\s*월")
-NUMBER_TEXT = re.compile(r"\s*([+-]?\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\([^()]*\)|\[[^\[\]]*\]|명|건|원|개|회|톤|대|호)?\s*")
+DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d+)"  # commas only where they group thousands: 1,2,3 is three figures in one cell, not 123
+NUMBER_TEXT = re.compile(r"\s*([+-]?" + DIGITS + r"(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\([^()]*\)|\[[^\[\]]*\]|명|건|원|개|회|톤|대|호)?\s*")
 AGGREGATE = re.compile(r"\s*(합계|sum|건수|count|평균|avg|average|mean|비율|rate)\s*\((.*)\)\s*", re.I | re.S)
 AGGREGATE_KINDS = {"합계": "sum", "sum": "sum", "건수": "count", "count": "count", "평균": "mean", "avg": "mean", "average": "mean", "mean": "mean", "비율": "rate", "rate": "rate"}
 YEAR_HEADING = re.compile(r"(?:year|연도|fy)?\s*((?:19|20)\d\d)\s*(?:년도?)?", re.I)
@@ -114,7 +115,8 @@ UNIT_NOTE = re.compile(r"단위\s*[:：]|[(（\[]\s*단위|\bunits?\s*[:：]|[(�
 YEAR_LINE = re.compile(r"연간|연평균|연계|연합계|년간|annual|yearly|full\s*year", re.I)
 MONTH_LINE = re.compile(r"(?:0?[1-9]|1[0-2])\s*월|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?", re.I)
 MIN_MONTH_LINES = 6
-NEGATIVE_TEXT = re.compile(r"[△▵−]\s*(\d[\d,]*(?:\.\d+)?)|\(\s*(\d[\d,]*(?:\.\d+)?)\s*\)")
+PART_CODE = re.compile(r"([0-9A-Za-z]+(?:[-.][0-9A-Za-z]+)*)")  # 611 and 611-01 at the start of an account's name
+NEGATIVE_TEXT = re.compile(r"[△▵−]\s*(" + DIGITS + r"(?:\.\d+)?)|\(\s*(" + DIGITS + r"(?:\.\d+)?)\s*\)")
 QUARTER_SCAN = 30
 QUARTER_WORD = re.compile(r"Q\s*([1-4])|([1-4])\s*(?:분기|Q)", re.I)
 QUARTER_HEADING = re.compile(r"분기|quarter|qtr|\bq\b", re.I)
@@ -338,7 +340,7 @@ def as_year(raw):
         raw = str(int(raw))
     match = YEAR_TEXT.fullmatch(raw.strip()) if isinstance(raw, str) else None
     if match:
-        return dt.datetime(int(match.group(1)), 1, 1)
+        return dt.datetime(int(match.group(1) or match.group(2)), 1, 1)
     match = FISCAL_YEAR.fullmatch(raw.strip()) if isinstance(raw, str) else None
     if match:
         century = int(match.group(1)) // 100 * 100
@@ -793,11 +795,56 @@ def _parts_set_apart(ws, ref, labels, parts, kept):
     part_looks, kept_looks = [look(position) for position in parts], [look(position) for position in kept]
     if not part_looks:
         return True
+    if _named_as_parts(ws, ref, labels, parts, kept):
+        return True
     if max(indent for indent, _spaced, _bold in part_looks) > min(indent for indent, _spaced, _bold in kept_looks or [(0, False, False)]):
         return True
     if any(spaced for _indent, spaced, _bold in part_looks) and not all(spaced for _indent, spaced, _bold in kept_looks):
         return True
     return any(bold for _indent, _spaced, bold in kept_looks) and not any(bold for _indent, _spaced, bold in part_looks)
+
+
+def _first_parts(rows, kept, row_of):
+    """{parent, parts}: the first row taken as a sum and the names under it, so a person asked can see whether 서울 really is 부산 and 대구 together."""
+    place = lambda item: row_of.get(id(item)) or 0  # noqa: E731
+    parts = [item for item in rows if id(item) not in kept]
+    above = [item for item in rows if id(item) in kept and place(item) < place(parts[0])]
+    if not above:
+        return {}
+    parent = max(above, key=place)
+    following = [item for item in rows if id(item) in kept and place(item) > place(parent)]
+    end = min((place(item) for item in following), default=float("inf"))
+    under = [item.label for item in parts if place(parent) < place(item) < end]
+    return {"parent": parent.label, "parts": ", ".join(under[:4]) + (" …" if len(under) > 4 else "")}
+
+
+def _named_as_parts(ws, ref, labels, parts, kept):
+    """True when every part's name says whose part it is: 611-01 under 611, or 서울 강남 under 서울. The row it belongs to is the nearest row kept above it."""
+    def label(position):
+        for line in labels:
+            cell = ws._cells.get(ref.at(position, line)) if position is not None else None
+            if cell is not None and cell.value not in (None, ""):
+                return str(cell.value).strip()
+        return ""
+
+    above = sorted(position for position in kept if position is not None)
+    for part in parts:
+        parent = max((position for position in above if part is not None and position < part), default=None)
+        if parent is None or not _name_under(label(parent), label(part)):
+            return False
+    return True
+
+
+def _name_under(parent, part):
+    """611-01 가정용 under 611 급수수익, 1-2 under 1, 서울 강남 under 서울."""
+    if not parent or not part:
+        return False
+    codes = [PART_CODE.match(text) for text in (parent, part)]
+    if all(codes) and any(c.isdigit() for c in codes[0].group(1)):
+        whole, piece = codes[0].group(1), codes[1].group(1)
+        if len(piece) > len(whole) and piece.startswith(whole) and piece[len(whole)] in "-.":
+            return True
+    return len(part) > len(parent) and part.startswith(parent) and (part[len(parent)].isspace() or part[len(parent)] in "-·(/")
 
 
 def _exact_exists(ws, ref, line, wanted):
@@ -814,6 +861,9 @@ def _matches(ws, ref, position, line, wanted):
     value = _merged_value(ws, *ref.at(position, line))
     if value is None:
         return False
+    year = as_year(wanted)
+    if year is not None and as_year(value) == year:
+        return True  # 2024 asked for finds [2024] and 2024년 as well: one year written three ways
     if _exact_exists(ws, ref, line, wanted):
         return str(value).strip().casefold() == wanted.casefold()
     return wanted.casefold() in str(value).casefold()
@@ -857,13 +907,21 @@ def _total_kind(ws, ref, position, before, chosen=()):
     for line in range(1, before):
         if line in chosen:
             continue
-        value = _merged_value(ws, *ref.at(position, line))
-        if isinstance(value, str):
-            word = "".join(value.split()).casefold()
-            if word in SUBTOTAL_WORDS:
-                return "subtotal"
-            if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계")):
-                return "total"
+        kind = total_word_kind(_merged_value(ws, *ref.at(position, line)))
+        if kind:
+            return kind
+    return None
+
+
+def total_word_kind(value):
+    """subtotal or total when a cell's word says its row adds up others, else None."""
+    if not isinstance(value, str):
+        return None
+    word = "".join(value.split()).casefold()
+    if word in SUBTOTAL_WORDS:
+        return "subtotal"
+    if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계")):
+        return "total"
     return None
 
 
@@ -1497,7 +1555,7 @@ class ExcelSource:
         if rows[-1][0] == (rows[-2][0] if len(rows) > 1 else None):
             raise IssueError("latest_ambiguous", date=rows[-1][0].date().isoformat(), count=sum(row[0] == rows[-1][0] for row in rows))
         points, from_text = [], []
-        unread = [raw for date, i, position in self._all_rows(ref) if date <= rows[-1][0] and _unread_figure(raw := ref.sheets[i].cell(*ref.at(position, line)).value)]
+        unread = [raw for date, i, position in self._all_rows(ref) if date <= rows[-1][0] and _unread_figure(raw := ref.sheets[i].cell(*ref.at(position, line)).value)] + self._unread_dates(ref)
         for date, i, position in rows:
             cell = ref.sheets[i].cell(*ref.at(position, line))
             number = figure_number(cell.value)
@@ -1528,6 +1586,18 @@ class ExcelSource:
         found.rate = self._is_rate_series(top_ws, ref, top, line, header, fmt) or AMOUNT_HEADING.search(header) is not None
         found.scale = 100 if "%" in fmt else facts.AMOUNT if AMOUNT_HEADING.search(header) else 1
         found.per_cent_unit = "%" not in fmt and in_per_cent(top_ws, ref.at(top, line)[0])
+        return found
+
+    def _unread_dates(self, ref):
+        """Cells between the first and last date that hold digits but no date, such as 2026_: their rows are left out of every period, and that must not go unsaid."""
+        if ref.date_parts:
+            return []
+        found = []
+        for ws in ref.sheets:
+            dated = self._dated_rows(ws, ref)
+            if dated:
+                at = {position for _date, position in dated}
+                found += [raw for position in range(dated[0][1], dated[-1][1] + 1) if position not in at and _unread_figure(raw := ws.cell(*ref.at(position, ref.date)).value)]
         return found
 
     def _with_period_names(self, points, ref):
@@ -1573,6 +1643,7 @@ class ExcelSource:
                     group[4] = max(group[4] or 0, moment)
         if not groups:
             raise IssueError("latest_no_dates", sheet=ref.sheets[0].title, column=_line_name(ref, ref.date))
+        unread += self._unread_dates(ref)
         days = sorted(groups)
         points = [facts.Point(day, groups[day][0], groups[day][3], groups[day][2]) for day in days]
         top_ws = ref.sheets[groups[days[0]][2]]
@@ -1772,7 +1843,7 @@ class ExcelSource:
             texts_so_far = len(from_text)
             numbers = [_aggregate_value(ws, ref, position, spec, from_text) if isinstance(spec, Aggregate) else _plain_value(ws, ref, position, spec, from_text) for spec in specs]
             if all(number is None for number in numbers):
-                wanted = [line for spec in specs for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]
+                wanted = [line for spec in specs if not isinstance(spec, Aggregate) or spec.kind in ("sum", "mean") for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]  # 건수( ) counts rows and reads no figure
                 unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in wanted) if _unread_figure(raw)]
                 continue
             if first is None and _years_only(ws, ref, position, specs) and not _years_only(ws, ref, position + 1, specs):
@@ -1852,8 +1923,11 @@ class ExcelSource:
         if nested:  # a row that is the sum of the rows under it: they are its parts, not its rivals
             kept = {id(item) for item in nested}
             marked = _parts_set_apart(ws, ref, labels, [row_of.get(id(item)) for item in rows if id(item) not in kept], [row_of.get(id(item)) for item in nested])
+            params = {"count": len(nested), "by_sum": not marked}
+            if not marked:
+                params.update(_first_parts(rows, kept, row_of))
             rows = nested
-            issues.append(Issue("cross_nested", {"count": len(rows), "by_sum": not marked}))
+            issues.append(Issue("cross_nested", params))
         additive = not levels and not per_cent and not priced and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
         total = before_total = None
         added = sum(item.value for item in rows)

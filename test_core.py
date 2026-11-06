@@ -2064,7 +2064,7 @@ class Suggestions(Base):
     def test_every_doubt_has_words_in_both_languages(self):
         for code in suggest.DOUBTS:
             for lang in ("en", "ko"):
-                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가"), code)
+                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라"), code)
 
     def test_a_total_under_a_total_is_one_total(self):
         rows = [["구분", "합  계", None, None, "세대"], [None, "계", "남", "여", None]] + [[f"시{n}", 100 + n * 37 % 91, 50, 50, 10 + n * 3 % 7] for n in range(6)] + [["총  계", 700, 300, 300, 80]]
@@ -3238,6 +3238,9 @@ class TriedReports(Base):
     def test_rows_that_add_up_by_chance_are_asked_about(self):
         rows = [["지점", "매출"], ["서울", 300], ["부산", 100], ["대구", 200], ["인천", 50], ["광주", 60]]
         self.assertIn("parts_by_sum", self.doubts(self.book("우연.xlsx", 표=rows)))
+        params = dict(suggest.plan_report(core.ExcelSource(self.book("우연.xlsx", 표=rows))).doubts)["parts_by_sum"]
+        self.assertEqual((params["parent"], params["parts"]), ("서울", "부산, 대구"))  # the window names them, so a person can judge
+        self.assertIn("부산, 대구", i18n.text("ko", "doubt_parts_by_sum", **params))
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "표"
@@ -3308,6 +3311,57 @@ class TriedReports(Base):
         self.assertEqual(suggest._rows_under(Sheet({1, 4, 7}), ref, [1, 4, 7], [1, 4, 7]), [2, 3, 5, 6, 8, 9])
         self.assertEqual(suggest._rows_under(Sheet({1, 2, 3}), ref, [1, 2, 3], [1, 2, 3]), [])
         self.assertEqual(suggest._rows_under(Sheet({1, 40}), ref, [1, 40], [1, 40]), [2, 41])  # far apart: only the row right under, as before
+
+    def test_items_beside_a_chosen_subtotal_are_still_compared(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        ws.append(["일자", "지점", "매출"])
+        for i in range(8):
+            top = ws.max_row + 1
+            for name, value in (("서울", 50 + i), ("부산", 100 + i), ("소계", 150 + 2 * i)):
+                ws.append([f"2025-{i + 1:02d}" if name == "서울" else None, name, value])
+            ws.merge_cells(f"A{top}:A{top + 2}")
+        path = os.path.join(self.dir, "소계항목.xlsx")
+        wb.save(path)
+        by_item = next(item for item in suggest.plan_report(core.ExcelSource(path)).sections[0].sentences if item.code == "by_item").result
+        self.assertIn("부산(107)", by_item)
+        self.assertIn("164", by_item)
+        self.assertNotIn("소계(", by_item)
+
+    def test_parts_named_by_their_code_or_their_parent_are_not_asked_about(self):
+        for name, rows in (("코드", [["과목", "금액"], ["611 급수수익", 300], ["611-01 가정용", 100], ["611-03 일반용", 200], ["612 공사수익", 50], ["613 기타", 60]]),
+                           ("이름", [["지역", "인구"], ["서울", 300], ["서울 강남", 100], ["서울 강북", 200], ["부산", 50], ["대구", 60]])):
+            path = self.book(f"{name}.xlsx", 표=rows)
+            self.assertNotIn("parts_by_sum", self.doubts(path), name)
+            self.assertNotIn(rows[2][0], self.note(suggest.plan_report(core.ExcelSource(path)).sections[0]), name)
+        for parent, part in (("611", "6110 기타"), ("서울", "서울시"), ("대구", "부산")):
+            self.assertFalse(core._name_under(parent, part), part)
+
+    def test_a_year_in_brackets_is_that_year(self):
+        self.assertEqual(core.as_year("[2023]"), dt.datetime(2023, 1, 1))
+        self.assertIsNone(core.as_year("[2023"))
+        rows = [["No", "자료실", "발행년"]] + [[n, "종합" if n % 3 else "어린이", f"[{2020 + n % 5}]" if n % 4 == 0 else 2020 + n % 5] for n in range(1, 61)]
+        plan = suggest.plan_report(core.ExcelSource(self.book("서지.xlsx", 표=rows)))
+        text = " ".join(item.result for item in plan.sections[0].sentences)
+        self.assertIn("2024년 건수 12", text)  # three of them written [2024]
+        self.assertIn("종합(8)", text)
+        self.assertNotIn("figures_not_read", [code for code, _params in plan.doubts])  # counting rows reads no figure
+        rows.insert(10, [99, "종합", "2026_"])  # a date it cannot read: its row is in no year, and that is said
+        source = core.ExcelSource(self.book("서지오타.xlsx", 표=rows))
+        self.assertIn(("figures_not_read", {"count": 1, "text": "2026_"}), [(issue.code, issue.params) for issue in source.text_value("해설:표!C,건수(C)")[2]])
+        self.assertIn("figures_not_read", [code for code, _params in suggest.plan_report(source).doubts])
+        months = [["월", "매출"]] + [[f"2025-{m:02d}", 100 + m] for m in range(1, 7)] + [["※ 7월은 2025.8.1. 집계", None]] + [[f"2025-{m:02d}", 100 + m] for m in range(8, 12)]
+        self.assertNotIn("figures_not_read", [issue.code for issue in core.ExcelSource(self.book("월.xlsx", 표=months)).text_value("해설:표!A,B")[2]])  # a note in words between the months is not a date it failed to read
+
+    def test_commas_that_do_not_group_thousands_are_not_one_number(self):
+        for raw in ("1,2,3", "12,34", "(1,2)", "1,2345"):
+            self.assertIsNone(core.figure_number(raw), raw)
+            self.assertTrue(core._unread_figure(raw), raw)
+        for raw, number in (("1,234", 1234), ("1,234,567", 1234567), ("-1,234.5", -1234.5), ("△1,234", -1234), ("(1,234)", -1234), ("362(37%)", 362)):
+            self.assertEqual(core.figure_number(raw), number, raw)
+        rows = [["지점", "건수"], ["서울", 100], ["부산", "1,2,3"], ["대구", 300], ["인천", 150], ["광주", 120]]
+        self.assertIn("figures_not_read", self.doubts(self.book("쉼표.xlsx", 표=rows)))
 
     def test_machine_names_and_footnote_marks_read_as_words(self):
         self.assertEqual(facts.readable_name("RETAINED_CATCH_KG"), "Retained catch (kg)")

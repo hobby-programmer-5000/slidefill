@@ -92,7 +92,7 @@ class DoubtWindow:
         ttk.Label(body, text=app.t("doubt_chosen", what=auto.what), wraplength=width, justify="left", style="Summary.TLabel").pack(anchor="w", pady=(app.px(10), 0))
         self.reasons = []
         for code, params in auto.doubts:
-            words = app.t("doubt_" + code, figure=params.get("figure", ""))
+            words = app.t("doubt_" + code, **{"figure": "", **params})
             if params.get("file"):
                 words = f"{params['file']}: {words}"
             self.reasons.append(words)
@@ -730,7 +730,7 @@ class App:
             self.open_helper()
         elif answer == "keep":
             auto = self.auto
-            notes = [(params.get("file", ""), i18n.text(auto.lang, "doubt_report_note", reason=i18n.text(auto.lang, "doubt_" + code, figure=params.get("figure", "")))) for code, params in auto.doubts]
+            notes = [(params.get("file", ""), i18n.text(auto.lang, "doubt_report_note", reason=i18n.text(auto.lang, "doubt_" + code, **{"figure": "", **params}))) for code, params in auto.doubts]
             auto.sections = suggest.with_doubt_notes(auto.sections, notes)
             auto.stale = True
             auto.doubts = []

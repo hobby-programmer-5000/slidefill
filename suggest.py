@@ -1069,7 +1069,8 @@ def suggestions(source, shape, base, value=None, how=None, conditions=(), lang="
     # By item, in the newest period: one reference a long table of dates and names usually wants.
     group = next((g for g in base.groups if not ID_NAME.search(g.name)), None) if not _across(base) else None  # the days of the week are no one's idea of items
     if base.kind == "date" and group and base.date_spec and base.newest_word and how != "rate":
-        extra = list(conditions) + [(base.date_spec, base.newest_word)]
+        # 소계 chosen in the column of 서울 and 부산 makes each date one figure. By item, that row drops out by its name, so it is not asked for.
+        extra = [(spec, text) for spec, text in conditions if spec != group.spec or core.total_word_kind(text) is None] + [(base.date_spec, base.newest_word)]
         by_item = f"{shape.sheet}!{group.spec},{value_spec(value, how if how != 'plain' else 'sum', extra, lang)}"
         made.append(_try(source, "by_item", f"{word('reading', lang)}:{by_item}", "text"))
         made.append(_try(source, "table_by_item", f"{word('table', lang)}:{word('share', lang)}5:{by_item}", "alt"))
@@ -1096,9 +1097,9 @@ def find_doubts(source, shape, base, value, found):
     name = value.name or ""
     doubts = []
 
-    def add(code):
+    def add(code, **more):
         if code not in [known for known, _params in doubts]:
-            doubts.append((code, {"figure": name}))
+            doubts.append((code, {"figure": name, **more}))
 
     if EXAMPLE_SHEET.search(shape.sheet):
         add("example_sheet")
@@ -1128,8 +1129,9 @@ def find_doubts(source, shape, base, value, found):
         add("total_differs")
     if "figures_not_read" in codes:
         add("figures_not_read")
-    if any(issue.code == "cross_nested" and issue.params.get("by_sum") for item in found for issue in item.issues):
-        add("parts_by_sum")
+    nested = next((issue for item in found for issue in item.issues if issue.code == "cross_nested" and issue.params.get("by_sum")), None)
+    if nested is not None:
+        add("parts_by_sum", parent=nested.params.get("parent", "?"), parts=nested.params.get("parts", "?"))
     return doubts
 
 
