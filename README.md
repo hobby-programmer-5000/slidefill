@@ -13,8 +13,8 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 ## Features
 
 - **A report from the workbook alone**: choose a file and SlideFill reads the sheet, chooses the contents, and shows the real values first. If it took the wrong figure, change it with Ctrl+R. This is an automatic judgement, so check the values before you create the report.
-- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that look meaningless added, only counting rows, tables stacked on one sheet, a compared period with most of its values missing, or a head count among per cents, it shows why and asks before making the report. If you keep the choice, the slide says the value was not confirmed. It will not catch every mistake.
-- **It keeps what a value means**: levels such as heating values or concentrations are averaged, not added. Figures on a sheet whose stated unit is per cent are written in per cent and points. A period still running is not compared with others.
+- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that look meaningless added, only counting rows, tables stacked on one sheet, a compared period with most of its values missing, a head count among per cents, many lines sharing one merged name, or a column left out for being the same on every line while a nameless line below holds its whole, it shows why and asks before making the report. If you keep the choice, the slide says the value was not confirmed. It will not catch every mistake.
+- **It keeps what a value means**: levels such as heating values or concentrations are averaged, not added. Figures on a sheet whose stated unit is per cent are written in per cent and points. A period still running is not compared with others. Actuals beside a budget for the same year are read against the budget, and a statement's income and expense lines are not ranked against one another: its total lines are stated instead.
 - **Text**: `{{Sales}}` or `{{Summary!B3}}` anywhere: text boxes, table cells, groups, notes, chart titles, slide masters. Your fonts and colors stay.
 - **Tables**: fills a PowerPoint table from a range, adding or removing rows to fit. Total rows stay at the bottom.
 - **Charts**: replaces chart data and keeps the chart's style. "Edit Data" in PowerPoint shows the new numbers.
@@ -63,7 +63,7 @@ If there are signs it chose wrongly, it shows why and asks first. If you choose 
 Each sheet gets one slide: sentences on the left, a chart and a table on the right. What goes in:
 
 - Figures: up to 4 side by side all go in, such as domestic and foreign. With a total column, or 5 or more figures, only one goes in and the window says how many were left out.
-- Sheets: up to 3 sheets built alike go in together. More than that, such as one sheet per month, or sheets built differently are left out and counted.
+- Sheets: up to 3 sheets built alike go in together. A sheet whose slide would say word for word what another's says, such as one by district whose province lines repeat the sheet by province, is left out and counted. More than that, such as one sheet per month, or sheets built differently are left out and counted.
 - Units: the sheet name or a "unit" note above the table is copied onto the slide. A unit written anywhere else does not appear.
 - Charts: a figure more than 10 times larger or smaller than the first goes in the table only.
 - Tables: large numbers get commas. With your own template they stay as Excel shows them.
@@ -157,7 +157,7 @@ If there is no value to compare with, such as no row exactly seven days earlier,
 For a sentence that reads the figures, type `{{insight:Daily!A,C}}` in text, then press **Ctrl+I**:
 
 1. SlideFill works out the figures, and finds points worth noticing, such as comparisons that point different ways.
-2. It counts the Korean and English letters in your template and sheets, and picks the model for that language.
+2. It counts the Korean and English letters in your template, gives each sheet name and each cell of words near the top of each sheet one vote, and picks the model for that language. Sheets named `Question1` over Korean answers are Korean.
 3. The model writes candidates from those results. It is never asked to calculate.
 4. Checks leave out sentences with numbers their cited facts do not hold, stated causes, and known misreadings.
 5. You read the rest against their basis, then add and edit what you want.
@@ -192,7 +192,7 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
 - Dynamic names such as `OFFSET(...)` cannot be resolved. Use an Excel table instead.
 - Unusual number formats (fractions, `[DBNum1]` and the like) fall back to the plain value with a warning. Conditions such as `[>=5]#,##0` show as Excel shows them.
-- Thousands and decimal separators are always `,` and `.`.
+- Thousands and decimal separators are always `,` and `.`. Spaces that group thousands, as in `39 925`, are read too.
 
 ## How it is checked
 

@@ -2064,7 +2064,7 @@ class Suggestions(Base):
     def test_every_doubt_has_words_in_both_languages(self):
         for code in suggest.DOUBTS:
             for lang in ("en", "ko"):
-                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12), code)
+                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12, count=23, same="0", total="1,910.43"), code)
 
     def test_a_total_under_a_total_is_one_total(self):
         rows = [["구분", "합  계", None, None, "세대"], [None, "계", "남", "여", None]] + [[f"시{n}", 100 + n * 37 % 91, 50, 50, 10 + n * 3 % 7] for n in range(6)] + [["총  계", 700, 300, 300, 80]]
@@ -3579,6 +3579,155 @@ class SixthMeasure(Base):
         shares = [row for row in rows if row[1] != "Population estimates (n)"]
         shares[1][0] = "All leavers"
         self.assertNotIn("count_among_shares", self.doubts(self.book("진로2.xlsx", 표=shares)))
+
+    def test_digits_grouped_by_spaces_are_one_number(self):
+        self.assertEqual(core.as_number("      39 925"), 39925)
+        self.assertEqual(core.as_number("1 234 567"), 1234567)
+        self.assertEqual(core.figure_number("(1 234)"), -1234)
+        for text in ("1,2,3", "12 34", "2019 2020"):  # not groups of three: still not one number
+            self.assertIsNone(core.as_number(text), text)
+
+    def test_a_date_of_designation_is_not_a_time_series(self):
+        rows = [["시·도", "행정동", "지정일자", "반출금지구역(ha)"]] + [[("서울", "부산", "경북")[n % 3], f"동{n}", dt.datetime(2023, 1, 1) + dt.timedelta(days=n * 11), 100 + n * 37 % 400] for n in range(40)]
+        path = self.book("지정.xlsx", 표=rows)
+        self.assertEqual([base.kind for base in suggest.read_shape(core.ExcelSource(path), "표").bases if base.kind == "date"], [])
+        self.assertNotIn("직전", self.text(path))
+
+    def test_levels_in_columns_of_their_own_are_not_added_together(self):
+        rows = [["시·도", "시·군·구", "행정동", "면적(ha)"], [None, None, None, 900]]
+        for province, districts in (("서울", (("강남구", (100, 50)), ("서초구", (80,)))), ("경북", (("안동시", (300, 120)), ("영주시", (250,))))):
+            rows.append([province, None, None, sum(sum(areas) for _d, areas in districts)])
+            for district, areas in districts:
+                rows.append([None, district, None, sum(areas)])
+                rows += [[None, None, f"{district} {n}동", area] for n, area in enumerate(areas, 1)]
+        path = self.book("계층.xlsx", 표=rows)
+        text = self.text(path)
+        self.assertIn("900", text)  # 서울 230 and 경북 670, not 2,700 with every level added
+        self.assertNotIn("2,700", text)
+        self.assertNotIn("강남구", text)
+
+    def test_digit_codes_of_one_width_are_not_a_figure(self):
+        rows = [[None, "산업분류", "사업체수", "종사자수"], ["TT", "전산업", 900, 5000]]
+        rows += [[code, f"업종{n}", 20 + n * 13 % 70, 200 + n * 31 % 500] for n, code in enumerate(["A"] + [f"{n:02d}" for n in range(1, 30)])]
+        plan = suggest.plan_report(core.ExcelSource(self.book("업종.xlsx", 표=rows)))
+        self.assertIn("사업체수", plan.what)
+        self.assertEqual(core.total_word_kind("전산업"), "total")
+        self.assertEqual(core.total_word_kind("전국"), "total")
+
+    def test_korean_sheets_with_english_names_are_korean(self):
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for n, (question, answers) in enumerate((("귀하의 성별은 어떻게 되시나요?", (("남성", 2359), ("여성", 1876))), ("연령대는 어떻게 되십니까?", (("20대", 70), ("30대", 517), ("40대", 2006))),
+                                                  ("주된 방문계절은 언제입니까?", (("봄", 810), ("여름", 1452), ("가을", 766))), ("동반인원은 몇 명입니까?", (("혼자", 126), ("가족", 3378)))), 1):
+            ws = wb.create_sheet(f"Question{n}")
+            ws.append([question])
+            ws.append(["항목번호", "항목내용", "응답자수"])
+            for number, (answer, count) in enumerate(answers, 1):
+                ws.append([str(number), answer, count])
+        path = os.path.join(self.dir, "설문.xlsx")
+        wb.save(path)
+        source = core.ExcelSource(path)
+        key = next(item.key for section in suggest.plan_report(source).sections for item in section.items if item.code == "note")
+        self.assertEqual(source.insight_request("통찰:" + key.partition(":")[2])[0].lang, "ko")
+
+    def test_a_sheet_saying_what_another_already_says_is_one_slide(self):
+        rows = [["시도", "면적"], ["전국", 600], ["서울", 100], ["부산", 200], ["경북", 300]]
+        path = self.book("두장.xlsx", 시도=rows, 시군구=rows)
+        plan = suggest.plan_report(core.ExcelSource(path))
+        self.assertEqual(len(plan.sections), 1)
+        self.assertEqual(plan.sheets_left, 1)  # the other sheet is counted as left out, not lost from view
+
+    ROADS = (("흥안대로", (104, 90, 80, 70, 60)), ("관악대로", (50, 40, 30)), ("경수대로", (20, 25, 30, 35)))
+
+    def ledger(self, name, roads_merged=True):
+        """A streetlight ledger: 구 분 merged over A3:C5 with the sheet's total on row 5, each road's name merged down over its switchboards and their 소계, 총 계 at the foot."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "원장"
+        total = sum(sum(values) for _road, values in self.ROADS)
+        ws.append([None] * 7 + ["가로등 현황"])
+        ws.append([])
+        ws.append(["구 분", None, None, "번호", None, None, None, "분전함명", "수량", None])
+        ws.append([None] * 8 + ["등기구", "등주"])
+        ws.append([None] * 8 + [total, total // 2])
+        for cells in ("A3:C5", "D3:D5", "H3:H5", "I3:J3"):
+            ws.merge_cells(cells)
+        n = 0
+        for road, values in self.ROADS:
+            start = ws.max_row + 1
+            for k, value in enumerate(values, 1):
+                n += 1
+                ws.append([road if k == 1 or not roads_merged else None, None, None, n, None, None, None, f"{road} {k}호", value, value // 2])
+            ws.append([None if roads_merged else road] + [None] * 6 + ["소  계", sum(values), sum(value // 2 for value in values)])
+            if roads_merged:
+                ws.merge_cells(f"A{start}:C{ws.max_row}")
+        ws.append([None] * 7 + ["총   계", total, total // 2])
+        path = os.path.join(self.dir, name)
+        wb.save(path)
+        return path
+
+    def test_a_heading_merged_down_over_the_first_figures_is_not_an_item(self):
+        path = self.ledger("원장.xlsx")
+        text, _source, issues = core.ExcelSource(path).text_value("읽는법:원장!A:C,I")
+        self.assertNotIn("구분", text)  # 구 분 over A3:C5 named row 5, the sheet's 634, as one more item beside the roads
+        self.assertIn("전체 634", text)
+        self.assertNotIn("cross_total_differs", [issue.code for issue in issues])
+        ws = openpyxl.load_workbook(path)["원장"]
+        self.assertTrue(core._heading_spilled_over(ws, (5, 1)))
+        self.assertFalse(core._heading_spilled_over(ws, (7, 1)))  # a road's name over its own lines of figures is still their name
+
+    def test_lines_sharing_one_merged_name_are_asked_about(self):
+        def doubts(path):
+            source = core.ExcelSource(path)
+            shape = suggest.read_shape(source, "원장")
+            value = next(value for base in shape.bases for value in base.values if value.spec == "I")
+            base = suggest.Base("name", "A:C", "구 분", values=[value])
+            return dict(suggest.find_doubts(source, shape, base, value, []))
+        params = doubts(self.ledger("원장.xlsx")).get("merged_names")
+        self.assertIsNotNone(params)  # 104 is one switchboard on 흥안대로, and reads as the whole road
+        self.assertEqual((params["item"], params["count"]), ("흥안대로", 5))
+        self.assertIn("흥안대로", i18n.text("ko", "doubt_merged_names", **params))
+        self.assertNotIn("merged_names", doubts(self.ledger("원장2.xlsx", roads_merged=False)))  # only the heading is merged
+
+    STATEMENT = [["Comprehensive operating statement", None, None, None, None],
+                 [None, "2024-25 Actual $M", "2024-25 Revised Budget $M", "2024-25 Published Budget $M", "Variation to published budget %"],
+                 ["Income: Output appropriations", 16861, 17102, 13050, 0.29], ["Income: Grants", 9612, 9626, 8734, 0], ["Income: Other income", 1121, 1065, 843, 0.33],
+                 ["Total income from transactions", 27594, 27793, 22627, 0.22],
+                 ["Expenses: Employee benefits", 19468, 19714, 17645, 0.1], ["Expenses: Other operating expenses", 7954, 7972, 4738, 0.35],
+                 ["Total expenses from transactions", 27422, 27686, 22383, 0.23], ["Net result", 172, 107, 244, -0.3]]
+
+    def test_actuals_beside_a_budget_are_read_against_it(self):
+        path = self.book("재무.xlsx", OS=self.STATEMENT)
+        plan = suggest.plan_report(core.ExcelSource(path))
+        said = " ".join(item.result for item in plan.sections[0].sentences)
+        self.assertIn("Total income from transactions 실적 27,594, 예산 22,627 대비 +22.0%", said)  # the published budget, as the variation column says
+        self.assertIn("Total expenses from transactions 실적 27,422, 예산 22,383 대비 +22.5%", said)
+        self.assertNotIn("가장 높은 항목은", said)  # Employee benefits, an expense, ranked above Output appropriations, an income
+        self.assertNotIn("늘어난", said)  # a budget is not an earlier period
+        self.assertIsNone(plan.sections[0].table)
+        self.assertIsNone(plan.sections[0].chart)
+        source = core.ExcelSource(path)
+        self.assertIn("came to 27,594 against a budget of 22,627, +22.0%", source.text_value("reading:OS!A,D,B")[0])
+        rows = [["부서", "예산", "실적"], ["영업", 100, 120], ["생산", 200, 180], ["관리", 50, 50], ["합계", 350, 350]]  # one whole: the usual reading, worded against the budget
+        text = core.ExcelSource(self.book("부서.xlsx", 표=rows)).text_value("읽는법:표!A,B,C")[0]
+        self.assertIn("전체는 예산 350 대비 실적 350", text)
+        self.assertIn("예산보다 가장 크게 웃돈 항목은 영업(예산 100, 실적 120, +20.0%)", text)
+        self.assertIn("예산에 가장 크게 못 미친 항목은 생산", text)
+        years = [["부서", "2024년", "2025년"], ["영업", 100, 120], ["생산", 200, 180], ["관리", 50, 50]]  # two years keep their words
+        self.assertIn("가장 크게 늘어난 항목은 영업(100 → 120, +20.0%)", core.ExcelSource(self.book("두해.xlsx", 표=years)).text_value("읽는법:표!A,B,C")[0])
+
+    def test_a_whole_left_on_a_nameless_line_is_asked_about(self):
+        body = "Ministerial Advisory Committee"
+        rows = [[body], [], ["Name of Body", "Meetings held", "Position", "Member's name", "Meetings attended", "Total expenditure $"]]
+        rows += [[body, 7, "Member", name, attended, 0] for name, attended in (("Ms A", 7), ("Ms B", 3), ("Mr C", 6), ("Dr D", 7))]
+        rows += [[body, 7, None, None, None, 1910.43]]
+        path = self.book("보수.xlsx", Remuneration=rows)
+        params = dict(suggest.plan_report(core.ExcelSource(path)).doubts).get("nameless_total")
+        self.assertIsNotNone(params)  # each member's 0 left the column out, and the committee's $1,910.43 with it
+        self.assertEqual((params["item"], params["same"], params["total"]), ("Total expenditure $", "0", "1,910.43"))
+        self.assertIn("1,910.43", i18n.text("ko", "doubt_nameless_total", **params))
+        rows[-1][-1] = 0  # nothing more under them: nothing to ask
+        self.assertNotIn("nameless_total", self.doubts(self.book("보수2.xlsx", Remuneration=rows)))
 
 
 class CompanyTemplates(Base):

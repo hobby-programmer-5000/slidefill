@@ -47,7 +47,7 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total")
 PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
@@ -87,6 +87,9 @@ GENERIC_VALUE = re.compile(r"값|수치|데이터|실적값|values?|data|figures
 MIXED_SIZE = 100  # one kind this many times another: 매출액 beside 직원수. At 34 times, 외국인 beside 재외국민 is only a small part
 PREVIOUS_NAME = re.compile(r"(?:전년|작년|전월|전분기|전년도|전년동월|전년동기)(?!\s*(?:대비|동월비|동기비|비|比|증감))|\b(?:prior|previous|last)\s+(?:year|month|quarter|period)\b(?!\s*(?:change|growth|on|vs))|\bpy\b", re.I)  # last year's figure, not a change from it: 전년 대비 and 전년비 are about now. 전기 is also electricity
 TARGET_NAME = re.compile(r"목표|계획|예산|전망|예상|추정|\b(?:target|plan|budget|forecast|goal)s?\b", re.I)
+BUDGET_WORDS = re.compile(r"(?:\b(?:revised|published|original|approved|initial|final)\s+|당초\s*|수정\s*|최종\s*|추경\s*)?(?:예산|목표|계획|\b(?:budget|target|plan)(?:s|ned)?\b)", re.I)  # what is left is the kind: $M beside $M
+VARIATION_TO = re.compile(r"\b(?:variation|variance|difference)\s+(?:to|from|against|on)\s+(?:the\s+)?(\w+)\s+budget", re.I)  # Variation to published budget: the budget the table compares with
+ORIGINAL_BUDGET = re.compile(r"published|original|approved|initial|당초|본예산", re.I)
 KIND_COLUMN = re.compile(r"항목|종류|구분|측정|분류|parameter|measures?\b|metric|indicator|\b(?:type|kind)\b", re.I)  # what the rows are measurements of, not who or where
 PERIOD_IN_TITLE = re.compile(r"(?:19|20)\d\d\s*년(?:\s*\d{1,2}\s*월)?(?:\s*\d\s*분기)?|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d\d\b", re.I)
 PERIOD_TITLE_ROWS = 6
@@ -102,9 +105,11 @@ SPARSE_PERIOD_LOOK_BACK = 3  # periods before the newest that a report's compari
 SUMMARY_SHEET = re.compile(r"요약|총괄|종합|summary", re.I)
 DATED_LOG_CELLS = 10
 SAME_FIGURE_ITEMS = 3  # two items with one value can just be equal
+NAMELESS_LINES_BELOW = 2  # a line with no name right under the items, where a sheet puts the whole of what it lists
+NAMELESS_COLUMNS = 60
 NOT_DATA_SHEET = re.compile(r"표지|목차|설명|안내|주석|index|contents|cover|notes?\b|copyright", re.I)
 YEAR_IN_NAME = re.compile(r"(?:19|20)\d\d")
-ATTRIBUTE_DATE = re.compile(r"설치|준공|건립|설립|취득|출생|생년|\b(?:installed|installation|built|established|founded|acquired|birth)", re.I)  # when each thing on a list came to be, not when its figure was counted
+ATTRIBUTE_DATE = re.compile(r"설치|준공|건립|설립|취득|출생|생년|지정|\b(?:installed|installation|built|established|founded|acquired|birth|designated|designation)", re.I)  # when each thing on a list came to be, not when its figure was counted
 PLAIN_SHEET_NAME = re.compile(r"(?:data|sheet\s*\d*|시트\s*\d*|table\s*\d*|\d+)", re.I)  # says nothing, so it is not worth a heading
 UNIT_NOTE = core.UNIT_NOTE
 UNIT_HEADING = re.compile(r"단위|units?", re.I)
@@ -308,7 +313,9 @@ def _code_columns(ws):
     for column in numbers:
         cells = [ws.cell(row, column).value for row in range(1, limit + 1)]
         padded = sum(isinstance(raw, str) and LEADING_ZERO.fullmatch(raw.strip()) is not None for raw in cells)
-        if padded >= LEADING_ZERO_CELLS and padded >= len(numbers[column]) * LEADING_ZERO_SHARE:
+        widths = {len(raw.strip()) for raw in cells if isinstance(raw, str) and raw.strip().isdigit()}
+        # 02 among 27 and 13, or 01 to 99 all two wide: codes kept as text so their zero stays
+        if padded >= LEADING_ZERO_CELLS and (padded >= len(numbers[column]) * LEADING_ZERO_SHARE or len(widths) == 1):
             found_codes[column] = max(found_codes.get(column, 0), len(set(numbers[column].values())), CODE_VALUES_BESIDE_DATES)  # skipped as a figure beside names and beside dates
     return found_codes
 
@@ -1073,6 +1080,27 @@ def two_periods(source, shape, base):
     return None
 
 
+def actual_and_budget(base, value):
+    """(budget, actual) value columns when the chosen figure is what happened and another column is what was planned for it: 2024-25 Published Budget beside 2024-25 Actual.
+    The budget a table compares itself with comes first, as Variation to published budget says; failing that, the original one, then the first."""
+    if base.kind != "name" or value is None or not value.spec.isalpha() or core.BUDGET_NAME.search(value.name or ""):
+        return None
+    kind = lambda name: re.sub(r"\s+", " ", re.sub(r"(?:19|20)\d\d(?:\s*[-–/]\s*\d{2,4})?|실적|\b(?:actuals?)\b", "", name or "", flags=re.I)).strip().casefold()  # noqa: E731
+    planned = [other for other in base.values if other is not value and other.spec.isalpha() and core.BUDGET_NAME.search(other.name or "")
+               and _period_words_of(other.name) == _period_words_of(value.name) and kind(BUDGET_WORDS.sub("", other.name)) == kind(value.name)]
+    if not planned:
+        return None
+    named = [word.group(1).casefold() for other in base.values if (word := VARIATION_TO.search(other.name or ""))]
+    budget = next((other for other in planned if any(word in other.name.casefold() for word in named)), None) or next((other for other in planned if ORIGINAL_BUDGET.search(other.name)), None) or planned[0]
+    return budget.spec, value.spec
+
+
+def _period_words_of(name):
+    """The year a column heading names, such as 2024-25, or empty."""
+    found = re.search(r"(?:19|20)\d\d(?:\s*[-–/]\s*\d{2,4})?", name or "")
+    return found.group(0).replace(" ", "") if found else ""
+
+
 def _plan(base, lang, reference):
     """What can be asked of a reference, in the order a report wants it."""
     if base.kind == "date":
@@ -1119,7 +1147,7 @@ def suggestions(source, shape, base, value=None, how=None, conditions=(), lang="
     conditions = list(conditions) or default_conditions(source, shape, base, value, how)
     reference = body(shape, base, value, how, conditions, lang, joined)
     made = [_try(source, code, key, place) for code, key, place in _plan(base, lang, reference)]
-    change = two_periods(source, shape, base)
+    change = two_periods(source, shape, base) or actual_and_budget(base, value)
     if change and not conditions:
         made.insert(0, _try(source, "change", f"{word('reading', lang)}:{shape.sheet}!{base.spec},{change[0]},{change[1]}", "text"))
     elif change and change[1] == value.spec and how == "sum":  # 월계 beside 누계: the same condition on both years
@@ -1186,6 +1214,12 @@ def find_doubts(source, shape, base, value, found):
     over = _over_a_hundred_among_shares(ws, base, value, numbers)
     if over:
         add("count_among_shares", item=over)
+    shared = _rows_under_one_merged_name(ws, base, value, numbers, default_conditions(source, shape, base, value, how))
+    if shared:
+        add("merged_names", item=shared[0], count=shared[1])
+    left = _whole_on_a_nameless_line(ws, base, value, numbers)
+    if left:
+        add("nameless_total", item=left[0], same=left[1], total=left[2])
     sparse = _sparse_period(ws, base, value, numbers)
     if sparse:
         add("sparse_period", period=sparse[0], filled=sparse[1], usual=sparse[2])
@@ -1213,6 +1247,65 @@ def _over_a_hundred_among_shares(ws, base, value, numbers):
     line = core.column_index_from_string(_name_line(base.spec))
     label = core._merged_value(ws, over[0], line)
     return str(label).strip() if label not in (None, "") else f"{value.spec}{over[0]}"
+
+
+def _rows_under_one_merged_name(ws, base, value, numbers, conditions=()):
+    """(name, rows) when lines with figures of their own share one name merged down over them: 흥안대로 over 23 switchboards. Each line is compared under the road's name, so 104 reads as the road's whole when the road holds 829.
+    A 소계 line under the same name is not compared, so it is not counted. Nor are lines a condition leaves out: 합계, 나트륨 and LED under each park, with 합계 chosen, are one line each."""
+    if base.kind != "name" or not numbers or not value.spec.isalpha():
+        return None
+    spec = base.spec.split(":") if re.fullmatch(r"[A-Z]+:[A-Z]+", base.spec) else [_name_line(base.spec)] * 2
+    lines = range(core.column_index_from_string(spec[0]), core.column_index_from_string(spec[1]) + 1)
+    before = core.column_index_from_string(value.spec)
+    groups = Counter()
+    plain = lambda raw: "".join(str(raw).split()).casefold() if raw is not None else ""  # noqa: E731
+    wanted = [(core.column_index_from_string(spec), plain(word)) for spec, word in conditions if re.fullmatch(r"[A-Z]+", spec)]
+    for row in numbers:
+        if any(core.total_word_kind(core._merged_value(ws, row, line)) for line in range(1, before)):
+            continue
+        if any(plain(core._merged_value(ws, row, line)) != word for line, word in wanted):
+            continue
+        for line in lines:
+            origin = core._merge_origin(ws, row, line)
+            if origin is not None and origin[0] < row and origin[0] in numbers:
+                groups[origin] += 1
+                break
+    if len(groups) < 2:
+        return None
+    origin, under = groups.most_common(1)[0]
+    name = core._merged_value(ws, *origin)
+    return core._clean_label(name) if name not in (None, "") else f"{get_column_letter(origin[1])}{origin[0]}", under + 1
+
+
+def _exact(number):
+    """A figure with every digit it has, grouped: 1,910.43, not the 1,910 a sentence rounds to."""
+    return f"{int(number):,}" if float(number).is_integer() else f"{number:,.6f}".rstrip("0").rstrip(".")
+
+
+def _whole_on_a_nameless_line(ws, base, value, numbers):
+    """(column heading, each item's value, the line's value) when a figure left out for being the same on every item holds something else on a line with no name below them:
+    Total expenditure $ of 0 for each member, and $1,910.43 for the whole committee on the line under them. That line may be all the column is about."""
+    if base.kind != "name" or not value.spec.isalpha() or len(numbers) < SAME_FIGURE_ITEMS:
+        return None
+    name_line = core.column_index_from_string(_name_line(base.spec))
+    named = lambda row: ws.cell(row, name_line).value not in (None, "")  # noqa: E731
+    rows = [row for row in sorted(numbers) if named(row)]
+    if len(rows) < SAME_FIGURE_ITEMS:
+        return None
+    below = [row for row in range(rows[-1] + 1, rows[-1] + NAMELESS_LINES_BELOW + 1) if not named(row)]
+    for column in range(1, min(ws.max_column, NAMELESS_COLUMNS) + 1):
+        if column == name_line:
+            continue
+        same = {core.as_number(ws.cell(row, column).value) for row in rows}
+        if len(same) != 1 or None in same:
+            continue
+        each = next(iter(same))
+        for row in below:
+            found = core.as_number(ws.cell(row, column).value)
+            if found is not None and found != each and found != 0:
+                heading = next((str(ws.cell(up, column).value).strip() for up in range(rows[0] - 1, 0, -1) if isinstance(ws.cell(up, column).value, str)), get_column_letter(column))
+                return heading, _exact(each), _exact(found)
+    return None
 
 
 def _sparse_period(ws, base, value, numbers):
@@ -1416,6 +1509,9 @@ def _section(source, shape, base, value, found, lang, figures=None):
     if any(item.code == "reading" and item.result in facts.SEPARATE_LISTS.values() for item in sentences):
         sentences = [item for item in sentences if item.code != "reading"]  # it says only that nothing can be said, which a template's author should know and a reader need not
         chart = None  # bars would rank 자산 against 부채
+    if any(issue.code == "cross_several_totals" for item in found for issue in item.issues):
+        sentences = [item for item in sentences if item.result not in facts.SEPARATE_TOTALS.values()]
+        table = chart = None  # a top five would rank Employee benefits against Output appropriations, an expense against income
     if len(figures) > 1 and base.kind == "date" and not base.many_rows:
         table = _together(source, shape, base, figures[:MAX_TABLE_FIGURES], "table", word("latest", lang) + "6", lang) or table
         together = _comparable(figures, made)[:MAX_TABLE_FIGURES]
@@ -1471,11 +1567,17 @@ def plan_report(source, lang="ko"):
         if len(alike) >= MAX_SECTIONS:  # so many are more likely months or regions than different measures, and any few of them would be arbitrary
             alike = []
             break
+    added = 0
     for other_shape, other_base, other_value, other_found in alike:
-        sections.append(_section(source, other_shape, other_base, other_value, other_found, lang))
-        what.append(describe(other_shape, *_added_or_shown(other_base, sections[-1].figures)))
+        section = _section(source, other_shape, other_base, other_value, other_found, lang)
+        said = [item.result for item in section.sentences]
+        if any(said == [item.result for item in earlier.sentences] for earlier in sections):
+            continue  # a sheet by 시군구 whose 시도 lines say what the sheet by 시도 already said: one slide twice tells nothing more
+        sections.append(section)
+        what.append(describe(other_shape, *_added_or_shown(other_base, section.figures)))
+        added += 1
     plain = [v for v in base.values if not (v.every_row or v.counted)]
-    return Plan(sections, " / ".join(what), max(len(plain) - len(sections[0].figures), 0), len(rest) - len(alike), doubts=find_doubts(source, shape, base, value, found))
+    return Plan(sections, " / ".join(what), max(len(plain) - len(sections[0].figures), 0), len(rest) - added, doubts=find_doubts(source, shape, base, value, found))
 
 
 def _marked(key, number):

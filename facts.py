@@ -49,6 +49,7 @@ OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]
 SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
 MAX_LISTED = 6
 SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
+SEPARATE_TOTALS = {"ko": "합계 줄이 여러 개 있어(수입과 지출 등) 줄끼리 크기를 비교하지 않았습니다.", "en": "There are several total lines, as with income and expenses, so the lines were not ranked against one another."}
 RATE_SYLLABLE = r"(?<![법규자])[율률](?![가-힣])"  # 달성률 and 환율, not 법률상담건수 or 자율주행
 RATE_WORD = re.compile(RATE_SYLLABLE + r"|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
 WEEKDAYS = {"ko": ["월", "화", "수", "목", "금", "토", "일"], "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
@@ -805,22 +806,52 @@ def _one_level_of_parts(items, by_sums):
     return kept if changed and len(kept) >= 2 else None
 
 
-def item_readings(items, show, lang="ko", total=None, additive=True, before_total=None, limit=3, stated=True, rate=False, scale=1):
+def _against_budget(item, show, lang):
+    """A line set against its budget: 실적 33,037, 예산 28,120 대비 +17.5%. A budget of 0 or less gives no percentage."""
+    ko = lang == "ko"
+    change = f", {percent(ratio(item.value, item.before))}" if item.before > 0 else ""
+    if ko:
+        return f"{item.label} 실적 {show(item.value)}, 예산 {show(item.before)}" + (f" 대비 {change[2:]}" if change else "") + "."
+    return f"{item.label} came to {show(item.value)} against a budget of {show(item.before)}{change}."
+
+
+def item_readings(items, show, lang="ko", total=None, additive=True, before_total=None, limit=3, stated=True, rate=False, scale=1, basis="", wholes=()):
     """What a table of named items says, by fixed rules. Largest and its share, or what moved most when there are two periods.
 
     stated says the whole came from the sheet. Otherwise the items were added up here, and the wording does not call it the whole.
+    basis is budget when the older column is what was planned for the same period: the words then say actual against budget, not a rise or a fall.
+    wholes are the total lines of a table that totals unlike things (Total income, Total expenses). Its lines are not ranked against one another, and only the wholes are set against their budget.
     """
     ko = lang == "ko"
+    budget = basis == "budget"
     whole = ("전체" if stated else "항목 합계") if ko else ("the total" if stated else "the items' sum")
     if len(items) < 2:
         return []
     found = []
+    if len(wholes) >= 2:
+        paired = [item for item in wholes if item.before is not None]
+        if paired and budget:
+            found = [("read_whole_budget", _against_budget(item, show, lang)) for item in paired]
+        elif paired:
+            found = [("read_whole_change", f"{item.label}는 {show(item.before)} → {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}입니다." if item.before > 0 else "입니다.") if ko else
+                      f"{item.label} went from {show(item.before)} to {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}." if item.before > 0 else ".")) for item in paired]
+        else:
+            found = [("read_separate", SEPARATE_TOTALS[lang])]
+        return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
     if any(item.before is not None for item in items):
         pairs = [item for item in items if item.before is not None]
+        if budget:
+            pair = lambda item, change: f"예산 {show(item.before)}, 실적 {show(item.value)}, {change}" if ko else f"{show(item.value)} against a budget of {show(item.before)}, {change}"  # noqa: E731
+        else:
+            pair = lambda item, change: f"{show(item.before)} → {show(item.value)}, {change}" if ko else f"from {show(item.before)} to {show(item.value)}, {change}"  # noqa: E731
         if not rate:
             if additive and total is not None and before_total:
-                found.append(("read_total_change", f"{whole}는 {show(before_total)} → {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
-                              f"{whole.capitalize()} went from {show(before_total)} to {show(total)}, {percent(ratio(total, before_total))}."))
+                if budget:
+                    found.append(("read_total_change", f"{whole}는 예산 {show(before_total)} 대비 실적 {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
+                                  f"{whole.capitalize()} came to {show(total)} against a budget of {show(before_total)}, {percent(ratio(total, before_total))}."))
+                else:
+                    found.append(("read_total_change", f"{whole}는 {show(before_total)} → {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
+                                  f"{whole.capitalize()} went from {show(before_total)} to {show(total)}, {percent(ratio(total, before_total))}."))
             # A tiny item can double and mean nothing, so only items of some size are named.
             size = max(max(item.value, item.before) for item in pairs)
             moves = [(ratio(item.value, item.before), item) for item in pairs if item.before > 0 and max(item.value, item.before) >= size * SMALL_ITEM]
@@ -831,24 +862,34 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
         ups, downs = [m for m in moves if m[0] > 0], [m for m in moves if m[0] < 0]
         if ups:
             change, item = max(ups, key=lambda m: m[0])
-            found.append(("read_most_up", f"가장 크게 늘어난 항목은 {item.label}({show(item.before)} → {show(item.value)}, {word(change)})입니다." if ko else
-                          f"{item.label} rose most, from {show(item.before)} to {show(item.value)}, {word(change)}."))
+            if budget:
+                found.append(("read_most_up", f"예산보다 가장 크게 웃돈 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} ran furthest over budget, {pair(item, word(change))}."))
+            else:
+                found.append(("read_most_up", f"가장 크게 늘어난 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} rose most, {pair(item, word(change))}."))
             if additive and total is not None:  # A small item can lead by percent while another adds far more. With overlapping rows the sum says nothing.
                 biggest = max(ups, key=lambda m: m[1].value - m[1].before)[1]
                 if biggest is not item:
-                    found.append(("read_most_added", f"증가량이 가장 큰 항목은 {biggest.label}({show(biggest.before)} → {show(biggest.value)}, {percent(ratio(biggest.value, biggest.before))})입니다." if ko else
-                                  f"{biggest.label} added the most, from {show(biggest.before)} to {show(biggest.value)}, {percent(ratio(biggest.value, biggest.before))}."))
+                    grew = percent(ratio(biggest.value, biggest.before))
+                    if budget:
+                        found.append(("read_most_added", f"예산 초과액이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} went over budget by the most, {pair(biggest, grew)}."))
+                    else:
+                        found.append(("read_most_added", f"증가량이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} added the most, {pair(biggest, grew)}."))
         if downs:
             change, item = min(downs, key=lambda m: m[0])
-            found.append(("read_most_down", f"가장 크게 줄어든 항목은 {item.label}({show(item.before)} → {show(item.value)}, {word(change)})입니다." if ko else
-                          f"{item.label} fell most, from {show(item.before)} to {show(item.value)}, {word(change)}."))
+            if budget:
+                found.append(("read_most_down", f"예산에 가장 크게 못 미친 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell furthest short of budget, {pair(item, word(change))}."))
+            else:
+                found.append(("read_most_down", f"가장 크게 줄어든 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell most, {pair(item, word(change))}."))
         # A percentage of a negative base means nothing, but a loss that moved is often the most important line of the table.
         negative = sorted((item for item in pairs if item.before < 0 and not rate), key=lambda item: -abs(item.value - item.before))[:2]
         if negative:
             named = ", ".join(f"{item.label}({show(item.before)} → {show(item.value)})" for item in negative)
             found.append(("read_negative_base", f"기준값이 음수라 비율을 낼 수 없는 항목: {named}." if ko else f"A negative base gives no percentage for: {named}."))
         if not moves and not negative:
-            found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
+            if budget:
+                found.append(("read_no_change", "실적과 예산이 같습니다." if ko else "The actuals match the budget."))
+            else:
+                found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
         return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
     if separate_lists(items):
         return [Fact("read_separate", SEPARATE_LISTS[lang], ())]
@@ -873,12 +914,14 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
 
 
-def item_sentence(items, header, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1):
+def item_sentence(items, header, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1, basis="", wholes=()):
     """A plain report sentence for a table of named items. It only states figures."""
     ko = lang == "ko"
     if any(item.before is not None for item in items):
-        first = item_readings(items, show, lang, total, additive, before_total, limit=1, stated=stated, rate=rate, scale=scale)
+        first = item_readings(items, show, lang, total, additive, before_total, limit=1, stated=stated, rate=rate, scale=scale, basis=basis, wholes=wholes)
         return f"{header}: {first[0].text}" if first else f"{header}."
+    if len(wholes) >= 2:  # income, expenses and results are not rivals: their totals are what the table says
+        return f"{header}: " + ", ".join(f"{item.label} {show(item.value)}" for item in wholes[:MAX_LISTED]) + "."
     if separate_lists(items):
         return f"{header}: " + ", ".join(f"{item.label} {show(item.value)}" for item in items[:MAX_LISTED]) + "."
     ordered = ranked_items(items)
@@ -891,15 +934,27 @@ def item_sentence(items, header, show, lang="ko", total=None, additive=True, bef
     return f"{header}: {tops}."
 
 
-def item_pack(items, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1):
-    """The calculated statements about a table of named items, numbered so that a later step can cite them."""
-    ordered = ranked_items(items)
+def item_pack(items, show, lang="ko", total=None, additive=True, before_total=None, stated=True, rate=False, scale=1, basis="", wholes=()):
+    """The calculated statements about a table of named items, numbered so that a later step can cite them.
+    With several total lines the lines are given in the sheet's order, not as places in a ranking."""
+    ko = lang == "ko"
+    readings = item_readings(items, show, lang, total, additive, before_total, limit=9, stated=stated, rate=rate, scale=scale, basis=basis, wholes=wholes)
     pack = []
-    for place, item in enumerate(ordered[:10], start=1):
+    if len(wholes) >= 2:
+        for number, item in enumerate(wholes[:10], start=1):
+            planned = (f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}") if basis == "budget" and item.before is not None else (f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}") if item.before is not None else ""
+            pack.append((f"whole_{number}", f"합계 줄 {item.label} {show(item.value)}{planned}" if ko else f"total line {item.label} {show(item.value)}{planned}"))
+        return readings + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
+    for place, item in enumerate(ranked_items(items)[:10], start=1):
         share = f", {_share(item.value, total)}" if additive and total else ""
-        earlier = f", 이전 {show(item.before)}" if lang == "ko" and item.before is not None else f", from {show(item.before)}" if item.before is not None else ""
-        pack.append((f"item_{place}", f"{place}위 {item.label} {show(item.value)}{share}{earlier}" if lang == "ko" else f"number {place} {item.label} {show(item.value)}{share}{earlier}"))
-    return item_readings(items, show, lang, total, additive, before_total, limit=9, stated=stated, rate=rate, scale=scale) + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
+        if item.before is None:
+            earlier = ""
+        elif basis == "budget":
+            earlier = f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}"
+        else:
+            earlier = f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}"
+        pack.append((f"item_{place}", f"{place}위 {item.label} {show(item.value)}{share}{earlier}" if ko else f"number {place} {item.label} {show(item.value)}{share}{earlier}"))
+    return readings + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
 
 
 def rate_found(points, show, lang="ko", scale=1):

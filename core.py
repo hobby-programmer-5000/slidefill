@@ -85,7 +85,13 @@ MONTH_QUARTER = re.compile(r"([A-Za-z]{3,9})\s+quarter\s+(\d{4})", re.I)
 YEAR_SPAN = re.compile(r"((?:19|20)\d\d)\s*[-/–—]\s*(\d{2})")
 FISCAL_YEAR = re.compile(r"(?:fy\s*)?((?:19|20)\d\d)\s*[–—]\s*(\d{2})", re.I)  # 2007–08, named by the year it ends. 2007-08 with a plain hyphen reads as a month
 MONTH_ALONE = re.compile(r"0?(\d{1,2})\s*월")
-DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d+)"  # commas only where they group thousands: 1,2,3 is three figures in one cell, not 123
+DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)"  # commas or spaces only where they group thousands: 1,2,3 is three figures in one cell, not 123, and 39 925 in a statistics yearbook is 39,925
+HEADING_SCAN_CELLS = 20000  # a small sheet's cells are looked through at once; a large one's heading row only to this many columns
+HEADING_SCAN_COLUMNS = 200
+ONE_LABEL_SHARE = 0.8  # lines with one label among the label columns, for those columns to be levels of one outline
+SHEET_WORD_ROWS = 20
+SHEET_WORD_COLUMNS = 10
+GROUPING = re.compile(r"[, \u00a0\u202f]")
 NUMBER_TEXT = re.compile(r"\s*([+-]?" + DIGITS + r"(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\([^()]*\)|\[[^\[\]]*\]|명|건|원|개|회|톤|대|호)?\s*")
 AGGREGATE = re.compile(r"\s*(합계|sum|건수|count|평균|avg|average|mean|비율|rate)\s*\((.*)\)\s*", re.I | re.S)
 AGGREGATE_KINDS = {"합계": "sum", "sum": "sum", "건수": "count", "count": "count", "평균": "mean", "avg": "mean", "average": "mean", "mean": "mean", "비율": "rate", "rate": "rate"}
@@ -97,8 +103,9 @@ SCHOOL_YEAR = re.compile(r"학년도|회계연도|fiscal|\bfy\b", re.I)
 BOUNDED_LINE = re.compile(r"([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)")
 RANK = re.compile(r"\s*(순위값|순위|구성비|topvalue|top|share)\s*(\d*)\s*:(.*)", re.I | re.S)
 RANK_NAMES = {"순위": "name", "top": "name", "순위값": "value", "topvalue": "value", "구성비": "share", "share": "share"}
-TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "total", "grandtotal", "sum", "합"}
+TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "전국", "전산업", "total", "grandtotal", "sum", "합"}  # 전국 over the regions, 전산업 over the industries
 SUBTOTAL_WORDS = {"소계", "subtotal"}
+BUDGET_NAME = re.compile(r"예산|목표|계획|\b(?:budget|target|plan)(?:s|ned)?\b", re.I)  # what was planned for a period, set beside what happened in it
 TOTAL_ROW = re.compile(r"totals?(?![a-z])(?!.*\b(?:pty|ltd|inc|limited|llc|corp|plc|gmbh)\b)", re.I)  # Total revenue, not Total Tools Importing Pty Ltd or TotalEnergies
 TOTAL_TOLERANCE = 0.005  # a stated total this close to the items' sum is taken to be their total, allowing for rounding
 LATE_MINUTES = 60  # a newest day's last entry this much earlier than usual looks unfinished
@@ -358,8 +365,29 @@ def as_number(raw):
     match = NUMBER_TEXT.fullmatch(raw) if isinstance(raw, str) else None
     if not match:
         return None
-    number = float(match.group(1).replace(",", ""))
+    number = float(GROUPING.sub("", match.group(1)))
     return int(number) if number.is_integer() else number
+
+
+def _sheet_words(ws, rows=SHEET_WORD_ROWS, columns=SHEET_WORD_COLUMNS):
+    """One vote for each cell of words in the top corner of a sheet, as one letter of the script it is mostly in: 회사 and Hyundai Motor Company count once each, so long English names do not outvote short Korean headings."""
+    found = []
+    for row in range(1, min(ws.max_row, rows) + 1):
+        for column in range(1, min(ws.max_column, columns) + 1):
+            cell = ws._cells.get((row, column))
+            if cell is not None and isinstance(cell.value, str):
+                found.append(cell.value)
+    return _votes(found)
+
+
+def _votes(texts):
+    """Each text as one letter of the script it is mostly in, so a long name counts no more than a short one."""
+    found = []
+    for text in texts:
+        korean, latin = len(HANGUL.findall(text)), len(facts.LATIN.findall(text))
+        if korean or latin:
+            found.append("가" if korean >= latin else "a")
+    return found
 
 
 def figure_number(raw):
@@ -370,7 +398,7 @@ def figure_number(raw):
     match = NEGATIVE_TEXT.fullmatch(raw.strip())
     if not match:
         return None
-    number = -float((match.group(1) or match.group(2)).replace(",", ""))
+    number = -float(GROUPING.sub("", match.group(1) or match.group(2)))
     return int(number) if number.is_integer() else number
 
 
@@ -521,6 +549,8 @@ class Comparison:
     stated: bool
     rate: bool = False
     scale: int = 1
+    basis: str = ""  # budget when the older of two columns is what was planned, not an earlier period
+    wholes: list = field(default_factory=list)  # total lines of unlike things, as Total income and Total expenses: facts.Item each
 
     @property
     def label(self):
@@ -737,6 +767,19 @@ def _merge_origin(ws, row, column):
     return origins.get((row, column))
 
 
+def _heading_spilled_over(ws, cell):
+    """True when a cell sits inside a merged range that starts higher up, on a row of words only: a heading, not a name for this row."""
+    origin = _merge_origin(ws, *cell)
+    if origin is None or origin[0] >= cell[0]:
+        return False
+    row = origin[0]
+    known = ws.__dict__.setdefault("_rows_of_words", {})  # asked for every line under a merged name, so each row is looked at once
+    if row not in known:
+        known[row] = not any(as_number(found.value) is not None for (r, _c), found in ws._cells.items() if r == row) if len(ws._cells) <= HEADING_SCAN_CELLS else not any(
+            as_number(ws.cell(row, column).value) is not None for column in range(1, min(ws.max_column, HEADING_SCAN_COLUMNS) + 1))
+    return known[row]
+
+
 def _merged_value(ws, row, column):
     """The value a person sees in a cell: inside a merged range, that of its first cell."""
     return ws.cell(*(_merge_origin(ws, row, column) or (row, column))).value
@@ -764,8 +807,30 @@ def _rows_of_an_outer_level(ws, ref, labels):
     return frozenset(closing) if len(outer) < filled * OUTER_LEVEL_SHARE else frozenset()
 
 
+def _rows_in_inner_label_columns(ws, ref, labels, figures):
+    """A table whose levels stand in columns of their own, one label to a line: 경북 in 시·도 with its 시·군·구 in the next column and their 행정동 in the one after, each line with its own sum. Only the outermost level that labels two lines or more is compared, as an indented pivot table is; adding all of them counts every hectare two or three times."""
+    lines = {}
+    for position in range(ref.start, ref.last(ws) + 1):
+        beside = [ws._cells.get(ref.at(position, line)) for line in figures]
+        if not any(other is not None and as_number(other.value) is not None for other in beside):
+            continue
+        named = [index for index, line in enumerate(labels) if (cell := ws._cells.get(ref.at(position, line))) is not None and isinstance(cell.value, str) and cell.value.strip() and as_number(cell.value) is None]
+        if named:
+            lines[position] = named
+    if not lines or sum(len(named) == 1 for named in lines.values()) < len(lines) * ONE_LABEL_SHARE:
+        return frozenset()
+    level = {position: named[0] for position, named in lines.items()}
+    counts = Counter(level.values())
+    outer = min((index for index, count in counts.items() if count >= 2), default=None)
+    if outer is None or len(set(level.values())) < 2:
+        return frozenset()
+    return frozenset(position for position, index in level.items() if index > outer)
+
+
 def _rows_indented_under_others(ws, ref, labels, figures):
     """A pivot table's lines indented under the one above: schools under regions under terms, all in one column. Only the outermost can stand side by side, and only where more than one line sits at that level. A heading with no figure beside it is not a line of the table."""
+    if len(labels) > 1:
+        return _rows_in_inner_label_columns(ws, ref, labels, figures)
     if len(labels) != 1:
         return frozenset()
     indents = {}
@@ -913,6 +978,22 @@ def _total_kind(ws, ref, position, before, chosen=()):
     return None
 
 
+def _several_totals(names, totals):
+    """The total lines of a table that totals unlike things, as an operating statement does with Total income and Total expenses, as facts.Item each. Empty when there is one whole.
+    The lines between them are income, expenses and results, so ranking them against one another says nothing."""
+    found, seen = [], set()
+    for name, numbers in zip(names, totals):
+        label = _clean_label(name) if isinstance(name, str) else ""
+        if not label or numbers[-1] is None:
+            continue
+        bare = lambda text: "".join(text.split()).casefold() in TOTAL_WORDS  # noqa: E731
+        if label.casefold() in seen or any(item.value == numbers[-1] and (bare(label) or bare(item.label)) for item in found):  # 합계 on top and 총계 below, both the same whole
+            continue
+        seen.add(label.casefold())
+        found.append(facts.Item(label, numbers[-1], numbers[0] if len(numbers) == 2 else None))
+    return found if len(found) >= 2 else []
+
+
 def total_word_kind(value):
     """subtotal or total when a cell's word says its row adds up others, else None."""
     if not isinstance(value, str):
@@ -921,6 +1002,8 @@ def total_word_kind(value):
     if word in SUBTOTAL_WORDS:
         return "subtotal"
     if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계", "전체")):  # 공원관리사업소 전체 is the whole office
+        return "total"
+    if ":" in value and TOTAL_ROW.match(value.rpartition(":")[2].strip()):  # Administered Income: Total administered income, a statement's heading before its line
         return "total"
     return None
 
@@ -1832,7 +1915,7 @@ class ExcelSource:
         labels, specs = ref.label_lines, ref.specs
         lower = min(spec.lines[0] if isinstance(spec, Aggregate) else spec for spec in specs)
         items, counts, order, totals, unlabeled, from_text, first = {}, {}, [], [], 0, [], None
-        unread, places = [], {}
+        unread, places, total_names = [], {}, []
         heading = self._heading_row(ws, ref, labels, specs)
         outer = _rows_of_an_outer_level(ws, ref, labels)
         chosen = {line for spec in specs if isinstance(spec, Aggregate) for line, _word in spec.filters}
@@ -1853,6 +1936,7 @@ class ExcelSource:
             kind = _total_kind(ws, ref, position, lower, chosen)
             if kind == "total":
                 totals.append(numbers)
+                total_names.append(self._label(ws, ref, position, labels))
                 continue
             if kind == "subtotal" or position in outer:
                 continue
@@ -1878,6 +1962,7 @@ class ExcelSource:
         if year_line:  # 1월 to 12월 and 연간: the year is their whole, not a thirteenth month to rank them against
             order.remove(year_line)
             totals.append(items[year_line])
+            total_names.append(year_line)
         if len(order) < 2:
             raise IssueError("cross_no_items", sheet=ws.title, column=_line_name(ref, labels[0]))
         rows = [facts.Item(key if isinstance(key, str) else key[0], items[key][-1], items[key][0] if len(specs) == 2 else None) for key in order]
@@ -1896,6 +1981,7 @@ class ExcelSource:
         elif isinstance(last_spec, Aggregate) and last_spec.kind == "count":
             fmt = "General"  # rows counted by a date column are a number of rows, not a date: 2, not 01월 02일
         issues = [Issue("cross_total_found", {"label": year_line})] if year_line else []
+        basis = ""
         if unread:
             issues.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         if len(specs) == 2:
@@ -1903,6 +1989,11 @@ class ExcelSource:
             second_name = self._header(ws, ref, first or ref.start, first_line)
             if _reads_backwards(first_name, second_name):
                 issues.append(Issue("cross_backwards", {"first": first_name, "second": second_name}))
+            if BUDGET_NAME.search(first_name) and not BUDGET_NAME.search(second_name):
+                basis = "budget"  # 2024-25 Published Budget beside 2024-25 Actual: the same year, what was planned and what happened
+        whole_lines = _several_totals(total_names, totals)
+        if whole_lines:
+            issues.append(Issue("cross_several_totals", {"count": len(whole_lines), "names": ", ".join(item.label for item in whole_lines[:3])}))
         if from_text:
             issues.append(Issue("number_from_text", {"cell": f"{ws.title}!{from_text[-1].coordinate}", "text": str(from_text[-1].value), "count": len(from_text)}))
         if unlabeled:
@@ -1959,7 +2050,7 @@ class ExcelSource:
         source = f"{ws.title}!{','.join(_line_name(ref, line) for line in labels)}," + ",".join(spec.word if isinstance(spec, Aggregate) else _line_name(ref, spec) for spec in specs) + f" · {len(rows)}"
         label_header = self._header(ws, ref, first or ref.start, labels[-1])
         label_header = "" if label_header == _line_name(ref, labels[-1]) else label_header  # no heading: blank, not a column letter
-        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1)
+        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1, basis, whole_lines)
 
     def _heading_row(self, ws, ref, labels, specs):
         """When rows are counted, the row of headings would count as one more item: a name that appears once among names that repeat."""
@@ -1976,9 +2067,13 @@ class ExcelSource:
         return names[first][0] if len(names[first]) == 1 and max(len(places) for places in names.values()) > 1 else None
 
     def _label(self, ws, ref, position, lines):
-        """The most specific name a row has: the last filled cell of its label columns."""
+        """The most specific name a row has: the last filled cell of its label columns.
+        A heading merged down over the first line of figures is not that line's name: 구 분 over A3:C5, with the sheet's total of 7,164 on row 5."""
         for line in reversed(lines):
-            value = _merged_value(ws, *ref.at(position, line))
+            here = ref.at(position, line)
+            if _heading_spilled_over(ws, here):
+                continue
+            value = _merged_value(ws, *here)
             # A bare number is a figure or a code, not a name a reader could use.
             if value not in (None, "") and as_number(value) is None:
                 return _clean_label(value) if isinstance(value, str) else self.read(ws, *ref.at(position, line))[1]
@@ -1988,9 +2083,9 @@ class ExcelSource:
         found = self._comparison(ref)
         lang = "ko" if name in ("읽는법", "해설") else "en"
         if name in ("읽는법", "reading"):
-            text = " ".join(fact.text for fact in facts.item_readings(found.items, found.show, lang, found.total, found.additive, found.before_total, limit=5, stated=found.stated, rate=found.rate, scale=found.scale))
+            text = " ".join(fact.text for fact in facts.item_readings(found.items, found.show, lang, found.total, found.additive, found.before_total, limit=5, stated=found.stated, rate=found.rate, scale=found.scale, basis=found.basis, wholes=found.wholes))
         else:
-            text = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale)
+            text = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes)
         return text, found.source, found.issues
 
     def _rank_text(self, key):
@@ -2045,12 +2140,12 @@ class ExcelSource:
     def insight_request(self, key, template_text=""):
         """First stage for {{통찰:시트!A,B}}. Returns (InsightRequest or None, source, issues)."""
         ref = self._parse_ref(INSIGHT.fullmatch(key.translate(SMART_QUOTES)).group(1), key)
-        words = [template_text] + [sheet.title for sheet in self.wb.worksheets]
+        words = [template_text] + [vote for sheet in self.wb.worksheets for vote in _votes([sheet.title]) + _sheet_words(sheet)]  # sheets named Question1 to Question8 over Korean answers are Korean
         if self._is_comparison(ref):
             found = self._comparison(ref)
             lang = facts.detect_language(words + [found.header])
-            pack = _with_sheet(facts.item_pack(found.items, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale), ref, lang, found.label)
-            fallback = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale)
+            pack = _with_sheet(facts.item_pack(found.items, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes), ref, lang, found.label)
+            fallback = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes)
             return InsightRequest(key, lang, pack, facts.fingerprint(pack, lang), fallback, found.source), found.source, found.issues
         if ref.spec_count != 1:
             raise IssueError("calc_columns", key=key)
