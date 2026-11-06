@@ -2064,7 +2064,7 @@ class Suggestions(Base):
     def test_every_doubt_has_words_in_both_languages(self):
         for code in suggest.DOUBTS:
             for lang in ("en", "ko"):
-                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라"), code)
+                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12), code)
 
     def test_a_total_under_a_total_is_one_total(self):
         rows = [["구분", "합  계", None, None, "세대"], [None, "계", "남", "여", None]] + [[f"시{n}", 100 + n * 37 % 91, 50, 50, 10 + n * 3 % 7] for n in range(6)] + [["총  계", 700, 300, 300, 80]]
@@ -3525,6 +3525,60 @@ class FifthMeasure(Base):
         self.assertEqual([ws.title for ws in suggest.data_sheets(core.ExcelSource(path))], ["Tally", "Answers"])  # the sheet that counts them comes first
         words = [["이름", "부서"]] + [[f"사람{n}", f"부서{n % 3}"] for n in range(30)]  # words alone are still not a report
         self.assertEqual(suggest.data_sheets(core.ExcelSource(self.book("명단.xlsx", 표=words))), [])
+
+
+class SixthMeasure(Base):
+    """What the sixth fair measure (2026-11-06) got wrong without asking, each in a small workbook shaped like the public file."""
+
+    book = TriedReports.book
+    doubts = TriedReports.doubts
+    text = FifthMeasure.text
+
+    def test_codes_kept_as_text_with_a_leading_zero_are_not_a_figure(self):
+        rows = [["District", "Brigade Area", "Number of incidents", "% met"]]
+        rows += [[f"{district:02d}", f"Brigade {n}", 20 + n * 7 % 50, 0.5 + n % 5 / 10] for n, district in enumerate((2, 2, 2, 8, 8, 13, 13, 27, 27, 27))]
+        path = self.book("출동.xlsx", 표=rows)
+        self.assertIn("Number of incidents", suggest.plan_report(core.ExcelSource(path)).what)
+        self.assertNotIn("(27)", self.text(path))  # district 27 was added up as a figure
+        plain = [["지점", "건수"]] + [[f"지점{n}", n * 3 + 1] for n in range(8)]  # ordinary numbers stay figures
+        self.assertIn("건수", suggest.plan_report(core.ExcelSource(self.book("건수만.xlsx", 표=plain))).what)
+
+    def test_amounts_along_a_row_are_not_years(self):
+        rows = [["Operating statement", None, None, None], [None, "2024-25 Actual $M", "2024-25 Revised Budget $M", "2024-25 Published Budget $M"]]
+        rows += [["Income: Output appropriations", 16861, 17102, 13050], ["Income: Special appropriations", 3209, 3181, 3217], ["Income: Interest", 208, 158, 205],
+                 ["Income: Sales of goods and services", 2026, 1957, 2072], ["Income: Grants", 9612, 9626, 8734], ["Total income", 31916, 32024, 27278]]
+        path = self.book("재무.xlsx", OS=rows)
+        self.assertEqual([base.kind for base in suggest.read_shape(core.ExcelSource(path), "OS").bases if base.kind == "date"], [])
+        self.assertNotIn("1월 1일", self.text(path))  # 2,026 and 2,072 dollars were read as the years 2026 and 2072
+        header = [["구분", 2019, 2020, 2021, 2022], ["서울", 10, 12, 13, 15], ["부산", 7, 8, 8, 9]]  # years along a heading row stay years
+        self.assertIn("date", [base.kind for base in suggest.read_shape(core.ExcelSource(self.book("연도행.xlsx", 표=header)), "표").bases])
+
+    def test_a_period_with_most_of_its_months_empty_is_asked_about(self):
+        months = [f"{m}월" for m in range(1, 13)]
+        full = [[f"{year}년", None] + [200 + year % 7 * 10 + m for m in range(12)] for year in range(2017, 2026)]
+        for row in full:
+            row[1] = sum(row[2:])
+        gap = [list(row) for row in full]
+        gap[-2][2:] = [413, None, None, None, None, 76, 141, None, None, None, None, None]  # 2024년: three months only
+        gap[-2][1] = 630
+        path = self.book("위반.xlsx", 표=[["구분", "계"] + months] + gap)
+        params = dict(suggest.plan_report(core.ExcelSource(path)).doubts).get("sparse_period")
+        self.assertIsNotNone(params)
+        self.assertEqual((params["period"], params["filled"], params["usual"]), ("2024년", 3, 12))
+        self.assertIn("2024년", i18n.text("ko", "doubt_sparse_period", **params))
+        self.assertNotIn("sparse_period", self.doubts(self.book("위반2.xlsx", 표=[["구분", "계"] + months] + full)))
+
+    def test_a_count_among_per_cents_is_asked_about(self):
+        rows = [["Leaver type", "Main destination", "Female %", "Male %"], ["All leavers", "Population estimates (n)", 45166, 48139], [None, "Bachelor's degree", 43.9, 33.5],
+                [None, "Apprenticeship", 3.3, 22.5], [None, "Part-time work", 17.2, 13.1], [None, "Looking for work", 4.1, 5.0], [None, "Not in the labour force", 2.2, 2.9]]
+        path = self.book("진로.xlsx", 표=rows)
+        params = dict(suggest.plan_report(core.ExcelSource(path)).doubts).get("count_among_shares")
+        self.assertIsNotNone(params)
+        self.assertEqual(params["item"], "Population estimates (n)")
+        self.assertIn("Population estimates (n)", i18n.text("en", "doubt_count_among_shares", **params))
+        shares = [row for row in rows if row[1] != "Population estimates (n)"]
+        shares[1][0] = "All leavers"
+        self.assertNotIn("count_among_shares", self.doubts(self.book("진로2.xlsx", 표=shares)))
 
 
 class CompanyTemplates(Base):

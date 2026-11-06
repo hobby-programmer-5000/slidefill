@@ -47,7 +47,7 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period")
 PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
@@ -94,6 +94,11 @@ PERIOD_TITLE_LENGTH = 60
 NEVER_ADDED_NAME = re.compile(r"나이|연령(?!별)|근속|\b(?:age|tenure)\b", re.I)  # whatever else the sheet holds, adding people's ages says nothing
 UNLIKE_MIN_LARGEST = 100000
 UNLIKE_SHARE = 0.1  # so many values below one, beside values in the hundreds of thousands, are not the same kind of thing
+LEADING_ZERO = re.compile(r"0\d+")  # 02 or 0715: a code kept as text so its zero stays
+LEADING_ZERO_CELLS = 2
+LEADING_ZERO_SHARE = 0.2
+SPARSE_PERIOD_PARTS = 4  # columns of parts, such as months, a period's line needs before its gaps say anything
+SPARSE_PERIOD_LOOK_BACK = 3  # periods before the newest that a report's comparisons reach
 SUMMARY_SHEET = re.compile(r"요약|총괄|종합|summary", re.I)
 DATED_LOG_CELLS = 10
 SAME_FIGURE_ITEMS = 3  # two items with one value can just be equal
@@ -299,7 +304,13 @@ def _code_columns(ws):
             numbers[column] = {row: number for row, number in read.items() if number is not None}
         elif read:
             names[column] = {row: str(cells[row]).strip() for row, number in read.items() if number is None}
-    return {column: len(set(found.values())) for column, found in numbers.items() if any(_one_to_one([(found[row], words[row]) for row in found.keys() & words.keys()]) for words in names.values())}
+    found_codes = {column: len(set(found.values())) for column, found in numbers.items() if any(_one_to_one([(found[row], words[row]) for row in found.keys() & words.keys()]) for words in names.values())}
+    for column in numbers:
+        cells = [ws.cell(row, column).value for row in range(1, limit + 1)]
+        padded = sum(isinstance(raw, str) and LEADING_ZERO.fullmatch(raw.strip()) is not None for raw in cells)
+        if padded >= LEADING_ZERO_CELLS and padded >= len(numbers[column]) * LEADING_ZERO_SHARE:
+            found_codes[column] = max(found_codes.get(column, 0), len(set(numbers[column].values())), CODE_VALUES_BESIDE_DATES)  # skipped as a figure beside names and beside dates
+    return found_codes
 
 
 def _long_identifiers(numbers):
@@ -378,7 +389,10 @@ def _date_candidates(ws):
             found.append((size, get_column_letter(c), False))
     for r in range(1, min(ws.max_row, HEAD_ROWS) + 1):
         p = _profile(ws, r, True, columns)[0]
-        size = p["date"] + p["year"] + p["month"]
+        if p["year"] and not _can_be_years(ws, r, columns, by_row=True):  # 2,026, 1,957 and 2,072 dollars on a line of a statement
+            p = p.copy()
+            p["number"] += p.pop("year")
+        size = p["date"] + p.get("year", 0) + p["month"]
         if size >= 3 and size >= p["filled"] * 0.4:
             found.append((size, str(r), True))
     found.sort(key=lambda item: -item[0])
@@ -400,9 +414,11 @@ def _dated_as_attribute(ws, column, limit):
     return heading is not None and ATTRIBUTE_DATE.search(heading) is not None
 
 
-def _can_be_years(ws, column, limit):
-    """1987 to 2036 under 건수 are counts, not years. Bare numbers are years only under a heading that says so, under no heading, or when they run in order a year at a time. 2021년 says it itself."""
-    cells = [cell.value for cell in (ws._cells.get((row, column)) for row in range(1, limit + 1)) if cell is not None and cell.value not in (None, "")]
+def _can_be_years(ws, line, limit, by_row=False):
+    """1987 to 2036 under 건수 are counts, not years. Bare numbers are years only under a heading that says so, under no heading, or when they run in order a year at a time. 2021년 says it itself.
+    Along a row the heading is the words at its start: 2026, 1957 and 2072 beside Sales of goods and services are amounts."""
+    places = ((line, place) if by_row else (place, line) for place in range(1, limit + 1))
+    cells = [cell.value for cell in (ws._cells.get(place) for place in places) if cell is not None and cell.value not in (None, "")]
     bare = [int(float(raw)) for raw in cells if not isinstance(raw, bool) and core.as_year(raw) is not None and (isinstance(raw, (int, float)) or raw.strip().isdigit())]
     if not bare:
         return True
@@ -1167,6 +1183,12 @@ def find_doubts(source, shape, base, value, found):
         add("period_columns")
     if how == "sum" and _adds_unlike_kinds(source, ws, shape, base, value):
         add("mixed_kinds")
+    over = _over_a_hundred_among_shares(ws, base, value, numbers)
+    if over:
+        add("count_among_shares", item=over)
+    sparse = _sparse_period(ws, base, value, numbers)
+    if sparse:
+        add("sparse_period", period=sparse[0], filled=sparse[1], usual=sparse[2])
     codes = {issue.code for item in found for issue in item.issues}
     if "cross_total_differs" in codes:
         add("total_differs")
@@ -1176,6 +1198,39 @@ def find_doubts(source, shape, base, value, found):
     if nested is not None:
         add("parts_by_sum", parent=nested.params.get("parent", "?"), parts=nested.params.get("parts", "?"))
     return doubts
+
+
+def _over_a_hundred_among_shares(ws, base, value, numbers):
+    """The name of a line over 100 in a column of per cents: Population estimates (n) 45,166 above Bachelor's degree 43.9 is a count of people, not a share, and ranked with them it comes first."""
+    if base.kind != "name" or not value.spec.isalpha() or len(numbers) < 3:
+        return None
+    column = core.column_index_from_string(value.spec)
+    if "%" not in (value.name or "") and not facts.is_rate(value.name or "") and not core.in_per_cent(ws, min(numbers)):
+        return None
+    over = [row for row, number in numbers.items() if abs(number) > 100]
+    if not over or len(over) * 2 >= len(numbers):
+        return None
+    line = core.column_index_from_string(_name_line(base.spec))
+    label = core._merged_value(ws, over[0], line)
+    return str(label).strip() if label not in (None, "") else f"{value.spec}{over[0]}"
+
+
+def _sparse_period(ws, base, value, numbers):
+    """(period, filled, usual) when a period a report compares with has most of its parts empty: 2024년 with 3 of its 12 months filled, so 2025 looks 562% up on it. The newest period is left to the checks for unfinished ones."""
+    if base.kind != "date" or base.many_rows or not value.spec.isalpha() or len(numbers) < MIN_PERIODS:
+        return None
+    parts = [core.column_index_from_string(v.spec) for v in base.values if v.spec.isalpha() and v.spec != value.spec]
+    if len(parts) < SPARSE_PERIOD_PARTS:
+        return None
+    rows = sorted(numbers)
+    filled = {row: sum(ws.cell(row, line).value not in (None, "") for line in parts) for row in rows}
+    usual = sorted(filled.values())[len(filled) // 2]
+    date_line = core.column_index_from_string(re.match(r"[A-Z]+", base.spec).group(0)) if re.match(r"[A-Z]+", base.spec) else None
+    for row in rows[-1 - SPARSE_PERIOD_LOOK_BACK:-1]:
+        if usual >= SPARSE_PERIOD_PARTS and filled[row] * 2 < usual:
+            raw = ws.cell(row, date_line).value if date_line else row
+            return (raw.date().isoformat() if hasattr(raw, "date") else str(raw).strip()), filled[row], usual
+    return None
 
 
 def _adds_unlike_kinds(source, ws, shape, base, value):

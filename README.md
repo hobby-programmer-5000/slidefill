@@ -13,7 +13,7 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 ## Features
 
 - **A report from the workbook alone**: choose a file and SlideFill reads the sheet, chooses the contents, and shows the real values first. If it took the wrong figure, change it with Ctrl+R. This is an automatic judgement, so check the values before you create the report.
-- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that look meaningless added, only counting rows, or tables stacked on one sheet, it shows why and asks before making the report. If you keep the choice, the slide says the value was not confirmed. It will not catch every mistake.
+- **It asks when unsure**: if there are signs it chose wrongly, such as adding up values that look meaningless added, only counting rows, tables stacked on one sheet, a compared period with most of its values missing, or a head count among per cents, it shows why and asks before making the report. If you keep the choice, the slide says the value was not confirmed. It will not catch every mistake.
 - **It keeps what a value means**: levels such as heating values or concentrations are averaged, not added. Figures on a sheet whose stated unit is per cent are written in per cent and points. A period still running is not compared with others.
 - **Text**: `{{Sales}}` or `{{Summary!B3}}` anywhere: text boxes, table cells, groups, notes, chart titles, slide masters. Your fonts and colors stay.
 - **Tables**: fills a PowerPoint table from a range, adding or removing rows to fit. Total rows stay at the bottom.
