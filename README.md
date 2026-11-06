@@ -30,7 +30,11 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 
 ## Install
 
-There is no public release yet, so build it from source (below). The result is one portable `SlideFill.exe`: no installer and no admin rights.
+Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-5000/slide-fill/releases) and run it. It is one portable file: no installer and no admin rights. Its settings are kept in `SlideFill.json` next to it, which appears the first time you pick a file, preview, or change the language.
+
+The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
+
+The first release, v0.1.0, is a pre-release: it has not yet been tried on real company files. Its known limits are in the release notes.
 
 ## Build from source
 
@@ -186,7 +190,7 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - `.ppt` is not supported.
 - Hidden sheets are left out of the automatic choice, and read only when no other sheet holds figures. A sheet named as a forecast, plan or budget is not joined to the actuals.
 - The automatic choice takes a sheet named as a summary (요약, 총괄, 종합, summary) first, then the one with the newest year in its name. A log with only words and dates, such as a list of complaints, is read as a count by date, after any sheet that holds numbers (such as one tallying survey answers).
-- `△500` and `(300)` read as negatives. Digits it cannot read, such as `▲500` or `1,2,3` with commas that do not group thousands, are left out, so it asks first.
+- `△500`, `(300)` and `(1,234)` read as negatives. `(1)`, `(2)` under the headings number the columns and are not figures. Digits it cannot read, such as `▲500` or `1,2,3` with commas that do not group thousands, are left out, so it asks first.
 - A table beyond an empty column, or another table under a blank row, is not mixed in. Of tables stacked on one sheet only the first is read, and it asks first, as it does when rows may have been left out because a sum matched by chance.
 - Placeholders inside SmartArt cannot be filled. They are reported, with the slide they are on.
 - A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
@@ -231,4 +235,4 @@ samples/            made-up example files
 
 ## License
 
-Not chosen yet. Bundled components are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE). Bundled components keep their own licenses, listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

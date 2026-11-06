@@ -1,6 +1,6 @@
 # Third-party notices
 
-SlideFill's own license has not been chosen yet (see `README.md`). This file covers what the Windows executable `SlideFill.exe` bundles, each part under its own license.
+SlideFill itself is under the MIT License (see `LICENSE`). This file covers what the Windows executable `SlideFill.exe` bundles, each part under its own license.
 
 | Component | Version | Files in `SlideFill.exe` | License |
 |---|---|---|---|
@@ -13,10 +13,10 @@ SlideFill's own license has not been chosen yet (see `README.md`). This file cov
 | Expat | 2.8.2 | built into `pyexpat.pyd` | MIT |
 | mpdecimal | 4.0.0 | built into `_decimal.pyd` | BSD-2-Clause |
 | Unicode Character Database | 16.0.0 | data inside `unicodedata.pyd` | Unicode License v3 |
-| python-pptx | 1.0.2 | Python package | MIT |
-| openpyxl | 3.1.5 | Python package | MIT |
 | xlrd | 2.0.2 | Python package, for `.xls` | BSD-3-Clause, with parts under a BSD-style license (in its license text) |
 | python-calamine | 0.9.1 | Python package with a compiled module, for `.xlsb` and `.ods` | MIT; the Rust crates built into it are listed below |
+| python-pptx | 1.0.2 | Python package | MIT |
+| openpyxl | 3.1.5 | Python package | MIT |
 | et_xmlfile | 2.0.0 | Python package | MIT |
 | lxml | 6.1.3 | Python package | BSD-3-Clause, and libxml2/libxslt under MIT |
 | pillow | 13.0.0 | Python package | MIT-CMU, and the libraries listed in its license file |
@@ -26,7 +26,7 @@ SlideFill's own license has not been chosen yet (see `README.md`). This file cov
 
 The build excludes TLS and bzip2, xz and Zstandard compression (see `build.bat`), so OpenSSL, bzip2, xz and Zstandard are **not** in `SlideFill.exe`. `tools/make_notices.py` fails if any of them appears. Python's license file below is reproduced unchanged and may still mention them.
 
-The socket modules are present only because the standard library's XML helpers import them. SlideFill makes no network connections.
+The socket modules are present because the standard library's XML helpers import them, and because the optional insight step talks to Ollama at 127.0.0.1 on the same PC. SlideFill makes no other network connections.
 
 ---
 

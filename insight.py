@@ -70,7 +70,9 @@ RISING_OR_RUN_WORD = re.compile(r"연속|최고|가장 높|증가|상승|늘었|
 SIGN_BEFORE_WORD = re.compile(r"[+-](\d[\d,]*(?:\.\d+)?\s*%)(?=\s*(?:above|below|higher|lower|more|less|up\b|down\b|높|낮|많|적|증가|감소|상승|하락))", re.I)
 FALLING_WORD = re.compile(r"최저|가장 낮|감소|하락|낮습|줄었|\b(?:lowest|below|lower|fell|fallen|falls|fall|down|decreased?)\b", re.I)
 ITEM_FACT = re.compile(r"(?:^|_)item_\d+$")
-ITEM_NAME = re.compile(r"(?:\d+위|number \d+)\s+(.+?)\s+[\d,.-]+(?:,|$)")
+ITEM_NAME = re.compile(r"(?:(?:\d+위|number \d+)\s+)?(.+?)\s+(?:실적\s+|came to\s+)?[\d,.-]+(?:,|$|\s)")  # 1위 연구소 19,468, or against a budget 연구소 실적 19,468
+SUPERLATIVE = re.compile(r"가장|최고|최대|최저|최소|\b(?:highest|largest|biggest|most|lowest|smallest|least)\b", re.I)
+RANKED = re.compile(r"(?<!\d)1\s*(?:위|번째로)|\bnumber 1\b", re.I)  # first place backs a superlative: 최근 12개 값 중 1번째로 높음, 1위 연구소; a third place does not
 SUM_IN_A_FACT = re.compile(r"(?:전체|항목\s*합계)\s+(\d[\d,]*(?:\.\d+)?)|(?:items' sum|the total|the whole),?\s+(\d[\d,]*(?:\.\d+)?)", re.I)
 SAYS_THE_WHOLE = re.compile(r"전체|합계|총|합은|\b(?:sum|total|whole|all)\b", re.I)
 MIN_ITEM_NAME = 2  # 가 alone would be found in almost any sentence
@@ -249,6 +251,8 @@ def check(item, pack, lang):
         problems.append("join")
     if _unknown_window(text, cited):
         problems.append("window")
+    if SUPERLATIVE.search(text) and not any(SUPERLATIVE.search(fact.text) or RANKED.search(fact.text) for fact in cited):
+        problems.append("superlative")  # 연구소 +10.3%로 가장 높은 증가율, citing only 연구소's own line, when 관리부 rose 33.0%
     if _wrong_way(text, cited):
         problems.append("direction")
     if _reversed_multiple(text, pack):

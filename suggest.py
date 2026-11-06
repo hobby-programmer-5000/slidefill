@@ -81,6 +81,8 @@ MEAN_NAME = re.compile(facts.RATE_SYLLABLE + r"|평균|가격|단가|점수|\b(?
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
+SHARE_NAME = re.compile(r"%|퍼센트|비율|비중|구성비|점유율|\b(?:per\s*cent|percent(?:age)?s?|shares?|proportions?)\b", re.I)  # what says a column is of per cents, not an index or an average
+SURVEY_YEAR_STEPS = (2, 3, 4, 5, 10)  # years a census or survey skips between rounds; counts that happen to step by 7 are not years
 YEAR_COLUMN_HEADING = re.compile(r"연도|년도|년|year|\byrs?\b|\bfy\b|기간|시점|시기|기준|구분|일자|날짜|회계|period|date|time|season", re.I)  # what a column of years is headed
 MONTH_HEADING = re.compile(r"월|달|기간|month|mth|\bmm\b|period", re.I)
 GENERIC_VALUE = re.compile(r"값|수치|데이터|실적값|values?|data|figures?|amount", re.I)  # says nothing of what is measured, so a column beside it must
@@ -426,14 +428,18 @@ def _can_be_years(ws, line, limit, by_row=False):
     Along a row the heading is the words at its start: 2026, 1957 and 2072 beside Sales of goods and services are amounts."""
     places = ((line, place) if by_row else (place, line) for place in range(1, limit + 1))
     cells = [cell.value for cell in (ws._cells.get(place) for place in places) if cell is not None and cell.value not in (None, "")]
-    bare = [int(float(raw)) for raw in cells if not isinstance(raw, bool) and core.as_year(raw) is not None and (isinstance(raw, (int, float)) or raw.strip().isdigit())]
+    is_bare = lambda raw: not isinstance(raw, bool) and core.as_year(raw) is not None and (isinstance(raw, (int, float)) or raw.strip().isdigit())  # noqa: E731
+    bare = [int(float(raw)) for raw in cells if is_bare(raw)]
     if not bare:
         return True
-    words = [raw.strip() for raw in cells if isinstance(raw, str) and raw.strip() and core.as_year(raw) is None and core.as_date(raw) is None]
-    if not words or YEAR_COLUMN_HEADING.search(words[0]):
+    first = next(index for index, raw in enumerate(cells) if is_bare(raw))
+    # The heading is the words right above the first year, not a sheet title further up: Sales summary, then FY, then the years
+    words = [raw.strip() for raw in cells[:first] if isinstance(raw, str) and raw.strip() and core.as_year(raw) is None and core.as_date(raw) is None]
+    if not words or YEAR_COLUMN_HEADING.search(words[-1]):
         return True
     steps = [later - earlier for earlier, later in zip(bare, bare[1:]) if later != earlier]
-    return not steps or all(step == 1 for step in steps) or all(step == -1 for step in steps)  # 회계연도 2025 on every line is a year too
+    # 회계연도 2025 on every line is a year too; so is a census every five years
+    return not steps or len(set(steps)) == 1 and abs(steps[0]) in SURVEY_YEAR_STEPS or all(step == 1 for step in steps) or all(step == -1 for step in steps)
 
 
 def _can_be_months(ws, column, limit):
@@ -1239,7 +1245,7 @@ def _over_a_hundred_among_shares(ws, base, value, numbers):
     if base.kind != "name" or not value.spec.isalpha() or len(numbers) < 3:
         return None
     column = core.column_index_from_string(value.spec)
-    if "%" not in (value.name or "") and not facts.is_rate(value.name or "") and not core.in_per_cent(ws, min(numbers)):
+    if not SHARE_NAME.search(value.name or "") and not core.in_per_cent(ws, min(numbers)):  # an index of 102.4 or an average price of 450 may pass 100
         return None
     over = [row for row, number in numbers.items() if abs(number) > 100]
     if not over or len(over) * 2 >= len(numbers):
