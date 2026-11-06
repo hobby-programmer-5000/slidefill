@@ -94,8 +94,12 @@ PERIOD_TITLE_LENGTH = 60
 NEVER_ADDED_NAME = re.compile(r"나이|연령(?!별)|근속|\b(?:age|tenure)\b", re.I)  # whatever else the sheet holds, adding people's ages says nothing
 UNLIKE_MIN_LARGEST = 100000
 UNLIKE_SHARE = 0.1  # so many values below one, beside values in the hundreds of thousands, are not the same kind of thing
+SUMMARY_SHEET = re.compile(r"요약|총괄|종합|summary", re.I)
+DATED_LOG_CELLS = 10
+SAME_FIGURE_ITEMS = 3  # two items with one value can just be equal
 NOT_DATA_SHEET = re.compile(r"표지|목차|설명|안내|주석|index|contents|cover|notes?\b|copyright", re.I)
 YEAR_IN_NAME = re.compile(r"(?:19|20)\d\d")
+ATTRIBUTE_DATE = re.compile(r"설치|준공|건립|설립|취득|출생|생년|\b(?:installed|installation|built|established|founded|acquired|birth)", re.I)  # when each thing on a list came to be, not when its figure was counted
 PLAIN_SHEET_NAME = re.compile(r"(?:data|sheet\s*\d*|시트\s*\d*|table\s*\d*|\d+)", re.I)  # says nothing, so it is not worth a heading
 UNIT_NOTE = core.UNIT_NOTE
 UNIT_HEADING = re.compile(r"단위|units?", re.I)
@@ -238,19 +242,25 @@ class Plan:
 
 
 def data_sheets(source):
-    """The sheets worth offering, best first: the newest by the year in its name, or the one the workbook opens on."""
+    """The sheets worth offering, best first: sheets with numbers before logs with only dates, actuals before plans, a summary, then the newest by the year in its name, or the one the workbook opens on."""
     def holds_figures(ws):
+        """2 for a sheet with numbers, 1 for a log with only a date on each line, else 0."""
         if ws.max_row < 2 or NOT_DATA_SHEET.search(ws.title) or _titled_as_contents(ws):
-            return False
+            return 0
         columns = min(ws.max_column, SAMPLE_COLUMNS)  # once: openpyxl counts every cell to find it
         cells = [ws.cell(r, c).value for r in range(1, min(ws.max_row, 60) + 1) for c in range(1, columns + 1)]
-        return sum(core.as_number(v) is not None for v in cells) >= 3
+        if sum(core.as_number(v) is not None for v in cells) >= 3:
+            return 2
+        # A log of complaints holds no numbers, only a date on each line, and lines counted by month are its figures
+        return int(sum(core.as_date(v) is not None for v in cells if not isinstance(v, (int, float))) >= DATED_LOG_CELLS)
 
+    level = {ws.title: holds_figures(ws) for ws in source.wb.worksheets}
     # What someone hid is not what they mean to report, and they could not see it to check it. Only when nothing else holds figures is it read.
-    found = [ws for ws in source.wb.worksheets if ws.sheet_state == "visible" and holds_figures(ws)] or [ws for ws in source.wb.worksheets if holds_figures(ws)]
+    found = [ws for ws in source.wb.worksheets if ws.sheet_state == "visible" and level[ws.title]] or [ws for ws in source.wb.worksheets if level[ws.title]]
     active = source.wb.active
     years = {ws.title: max((int(y) for y in YEAR_IN_NAME.findall(ws.title)), default=0) for ws in found}
-    return sorted(found, key=lambda ws: (TARGET_NAME.search(ws.title) is not None, -years[ws.title], ws is not active, source.wb.worksheets.index(ws)))  # 2027 사업계획 does not lead over what has happened
+    # A survey's raw answers come after the sheets that tally them. 2027 사업계획 does not lead over what has happened, and 요약 leads over 2022년(432개소), a list of places with one line each
+    return sorted(found, key=lambda ws: (level[ws.title] < 2, TARGET_NAME.search(ws.title) is not None, SUMMARY_SHEET.search(ws.title) is None, -years[ws.title], ws is not active, source.wb.worksheets.index(ws)))
 
 
 def _titled_as_contents(ws):
@@ -352,7 +362,7 @@ def _date_candidates(ws):
     profiles = {c: _profile(ws, c, False, limit)[0] for c in range(1, columns + 1)}
     for c, p in profiles.items():
         filled = p["filled"]
-        if not filled:
+        if not filled or _dated_as_attribute(ws, c, limit):
             continue
         if p["year"] and not _can_be_years(ws, c, limit):
             p = p.copy()
@@ -373,6 +383,21 @@ def _date_candidates(ws):
             found.append((size, str(r), True))
     found.sort(key=lambda item: -item[0])
     return [(spec, by_row) for _size, spec, by_row in found[:6]]
+
+
+def _dated_as_attribute(ws, column, limit):
+    """A column headed 설치년도 on a ledger of street lights: the year each was put up, not a time the table's figures are for. Read by date, its lines become a series that falls each year.
+    The heading is the nearest words above the first date, so a sheet's title such as 가로등 설치 현황 over a column of real dates does not count."""
+    heading = None
+    for row in range(1, limit + 1):
+        raw = ws.cell(row, column).value
+        if raw in (None, "") or isinstance(raw, bool):
+            continue
+        if core.as_date(raw) is not None or core.as_year(raw) is not None:
+            break
+        if isinstance(raw, str) and raw.strip():
+            heading = raw
+    return heading is not None and ATTRIBUTE_DATE.search(heading) is not None
 
 
 def _can_be_years(ws, column, limit):
@@ -628,7 +653,9 @@ def _read_name_bases(source, ws, codes):
         order = (0 if not base.many_rows else 1, int(kinds), -filled_numeric)
         out.append((order, base))
     ordered = [base for _o, base in sorted(out, key=lambda item: (item[0] if isinstance(item[0], tuple) else (-1, 0)))]
+    figure_rows = {r for r in range(1, limit + 1) if any(core.as_number(ws.cell(r, line).value) is not None for line in numeric)}
     for base in ordered:
+        items = _item_rows(ws, base, figure_rows)
         own = core.column_index_from_string(base.spec.split(":")[-1] if re.fullmatch(r"[A-Z]+:[A-Z]+", base.spec) else _name_line(base.spec))  # A:C, labels spread across columns, ends at C
         for c in numeric:
             if _beside_another_table(own, c, empty, words):
@@ -638,7 +665,7 @@ def _read_name_bases(source, ws, codes):
             name = source._header(ws, ref, first_filled, c)
             numbers = [core.as_number(ws.cell(r, c).value) for r in range(1, limit + 1)]
             years = [ws.cell(r, c).value for r in data_rows if ws.cell(r, c).value not in (None, "")]
-            if c in codes or not _names_a_figure(name) or _steps_by_one(numbers) or _long_identifiers(numbers) or _unlike_things(numbers):
+            if c in codes or not _names_a_figure(name) or _steps_by_one(numbers) or _long_identifiers(numbers) or _unlike_things(numbers) or _same_on_every_item(ws, items, c):
                 continue
             if years and all(core.as_year(raw) is not None for raw in years) and _can_be_years(ws, c, limit):  # 회계연도 2025 on every line of a budget, but not 1987 to 2036 under 건수
                 continue
@@ -648,6 +675,22 @@ def _read_name_bases(source, ws, codes):
                 base.groups.append(Group(_name_line(other.spec), other.name, list(d)))
         _newest_period_first(ws, base)
     return ordered
+
+
+def _item_rows(ws, base, figure_rows):
+    """(name, row) for a name base's items: named, holding a figure, and not a total line."""
+    return [(name, row) for name, row in _named_rows(ws, base) if row in figure_rows and not core.total_word_kind(name)]
+
+
+def _same_on_every_item(ws, items, column):
+    """True when every named item has the same figure, such as fees of 0 for each member: there is no highest or lowest to tell, and a total line under them may be all it holds.
+    Items that are periods are left alone: 271 in 2024년 and 2025년 did not change, and that is worth saying."""
+    if len(items) < SAME_FIGURE_ITEMS:
+        return False
+    values = {core.as_number(ws.cell(row, column).value) for _name, row in items}
+    if len(values) != 1 or None in values:
+        return False
+    return not any(core.as_year(name) is not None or core.as_date(name) is not None for name, _row in items)
 
 
 def _beside_another_table(names, figures, empty, words):

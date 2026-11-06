@@ -920,7 +920,7 @@ def total_word_kind(value):
     word = "".join(value.split()).casefold()
     if word in SUBTOTAL_WORDS:
         return "subtotal"
-    if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계")):
+    if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계", "전체")):  # 공원관리사업소 전체 is the whole office
         return "total"
     return None
 
@@ -1893,6 +1893,8 @@ class ExcelSource:
             header = _aggregate_name(last_spec, [header])
         if is_rate_kind:
             fmt = "0.0%"
+        elif isinstance(last_spec, Aggregate) and last_spec.kind == "count":
+            fmt = "General"  # rows counted by a date column are a number of rows, not a date: 2, not 01월 02일
         issues = [Issue("cross_total_found", {"label": year_line})] if year_line else []
         if unread:
             issues.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))

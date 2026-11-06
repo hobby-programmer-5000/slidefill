@@ -185,6 +185,7 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - `.xlsb` and `.ods` give values only, without number formats or merged cells, so 85% shows as 0.85. Save as `.xlsx` if the display matters.
 - `.ppt` is not supported.
 - Hidden sheets are left out of the automatic choice, and read only when no other sheet holds figures. A sheet named as a forecast, plan or budget is not joined to the actuals.
+- The automatic choice takes a sheet named as a summary (요약, 총괄, 종합, summary) first, then the one with the newest year in its name. A log with only words and dates, such as a list of complaints, is read as a count by date, after any sheet that holds numbers (such as one tallying survey answers).
 - `△500` and `(300)` read as negatives. Digits it cannot read, such as `▲500` or `1,2,3` with commas that do not group thousands, are left out, so it asks first.
 - A table beyond an empty column, or another table under a blank row, is not mixed in. Of tables stacked on one sheet only the first is read, and it asks first, as it does when rows may have been left out because a sum matched by chance.
 - Placeholders inside SmartArt cannot be filled. They are reported, with the slide they are on.

@@ -92,7 +92,7 @@ if len(sys.argv) >= 5 and sys.argv[1] == "--case":
     one_case(sys.argv[2], sys.argv[3], sys.argv[4])
     sys.exit(0)
 
-base, output = sys.argv[1:3]
+base, output = (os.path.abspath(path) for path in sys.argv[1:3])  # each case runs from the output's folder, so a relative path would find nothing
 results = {}
 for case in sorted(name for name in os.listdir(base) if os.path.isdir(os.path.join(base, name))):
     piece = output + "." + case + ".json"

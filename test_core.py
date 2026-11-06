@@ -3454,6 +3454,79 @@ class TriedReports(Base):
         self.assertEqual(titles, ["", "설명", "하나", "둘"])
 
 
+class FifthMeasure(Base):
+    """What the fifth fair measure (2026-11-06) got wrong without asking, each in a small workbook shaped like the public file."""
+
+    book = TriedReports.book
+    doubts = TriedReports.doubts
+
+    def text(self, path):
+        return " ".join(item.result for section in suggest.plan_report(core.ExcelSource(path)).sections for item in section.sentences)
+
+    def test_a_line_ending_in_jeonche_is_a_total_not_an_item(self):
+        self.assertEqual(core.total_word_kind("공원관리사업소 전체"), "total")
+        self.assertIsNone(core.total_word_kind("전체회의실"))
+        rows = [["구분", "소비전력"], ["공원관리사업소 전체", 1701], ["경익운수 구간", 14], ["대사통제소 구간", 351], ["아쿠아월드 구간", 192], ["숲속공연장 구간", 68]]
+        path = self.book("공원등.xlsx", 표=rows)
+        self.assertNotIn("73.1%", self.text(path))  # 1,701 of 2,326 was the total counted as an item
+        self.assertNotIn("공원관리사업소 전체(", self.text(path))
+        self.assertIn("total_differs", self.doubts(path))  # 1,701 is not 625, so a person looks
+        matching = [["구분", "소비전력"], ["사업소 전체", 625], ["경익운수 구간", 14], ["대사통제소 구간", 351], ["아쿠아월드 구간", 192], ["숲속공연장 구간", 68]]
+        path = self.book("공원등2.xlsx", 표=matching)
+        self.assertNotIn("total_differs", self.doubts(path))
+        self.assertIn("625", self.text(path))
+
+    def test_a_figure_the_same_for_every_item_is_not_chosen(self):
+        rows = [["Committee"], [], ["Name of Body", "Meetings held", "Position", "Member's name", "Meetings attended", "Approved Fees $", "Actual Fees $", "Total expenditure $"]]
+        rows += [["Advisory Committee", 7, "Member", name, attended, 0, 0, 0] for name, attended in (("Ms A", 7), ("Ms B", 3), ("Ms C", 6), ("Mr D", 7), ("Dr E", 5))]
+        rows += [["Advisory Committee", 7, None, None, None, None, None, 1910.43]]
+        path = self.book("보수.xlsx", Remuneration=rows)
+        plan = suggest.plan_report(core.ExcelSource(path))
+        self.assertNotIn("(0)", self.text(path))  # highest Ms A (0), lowest Dr E (0) said nothing
+        self.assertNotRegex(plan.what, r"Fees|expenditure|Meetings held")
+        varied = [["지점", "매출"], ["서울", 0], ["부산", 0], ["대구", 5]]
+        self.assertIn("매출", suggest.plan_report(core.ExcelSource(self.book("영.xlsx", 표=varied))).what)  # zeros among other values are figures
+        years = [["1. 현황"], ["(단위 : 개소)"], ["구분", "제조시설", None, "사용시설"], [None, "계", "민간", "계"], ["2024년", 297, 271, 144], ["2025년", 296, 271, 140]]  # 271 both years: unchanged, which is worth saying
+        base = suggest.read_shape(core.ExcelSource(self.book("두해.xlsx", 표=years)), "표").bases[0]
+        self.assertEqual([value.name for value in base.values], ["제조시설 계", "민간", "사용시설 계"])
+
+    def test_a_year_each_thing_was_installed_is_not_a_time_series(self):
+        ledger = [["노선명", "분전함명", "등기구", "등주", "설치년도"]] + [[f"노선{n % 9}", f"분전함 {n}호", 10 + n * 7 % 50, 5 + n * 3 % 20, 1990 + n * 13 % 30] for n in range(1, 60)]
+        path = self.book("원장.xlsx", 원장=ledger)
+        text = self.text(path)
+        self.assertNotIn("연속 감소", text)
+        self.assertNotIn("2019년 등기구", text)
+        self.assertEqual([base.kind for base in suggest.read_shape(core.ExcelSource(path), "원장").bases if base.kind == "date"], [])
+        titled = [["가로등 설치 현황", None], ["연도", "설치 수"]] + [[2015 + n, 100 + n] for n in range(8)]  # the sheet's title is not the column's heading
+        self.assertEqual(suggest.read_shape(core.ExcelSource(self.book("설치현황.xlsx", 표=titled)), "표").bases[0].kind, "date")
+        yearly = [["연도", "등기구"]] + [[2015 + n, 100 + n] for n in range(8)]  # a column of years that are the time of the figure stays one
+        self.assertEqual(suggest.read_shape(core.ExcelSource(self.book("연도별.xlsx", 표=yearly)), "표").bases[0].kind, "date")
+
+    def test_a_summary_sheet_comes_before_sheets_named_by_year(self):
+        summary = [["구분", "합계", "복지시설", "관공서"], ["2018년", 600, 287, 184], ["2019년", 1330, 140, 0], ["2020년", 644, 130, 26], ["2021년", 1000, 488, 67], ["2022년", 432, 260, 70]]
+        listing = [["번호", "장소명", "옥외", "옥내"]] + [[n, f"장소{n}", n % 2, (n + 1) % 2] for n in range(1, 80)]
+        path = self.book("와이파이.xlsx", **{"2021년(1000개소)": listing, "요약": summary, "2022년(432개소)": listing})
+        self.assertEqual([ws.title for ws in suggest.data_sheets(core.ExcelSource(path))][0], "요약")
+        self.assertIn("432", self.text(path))
+
+    def test_a_log_of_words_and_dates_is_read(self):
+        months = ("January", "February", "March", "April", "May", "June", "July", "August", "September")
+        log = [["Animal Type", "Complaint Type", "Date Received", "Suburb"]] + [[("dog", "cat")[n % 2], ("Noise", "Attack", "Wandering")[n % 3], f"{months[8 - n // 40]} 2026", f"Suburb {n % 7}"] for n in range(360)]
+        path = self.book("민원.xlsx", **{"Animal Complaints": log})
+        self.assertEqual([ws.title for ws in suggest.data_sheets(core.ExcelSource(path))], ["Animal Complaints"])
+        self.assertIn("40", self.text(path))  # 40 complaints a month
+        dated = [["유지관리(2020년)", None, None, None], ["날짜", "위치구분", "위치", "유지관리"]]
+        dated += [[dt.datetime(2020, 1, 1) + dt.timedelta(days=n // 2 * 6 + g), place, f"공원{n}", "램프 교체"] for g, place in enumerate(("의창구", "성산구", "마산합포구", "진해구")) for n in range(40)]
+        text = self.text(self.book("유지관리.xlsx", 표=dated))
+        self.assertIn("성산구(10)", text)  # each place's count is a number, not 1900-01-10 in the date column's format
+        self.assertNotIn("1900", text)
+        tally = [["Complaint Type", "Submissions"], ["Noise", 120], ["Attack", 120], ["Wandering", 120]]
+        path = self.book("설문.xlsx", **{"Answers": log, "Tally": tally})
+        self.assertEqual([ws.title for ws in suggest.data_sheets(core.ExcelSource(path))], ["Tally", "Answers"])  # the sheet that counts them comes first
+        words = [["이름", "부서"]] + [[f"사람{n}", f"부서{n % 3}"] for n in range(30)]  # words alone are still not a report
+        self.assertEqual(suggest.data_sheets(core.ExcelSource(self.book("명단.xlsx", 표=words))), [])
+
+
 class CompanyTemplates(Base):
     """What a company-style template made in real PowerPoint and Excel turned up, on 2026-11-05."""
 
