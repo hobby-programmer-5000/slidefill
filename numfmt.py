@@ -84,6 +84,47 @@ def format_value(value, number_format="General", epoch=WINDOWS_EPOCH):
         return _general(value), False
 
 
+# [Red] and the other names a format may color a section with, as Excel draws them. Korean Excel shows the
+# same eight in Korean words, so they are read too. Black and White are left out on purpose: they mean
+# "plain text" in the sheet, and on a slide the template's own text color says that better (white on a
+# white slide would hide the number).
+FORMAT_COLORS = {"blue": "0000FF", "cyan": "00FFFF", "green": "00FF00", "magenta": "FF00FF", "red": "FF0000",
+                 "yellow": "FFFF00", "파랑": "0000FF", "녹청": "00FFFF", "녹색": "00FF00", "자홍": "FF00FF",
+                 "빨강": "FF0000", "노랑": "FFFF00"}
+PLAIN_COLORS = {"black", "white", "검정", "흰색"}
+# [Color1]..[Color56]: Excel's standard palette (a workbook may change it; this file's own palette is not read).
+PALETTE = ("000000 FFFFFF FF0000 00FF00 0000FF FFFF00 FF00FF 00FFFF 800000 008000 000080 808000 800080 008080 "
+           "C0C0C0 808080 9999FF 993366 FFFFCC CCFFFF 660066 FF8080 0066CC CCCCFF 000080 FF00FF FFFF00 00FFFF "
+           "800080 800000 008080 0000FF 00CCFF CCFFFF CCFFCC FFFF99 99CCFF FF99CC CC99FF FFCC99 3366FF 33CCCC "
+           "99CC00 FFCC00 FF9900 FF6600 666699 969696 003366 339966 003300 333300 993300 993366 333399 333333").split()
+
+
+def format_color(value, number_format="General"):
+    """The color a number's format section asks for, as RRGGBB, or None for the text's own color.
+
+    #,##0;[Red]-#,##0 gives FF0000 for -5 and None for 5. Only numbers: a format colors text in its fourth
+    section, which reports do not use.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        section, _negate = _pick_section(value, _split_sections(_localize(number_format or "General")))
+    except Unsupported:
+        return None
+    bare = re.sub(r'"[^"]*"?|\\.|_.|\*.', "", section)
+    for name in re.findall(r"\[([^\]]*)\]", bare):
+        low = name.strip().casefold()
+        if low in FORMAT_COLORS:
+            return FORMAT_COLORS[low]
+        number = re.fullmatch(r"(?:color|색)\s*(\d{1,2})", low)
+        if number and 1 <= int(number.group(1)) <= len(PALETTE):
+            found = PALETTE[int(number.group(1)) - 1]
+            return None if found in ("000000", "FFFFFF") else found
+        if low in PLAIN_COLORS:
+            return None
+    return None
+
+
 def _format(value, fmt, epoch):
     if value is None:
         return ""

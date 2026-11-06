@@ -1223,7 +1223,7 @@ class DataShapes(Base):
     def test_grouping_by_name_with_a_condition(self):
         rows = [["연도", "부문", "강원", "경기"], [2023, "산업", 1, 2], [2023, "건물", 3, 4], [2024, "산업", 5, 6], [2024, "건물", 7, 8]]
         self.assertIn("건물(22)", self.value("읽는법:표!B,합계(C:D)", 표=rows)[0])
-        self.assertEqual(self.value("읽는법:표!B,합계(C:D, A=2024)", 표=rows)[0], "가장 큰 항목은 건물(15)이고, 항목 합계 26의 57.7%입니다. 2위 산업(11, 42.3%)의 1.4배입니다.")
+        self.assertEqual(self.value("읽는법:표!B,합계(C:D, A=2024)", 표=rows)[0], "2024년 기준, 가장 큰 항목은 건물(15)이고, 항목 합계 26의 57.7%입니다. 2위 산업(11, 42.3%)의 1.4배입니다.")
         self.assertEqual(self.value("전일대비:표!A,합계(C:D, B=산업)", 표=rows)[0], "+266.7%")  # 3 -> 11, by year
 
     def test_mixed_cells_in_a_comparison(self):
@@ -1400,7 +1400,7 @@ class DataShapes(Base):
     def test_several_totals_use_the_one_that_adds_up(self):
         rows = [["구분", "값"], ["세금", 90], ["기타", 10], ["Total revenue", 100], ["임금", 40], ["Total expenses", 40]]
         text, _source, issues = self.value("읽는법:표!A,B", 표=rows)
-        self.assertTrue(any(i.code == "cross_total_differs" for i in issues), text)
+        self.assertEqual([i.code for i in issues if i.code in ("cross_total_differs", "cross_several_totals")], ["cross_several_totals"], text)  # revenue and expenses, each its own whole: nothing differs
         rows = [["구분", "값"], ["세금", 90], ["임금", 10], ["Total", 100], ["합계 (참고)", None]]
         self.assertIn("전체 100의 90.0%", self.value("읽는법:표!A,B", 표=rows)[0])
 
@@ -2064,7 +2064,7 @@ class Suggestions(Base):
     def test_every_doubt_has_words_in_both_languages(self):
         for code in suggest.DOUBTS:
             for lang in ("en", "ko"):
-                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12, count=23, same="0", total="1,910.43"), code)
+                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12, count=23, same="0", total="1,910.43", kind="진료형태", values="입원, 외래, 약국"), code)
 
     def test_a_total_under_a_total_is_one_total(self):
         rows = [["구분", "합  계", None, None, "세대"], [None, "계", "남", "여", None]] + [[f"시{n}", 100 + n * 37 % 91, 50, 50, 10 + n * 3 % 7] for n in range(6)] + [["총  계", 700, 300, 300, 80]]
@@ -2917,11 +2917,11 @@ class TriedReports(Base):
 
     def test_the_year_beside_its_months_is_their_whole(self):
         rows = [["월", "유입"]] + [[f"{m}월", 100 + m * m] for m in range(1, 13)] + [["연간", sum(100 + m * m for m in range(1, 13))]]
-        text, _where, issues = core.ExcelSource(self.book("월.xlsx", 표=rows)).text_value("읽는법:표!A,B")
-        self.assertIn("항목 12개", text)
-        self.assertIn("전체 1,850", text)
-        self.assertIn("12월(244)", text)
-        self.assertIn("cross_total_found", [issue.code for issue in issues])
+        source = core.ExcelSource(self.book("월.xlsx", 표=rows))
+        text = source.text_value("읽는법:표!A,B")[0]  # 1월 to 12월 are a year of months now, read in order, and 연간 is no thirteenth of them
+        self.assertIn("직전 달 대비 +10.4%", text)  # 244 against 221
+        self.assertIn("12개 중 가장 높습니다", text)
+        self.assertTrue(source.text_value("해설:표!A,B")[0].startswith("12월 유입 244."))
 
     def test_a_year_beside_something_else_stays_an_item(self):
         rows = [["요금제", "가입"], ["월간", 120], ["연간", 300], ["평생", 45], ["체험", 70]]
@@ -5107,7 +5107,8 @@ class Issues(Base):
     def test_formula_name_is_explained(self):
         textbox_runs(self.slide, ["{{동적}}"])
         report, _out = self.go()
-        self.assertEqual(self.code(report, "동적"), "name_not_cells")
+        self.assertEqual(self.code(report, "동적"), "range_for_text")  # OFFSET(요약!$A$1,0,0,2,2) is now read: two by two cells, too many for a line of text
+        self.assertEqual(core.ExcelSource(self.xlsx).locate("동적")[2], "요약!A1:B2")
 
     def test_empty_cell_warns(self):
         textbox_runs(self.slide, ["[{{요약!H9}}]"])
@@ -5315,6 +5316,434 @@ class Settings(Base):
         core.save_settings(path, {"언어": "ko"})
         with open(path, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), {"언어": "ko"})
+
+
+class SeventhMeasure(Base):
+    """What the seventh fair measure (2026-11-07, on v0.1.0) got wrong or asked about for nothing, and the limits the release notes listed, each in a small workbook shaped like the file."""
+
+    book = TriedReports.book
+    doubts = TriedReports.doubts
+    text = FifthMeasure.text
+
+    def test_a_data_dictionary_is_not_a_table_of_figures(self):
+        fields = [["Field Name", "Field Type", "Field Width", "Nullable", "Description"], ["POLY_AREA", "Number - double", None, "Y", "Area"],
+                  ["CAPTURE_SCALE", "Text", 50, "Y", "Scale"], ["ORTHOPHOTO", "Text", 200, "Y", "Photo"], ["Digitiser", "Text", 50, "Y", "Who"], ["Comments", "Text", 255, "Y", "Notes"]]
+        plan = suggest.plan_report(core.ExcelSource(self.book("사전.xlsx", **{"Attribute values table": fields})))
+        names = [figure.name for section in plan.sections for figure in section.figures] if plan else []
+        self.assertNotIn("Field Width", names)  # 50 + 200 + 50 + 255 = 555, Comments 45.9%
+        korean = [["컬럼명", "데이터 타입", "자릿수"], ["지역코드", "VARCHAR", 10], ["인구", "NUMBER", 12], ["면적", "NUMBER", 8]]
+        source = core.ExcelSource(self.book("사전2.xlsx", 정의서=korean, 표=[["지역", "인구"], ["가", 10], ["나", 20], ["다", 30]]))
+        self.assertEqual([ws.title for ws in suggest.data_sheets(source)], ["표"])
+
+    def test_a_count_of_one_on_every_line_is_not_a_level(self):
+        rows = [["Reported Date", "Category", "Count"]]
+        for day in range(1, 61):
+            rows += [[dt.datetime(2026, 8, 1) + dt.timedelta(days=day), category, 1] for category in ("Water", "Trees", "Roads")[: 1 + day % 3]]
+        self.assertNotIn("sum_of_levels", self.doubts(self.book("기록.xlsx", Requests=rows)))
+
+    def test_people_added_across_kinds_they_share_are_asked_about(self):
+        rows = [["보험구분", "진료년도", "진료월", "진료형태", "진료인원(명)"]]
+        for year in (2022, 2023):
+            for month in range(1, 13):
+                rows += [["건강보험", year, month, kind, people + month] for kind, people in (("입원", 280), ("외래", 21000), ("약국", 5900))]
+        path = self.book("진료.xlsx", **{"주상병 기준": rows})
+        params = dict(suggest.plan_report(core.ExcelSource(path)).doubts).get("people_across_kinds")
+        self.assertIsNotNone(params)  # 입원 + 외래 + 약국 counts a patient who saw a doctor and then a pharmacy twice
+        self.assertEqual((params["kind"], params["values"]), ("진료형태", "입원, 외래, 약국"))
+        self.assertIn("두 번", i18n.text("ko", "doubt_people_across_kinds", **params))
+        regions = [["연도", "월", "지역", "이용인원"]] + [[2025, month, region, 100 + month] for month in range(1, 13) for region in ("서울시", "부산시", "대구시")]
+        self.assertNotIn("people_across_kinds", self.doubts(self.book("지역.xlsx", 표=regions)))  # a person lives in one city
+
+    def test_items_of_a_month_under_a_day_say_which_month(self):
+        rows = [["Date", "Rating", "Number of Submissions"]]
+        for day in range(1, 27):
+            rows += [[dt.datetime(2022, 4, day), rating, 1] for rating in ("Very Satisfied", "Satisfied", "Neutral")[: 1 + day % 3]]
+        rows += [[dt.datetime(2022, 5, 1), "Very Satisfied", 1], [dt.datetime(2022, 5, 1), "Satisfied", 1], [dt.datetime(2022, 5, 2), "Very Satisfied", 1]]
+        path = self.book("설문.xlsx", Survey=rows)
+        source = core.ExcelSource(path)
+        self.assertTrue(source.text_value("읽는법:Survey!B,합계(C, A=2022-05)")[0].startswith("2022년 5월 기준, 가장 큰 항목은 Very Satisfied(2)"))  # 2 of 3, in May only
+        self.assertTrue(source.text_value("reading:Survey!B,sum(C, A=2022-05)")[0].startswith("In May 2022, the largest is Very Satisfied (2)"))
+        self.assertTrue(source.text_value("읽는법:Survey!B,합계(C)")[0].startswith("가장 큰 항목은"))  # the whole sheet: no period to name
+
+    def test_one_name_on_two_lines_is_told_apart_by_the_column_beside_it(self):
+        rows = [["업종별", "사용량(㎥)", "요금(원)"], ["가정용", "1~20", 720], ["가정용", "21이상", 960], ["일반용", "1~100", 1400], ["일반용", "2,001이상", 1930],
+                ["대중탕용", "1~1,000", 800], ["대중탕용", "2,001이상", 1160], ["산업용", "계약량", 350]]
+        source = core.ExcelSource(self.book("요율.xlsx", 요율표=rows))
+        text = source.text_value("읽는법:요율표!B,C")[0]
+        self.assertIn("가장 높은 항목은 일반용 2,001이상(1,930)", text)  # 2,001이상 alone is two rates
+        self.assertIn("대중탕용 2,001이상", [row[0][1] for row in source.range_cells("순위7:요율표!B,C")[0][1:]])
+        self.assertIn(", 1~100 1,400,", source.text_value("해설:요율표!B,C")[0])  # names written once stay as they are
+
+    def test_the_totals_of_each_part_of_a_statement_are_not_ranked_with_their_lines(self):
+        self.assertEqual([core.total_word_kind(word) for word in ("수입 계", "경상 수입 계", "서울 소계", "회계", "생계비 합산 계획에 따른 기준액 계")], ["total", "total", "subtotal", None, None])
+        for heading in (["항목", 2024, 2025], ["항목", "2024", "2025"], ["항목", "2024년", "2025년"]):
+            rows = [heading, ["수입", None, None], ["  세금", 500, 520], ["  수수료", 100, 90], ["수입 계", 600, 610],
+                    ["지출", None, None], ["  인건비", 300, 330], ["  운영비", 200, 190], ["지출 계", 500, 520], ["순이익", 100, 90]]
+            path = self.book("결산.xlsx", 결산=rows)
+            text = self.text(path)
+            self.assertNotIn("가장 큰 항목은 수입 계", text)  # 수입 계 610 ranked above 세금 520 and 지출 계 520
+            self.assertIn("수입 계는 600 → 610, +1.7%", text, heading)  # each total line, over the two years: bare years head the columns too
+            self.assertIn("지출 계는 500 → 520, +4.0%", text)
+            self.assertNotIn("total_differs", self.doubts(path))  # no one line totals income and expenses together
+
+    def test_mean_maximum_and_minimum_under_each_month_are_not_averaged_together(self):
+        for order in (("평균", "최대", "최소"), ("최대", "평균", "최소")):
+            rows = [["측정월", "구분", "농도"]]
+            for month in range(1, 13):
+                level = {"평균": 20 + month, "최대": 40 + month, "최소": 5 + month}
+                rows += [[f"2025-{month:02d}" if k == 0 else None, stat, level[stat]] for k, stat in enumerate(order)]
+            path = self.book("수질.xlsx", 수질=rows)
+            text = self.text(path)
+            self.assertIn("2025년 12월 평균 농도 (평균) 32.", text, order)  # (32 + 52 + 17) / 3 = 33.7 is no one's figure, nor is the maximum 52
+            self.assertNotIn("dates_sparse", self.doubts(path))  # the rows under each month are that month's, and 평균 was chosen among them
+
+    def test_months_with_no_year_are_a_series_not_items(self):
+        months = [f"{m}월" for m in range(1, 13)]
+        down = [["월", "매출"]] + [[month, 100 + i * 7] for i, month in enumerate(months)]
+        text = self.text(self.book("월.xlsx", 실적=down))
+        self.assertIn("12월 매출 177. 직전(11월)보다 4.1% 증가", text)  # not 가장 큰 항목은 12월, ranking a year's months as if they were shops
+        self.assertNotIn("가장 큰 항목은", text)
+        self.assertNotRegex(text, r"20\d\d")  # no year the sheet did not write
+        titled = [["2025년 월별 실적"], [], ["월", "매출"]] + down[1:]
+        self.assertIn("2025년 12월 매출 177", self.text(self.book("월2.xlsx", 실적=titled)))  # the year its title gives
+        across = [["지점"] + months] + [[f"지점{k}"] + [100 + k * 10 + m * 3 for m in range(9)] + [None] * 3 for k in range(1, 5)]
+        text = self.text(self.book("가로.xlsx", **{"2026년": across}))
+        self.assertIn("2026년 9월 지점1 134. 직전(2026년 8월)보다 2.3% 증가", text)  # the newest month filled in, not 1월 alone
+        self.assertNotIn("period_columns", self.doubts(self.book("가로2.xlsx", **{"2026년": across})))
+        source = core.ExcelSource(self.book("월3.xlsx", 실적=down))
+        self.assertEqual(source.text_value("최신:실적!A,B")[1], "12월 · 실적!B13")  # where it came from, as the sheet names it
+
+    def test_an_html_xls_with_cells_spanning_rows_keeps_its_columns(self):
+        html_table = ("<html><body><table><tr><th>지역</th><th>구분</th><th>인원</th></tr>"
+                      "<tr><td rowspan=2>서울</td><td>남</td><td>10</td></tr><tr><td>여</td><td>12</td></tr>"
+                      "<tr><td rowspan='2'>부산</td><td>남</td><td>7</td></tr><tr><td>여</td><td>9</td></tr>"
+                      "<tr><td colspan=2>합계</td><td>38</td></tr></table></body></html>")
+        path = os.path.join(self.dir, "인원.xls")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html_table)
+        source = core.ExcelSource(path)
+        ws = source.wb.worksheets[0]
+        self.assertEqual([ws.cell(3, c).value for c in (2, 3)], ["여", 12])  # 여 and 12 under 구분 and 인원, not moved left under 지역
+        self.assertEqual(core._merged_value(ws, 3, 1), "서울")  # the region spans its two rows, as Excel shows it
+        self.assertEqual(core._merged_value(ws, 6, 2), "합계")
+        self.assertEqual(sum(ws.cell(r, 3).value for r in range(2, 6)), 38)
+
+    def test_xlsb_and_ods_keep_their_number_formats(self):
+        shown = {}
+        for ext in (".xlsx", ".xlsb", ".ods"):
+            source = core.ExcelSource(os.path.join(OtherFileKinds.FOLDER, "monthly" + ext))
+            shown[ext] = ([cell[1] for cell in source.range_cells("최신1:월별!A,B,C")[0][-1]], source.text_value("해설:월별!A,C")[0])
+        self.assertEqual(shown[".xlsb"], shown[".xlsx"])  # 87.0%, not 0.87 read as a plain number
+        self.assertEqual(shown[".ods"], shown[".xlsx"])
+        self.assertEqual(shown[".ods"][0], ["2026-06", "1,829", "87.0%"])
+
+    def test_names_that_grow_with_their_data_are_read(self):
+        from openpyxl.workbook.defined_name import DefinedName
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "월별 표"
+        ws.append(["월", "매출"])
+        for month, sales in ((1, 120), (2, 135), (3, 150), (4, 171)):
+            ws.append([f"2026-{month:02d}", sales])
+        for name, formula in (("최근매출", "OFFSET('월별 표'!$B$1,COUNTA('월별 표'!$B:$B)-1,0)"), ("매출범위", "OFFSET('월별 표'!$B$2,0,0,COUNTA('월별 표'!$B:$B)-1,1)"),
+                              ("끝까지", "'월별 표'!$B$2:INDEX('월별 표'!$B:$B,COUNTA('월별 표'!$B:$B))"), ("상수", "0.1"), ("다른함수", "SUM('월별 표'!$B:$B)")):
+            wb.defined_names[name] = DefinedName(name, attr_text=formula)
+        path = os.path.join(self.dir, "동적.xlsx")
+        wb.save(path)
+        source = core.ExcelSource(path)
+        self.assertEqual(source.text_value("최근매출")[0], "171")  # the last month, wherever the list ends
+        self.assertEqual(source.locate("매출범위")[1], (2, 2, 2, 5))
+        self.assertEqual(source.locate("끝까지")[1], (2, 2, 2, 5))
+        for name in ("상수", "다른함수"):
+            with self.assertRaises(core.IssueError) as raised:
+                source.locate(name)
+            self.assertEqual(raised.exception.issue.code, "name_not_cells")  # a constant and other formulas are still said to be no cells
+
+
+class KnownLimits(Base):
+    """The limits the v0.1.0 release notes listed, fixed after it."""
+
+    def test_a_format_color_is_read_for_the_section_shown(self):
+        loss = "#,##0;[Red]-#,##0"
+        self.assertEqual(numfmt.format_color(-5, loss), "FF0000")
+        self.assertIsNone(numfmt.format_color(5, loss))
+        self.assertEqual(numfmt.format_color(-5, "#,##0_);[Red](#,##0)"), "FF0000")  # a built-in, which Korean Excel shows its own way
+        self.assertEqual(numfmt.format_color(5, "[Blue]#,##0;[Red]-#,##0"), "0000FF")
+        self.assertEqual(numfmt.format_color(-5, "[Color10]#,##0;[Color3]-#,##0"), "FF0000")
+        self.assertEqual(numfmt.format_color(5, "[Color10]0"), "008000")
+        self.assertEqual(numfmt.format_color(-5, "[파랑]0;[빨강]-0"), "FF0000")
+        self.assertEqual(numfmt.format_color(150, "[Red][>100]0;0"), "FF0000")
+        self.assertIsNone(numfmt.format_color(50, "[Red][>100]0;0"))
+        self.assertIsNone(numfmt.format_color(-5, '0;"[Red]"-0'))  # words in quotes are not a color
+        self.assertIsNone(numfmt.format_color(-5, "0;[White]-0"))  # the template's own color, not white on a white slide
+        self.assertIsNone(numfmt.format_color(-5, "0;[Black]-0"))
+        self.assertIsNone(numfmt.format_color("적자", loss))
+
+    def _colors(self, paragraph):
+        return [(run.text, str(run.font.color.rgb) if run.font.color and run.font.color.type is not None else None) for run in paragraph.runs]
+
+    def test_a_loss_shown_in_red_is_red_on_the_slide_and_only_the_number(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "손익"
+        ws.append(["항목", "금액"])
+        ws.append(["영업이익", -1250])
+        ws.append(["순이익", 830])
+        for row in (2, 3):
+            ws.cell(row, 2).number_format = "#,##0;[Red]-#,##0"
+        path = os.path.join(self.dir, "손익.xlsx")
+        wb.save(path)
+        textbox_runs(self.slide, ["영업이익 {{손익!B2}}원, 순이익 {{손익!B3}}원"], size=20, color=RGBColor(0x20, 0x20, 0x20))
+        table = add_table(self.slide, 2, 2, "{{표:손익!A2:B3}}")
+        _report, out = self.go(path)
+        shapes = out.slides[0].shapes
+        paragraph = shapes[0].text_frame.paragraphs[0]
+        self.assertEqual(paragraph.text, "영업이익 -1,250원, 순이익 830원")
+        self.assertEqual(self._colors(paragraph), [("영업이익 ", "202020"), ("-1,250", "FF0000"), ("원, 순이익 830원", "202020")])
+        self.assertTrue(all(run.font.size == Pt(20) and run.font.bold for run in paragraph.runs))  # the rest of the look is kept
+        cells = shapes[1].table
+        self.assertEqual(self._colors(cells.cell(0, 1).text_frame.paragraphs[0]), [("-1,250", "FF0000")])
+        self.assertEqual(self._colors(cells.cell(1, 1).text_frame.paragraphs[0])[0][0], "830")
+        self.assertNotEqual(self._colors(cells.cell(1, 1).text_frame.paragraphs[0])[0][1], "FF0000")
+        del table
+
+    def test_a_red_value_split_across_runs_and_lines_keeps_its_place(self):
+        paragraph = etree_paragraph(["앞 {{가", "}} 뒤 {{나}}"])
+        values = {"가": core.Shown("-3", "FF0000"), "나": "7"}
+        core.replace_in_paragraph(paragraph, values.get)
+        runs = paragraph.findall(core.A_R)
+        self.assertEqual([r.find(core.A_T).text for r in runs], ["앞 ", "-3", " 뒤 7"])
+        self.assertEqual(runs[1].find(core.A_RPR)[0].tag, core.A + "solidFill")
+        self.assertIsNone(runs[0].find(core.A_RPR))
+
+    def test_placeholders_in_smartart_are_filled_in_its_data_and_its_drawing(self):
+        self.prs.save(self.pptx)
+        patched = os.path.join(self.dir, "smart.pptx")
+        with_smartart(self.pptx, patched, SMART_DATA.format("{0}", "{1}", "{2}", text="{{없는이름}}"), SMART_DRAWING.format(text="{{없는이름}}"))
+        report = core.run(patched, self.xlsx, self.out)
+        self.assertEqual([item.kind for item in report.items if item.kind == "unsupported"], [])
+        self.assertEqual(self.item(report, "요약!B2").value, "1,234,567")
+        self.assertEqual(self.item(report, "없는이름").status, "error")  # a name that is not there is said so once, and left as written
+        with zipfile.ZipFile(self.out) as done:
+            data, drawing = done.read("ppt/diagrams/data1.xml").decode(), done.read("ppt/diagrams/drawing1.xml").decode()
+        for part in (data, drawing):
+            self.assertIn("1,234,567", part)
+            self.assertNotIn("요약!B2", part)
+            self.assertIn("{{없는이름}}", part)
+        self.assertIn('modelId="{0}"', data)  # the rest of the model is as it was
+        Presentation(self.out)  # still opens
+
+    def test_the_drawn_copy_of_a_filled_smartart_is_dropped_so_powerpoint_lays_it_out_again(self):
+        self.prs.save(self.pptx)
+        patched = os.path.join(self.dir, "smart.pptx")
+        linked = SMART_DATA.format("{0}", "{1}", "{2}", text="고정").replace(
+            "</dgm:ptLst>", '</dgm:ptLst><dgm:extLst><a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram">'
+            '<dsp:dataModelExt xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" relId="rId99" minVer="x"/></a:ext></dgm:extLst>')
+        with_smartart(self.pptx, patched, linked, SMART_DRAWING.format(text="고정"))
+        report = core.run(patched, self.xlsx, self.out)
+        self.assertEqual([item.kind for item in report.items if item.kind == "unsupported"], [])
+        with zipfile.ZipFile(self.out) as done:
+            names = done.namelist()
+            data, rels = done.read("ppt/diagrams/data1.xml").decode(), done.read("ppt/slides/_rels/slide1.xml.rels").decode()
+        self.assertIn("매출 1,234,567", data)
+        self.assertNotIn("ppt/diagrams/drawing1.xml", names)
+        self.assertNotIn("diagramDrawing", rels)
+        self.assertNotIn("dataModelExt", data)
+        self.assertNotIn("extLst", data)
+        self.assertIn("diagramData", rels)
+        Presentation(self.out)
+        unchanged = os.path.join(self.dir, "unchanged.pptx")  # nothing to fill: the SmartArt is left exactly as it was
+        with_smartart(self.pptx, unchanged, linked.replace("{{요약!B2}}", "그대로").replace("{{", "").replace("}}", ""), SMART_DRAWING.format(text="고정"))
+        core.run(unchanged, self.xlsx, os.path.join(self.dir, "unchanged_out.pptx"))
+        with zipfile.ZipFile(os.path.join(self.dir, "unchanged_out.pptx")) as done:
+            self.assertIn("ppt/diagrams/drawing1.xml", done.namelist())
+
+    def test_smartart_that_cannot_be_read_is_still_reported(self):
+        self.prs.save(self.pptx)
+        patched = os.path.join(self.dir, "smart.pptx")
+        with_smartart(self.pptx, patched, SMART_DATA.format("{0}", "{1}", "{2}", text="ok"), "<x>{{매출}}</x>")
+        report = core.run(patched, self.xlsx)
+        self.assertEqual([item.key for item in report.items if item.kind == "unsupported"], ["/ppt/diagrams/drawing1.xml"])  # the data was filled, so its drawn copy is the one left
+
+    def test_the_end_of_a_financial_year_is_read_from_the_files_own_words(self):
+        for texts, month in ((["Financial year ending 30 June"], 6), (["Reporting period: July to June"], 6), (["1 July 2024 to 30 June 2025"], 6),
+                             (["Figures are for the year ended 31 March 2025."], 3), (["FY ending Sept. 30"], 9), (["October 2025 to September 2026"], 9),
+                             (["회계연도: 4월~3월"], 3), (["3월 결산법인"], 3), (["회계연도는 7월 1일부터 6월 30일까지"], 6),
+                             (["January to December"], None), (["January to March"], None), (["Year ending 31 December 2024"], None),
+                             (["Data as at 30-Sep-2025, for applications created on or after 01-Jul-2018."], None), (["Year to date"], None),
+                             (["Year ending 30 June", "4월~3월"], None), ([], None)):
+            self.assertEqual(core.fiscal_year_end(texts), month, texts)
+
+    def _fiscal_book(self, name, rows, note):
+        wb = openpyxl.Workbook()
+        wb.active.title = "표"
+        for row in rows:
+            wb.active.append(row)
+        if note:
+            wb.create_sheet("Notes").append([note])
+        path = os.path.join(self.dir, name)
+        wb.save(path)
+        return path
+
+    def _unfinished(self, path, saved):
+        source = core.ExcelSource(path)
+        source.wb.properties.modified = saved
+        series = source._series(source._parse_ref("표!A,B", "x"))
+        return any(issue.code == "latest_unfinished" for issue in series.notes)
+
+    def test_a_financial_year_ending_in_march_is_over_in_april(self):
+        rows = [["Fin. Year", "Items"]] + [[f"{year}-{(year + 1) % 100:02d}", 1000 + year % 7 * 13] for year in range(2018, 2026)]
+        said = self._fiscal_book("march.xlsx", rows, "Financial year: 1 April to 31 March.")
+        silent = self._fiscal_book("silent.xlsx", rows, None)
+        self.assertFalse(self._unfinished(said, dt.datetime(2026, 5, 2)))  # 2025-26 ended on 31 March 2026
+        self.assertTrue(self._unfinished(said, dt.datetime(2026, 3, 20)))
+        self.assertTrue(self._unfinished(silent, dt.datetime(2026, 5, 2)))  # nothing said: June, as before
+
+    def test_a_quarter_of_a_year_starting_in_october_is_placed_where_it_falls(self):
+        rows = [["Quarter", "Claims"]] + [[f"Q{q} FY{y}", 500 + q * 11 + y] for y in (24, 25) for q in range(1, 5)] + [["Q1 FY26", 230]]
+        said = self._fiscal_book("october.xlsx", rows, "Federal fiscal year runs October to September.")
+        silent = self._fiscal_book("silent_q.xlsx", rows, None)
+        self.assertTrue(self._unfinished(said, dt.datetime(2025, 11, 14)))  # Q1 FY26 is October to December 2025
+        self.assertFalse(self._unfinished(said, dt.datetime(2026, 1, 9)))
+        self.assertFalse(self._unfinished(silent, dt.datetime(2025, 11, 14)))  # read from July, it would be over: what the words fix
+        source = core.ExcelSource(said)
+        self.assertIn("Q1 FY26", source.text_value("해설:표!A,B")[0])  # still called as the sheet calls it
+
+    def test_xlsb_and_ods_keep_their_merged_cells(self):
+        folder = OtherFileKinds.FOLDER
+        for ext in (".xlsx", ".xls", ".xlsb", ".ods"):  # each saved by real Excel from the same workbook
+            ws = core.ExcelSource(os.path.join(folder, "monthly" + ext)).wb["지점"]
+            self.assertEqual([str(cells) for cells in ws.merged_cells.ranges], ["D1:E1"], ext)
+            self.assertEqual(ws["D1"].value, "병합 머리글", ext)
+        table = 'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"'
+        content = (f'<office:document-content {table}><office:body><office:spreadsheet><table:table table:name="표">'
+                   '<table:table-row><table:table-cell table:number-rows-spanned="2" table:number-columns-spanned="1"/><table:table-cell table:number-columns-spanned="2"/></table:table-row>'
+                   '<table:table-row><table:covered-table-cell/><table:table-cell/></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>')
+        path = os.path.join(self.dir, "세로.ods")
+        with zipfile.ZipFile(path, "w") as package:
+            package.writestr("content.xml", content)
+        import readers
+        self.assertEqual(readers._ods_formats(path)[1], {"표": [(1, 1, 2, 1), (1, 2, 1, 3)]})  # down two rows, and across two
+
+    def _ledger(self, name, subtotals=True, ages=False):
+        """A street-light ledger: the road merged down over its numbered lines, and a 소계 under each road in the name column, which names nothing else."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "원장"
+        ws["H1"] = "가로등 현황"
+        ws["A3"], ws["D3"], ws["H3"], ws["I3"] = "구 분", "번호", "분전함명", "나이" if ages else "수량"
+        ws["I4"], ws["J4"] = ("나이", "근속") if ages else ("등기구", "등주")
+        row, number = 5, 1
+        for road, lights in (("흥안대로", (104, 90, 80, 70, 60)), ("관악대로", (50, 40, 30)), ("경수대로", (20, 25, 30, 35))):
+            first = row
+            for count in lights:
+                ws.cell(row, 4, number)
+                ws.cell(row, 9, count)
+                ws.cell(row, 10, count // 2)
+                row, number = row + 1, number + 1
+            ws.cell(row, 8, "소  계")
+            ws.cell(row, 9, sum(lights) + (0 if subtotals else 1))
+            ws.cell(row, 10, sum(count // 2 for count in lights))
+            ws.cell(first, 1, road)
+            ws.merge_cells(start_row=first, start_column=1, end_row=row, end_column=3)
+            row += 1
+        ws.cell(row, 8, "총   계")
+        ws.cell(row, 9, 634)
+        path = os.path.join(self.dir, name)
+        wb.save(path)
+        return core.ExcelSource(path)
+
+    def test_a_ledger_named_only_by_merged_roads_is_read_by_road(self):
+        source = self._ledger("원장.xlsx")
+        plan = suggest.plan_report(source)
+        sentences = [item.result for section in plan.sections for item in section.sentences]
+        self.assertIn("가장 큰 항목은 흥안대로(404)이고, 전체 634의 63.7%입니다. 2위 관악대로(120, 18.9%)의 3.4배입니다.", sentences)  # what the sheet's own 소계 lines say
+        self.assertIn("합계(I)", plan.sections[0].sentences[0].key)
+        self.assertEqual(plan.doubts, [])  # each road's lines are added up, so no one line stands for the road
+
+    def test_a_column_the_sheet_does_not_add_up_is_still_counted(self):
+        for source in (self._ledger("나이.xlsx", ages=True, subtotals=False), self._ledger("어긋남.xlsx", subtotals=False)):
+            base = next(b for b in suggest.read_shape(source, "원장").bases if b.spec == "A")
+            self.assertFalse(base.values[0].added_up)  # one 소계 that differs from its lines is enough not to trust it
+
+    def test_a_year_in_an_export_stamp_is_not_the_year_of_months_already_filled(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "visitStat_2021-07-28"  # saved that day, with August to December already counted: last year's figures
+        ws.append(["장소"] + [f"{m}월" for m in range(1, 13)])
+        for place, base in (("가", 100), ("나", 200), ("다", 50)):
+            ws.append([place] + [base + m * 7 for m in range(1, 13)])
+        ws.append(["전 체"] + [350 + m * 21 for m in range(1, 13)])
+        wb.properties.modified = dt.datetime(2021, 7, 28)
+        path = os.path.join(self.dir, "stamp.xlsx")
+        wb.save(path)
+        source = core.ExcelSource(path)
+        source.wb.properties.modified = dt.datetime(2021, 7, 28)
+        note = source.text_value("해설:'visitStat_2021-07-28'!1,5")[0]
+        self.assertTrue(note.startswith("12월 전체 602."), note)  # not 2021년 12월, a month that had not come
+        self.assertNotIn("2021년", note)
+
+    def test_mean_maximum_and_minimum_spaced_out_under_a_level_take_the_mean(self):
+        rows = [["2022년 수질측정 결과(평균)"], [None, None, "유입수질"], ["구  분", None, "BOD"]]
+        for month, mean in ((m, 150 + m * 3) for m in range(1, 13)):
+            rows += [[f"{month}월", "평 균", mean + 0.4], [None, "최 대", mean + 40], [None, "최 소", mean - 40]]  # 평 균 spaced out, as it fills its cell
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "수질"
+        for row in rows:
+            ws.append(row)
+        for top in range(4, 4 + 36, 3):
+            ws.merge_cells(start_row=top, start_column=1, end_row=top + 2, end_column=1)
+        path = os.path.join(self.dir, "수질.xlsx")
+        wb.save(path)
+        plan = suggest.plan_report(core.ExcelSource(path))
+        first = plan.sections[0].sentences[0]
+        self.assertIn("평 균", first.key)
+        self.assertIn("186.4", first.result)  # December's mean, not the mean of its mean, maximum and minimum (186.1)
+
+    def test_a_line_with_no_name_after_a_subtotal_is_not_a_crash(self):
+        ws = openpyxl.Workbook().active
+        lines = [["구분", "항목", "금액"], ["가", "a", 10], ["가", "b", 20], [None, "소계", 30], [None, "c", 5], ["나", "d", 7], ["나", "e", 8], [None, "소계", 15]]
+        for line in lines:
+            ws.append(line)
+        self.assertTrue(suggest._added_up_by_the_sheet(ws, 1, 3, range(1, len(lines) + 1), [1, 2]))  # c, with no name, starts a run of its own; 나 starts another
+        ws.cell(8, 3, 20)
+        self.assertFalse(suggest._added_up_by_the_sheet(ws, 1, 3, range(1, len(lines) + 1), [1, 2]))  # 나's 소계 no longer matches its lines
+
+
+SMART_DATA = ('<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+              '<dgm:ptLst><dgm:pt modelId="{0}" type="doc"><dgm:t><a:bodyPr/><a:p><a:endParaRPr lang="ko-KR"/></a:p></dgm:t></dgm:pt>'
+              '<dgm:pt modelId="{1}"><dgm:t><a:bodyPr/><a:p><a:r><a:rPr lang="ko-KR"/><a:t>매출 {{{{</a:t></a:r><a:r><a:rPr lang="ko-KR"/><a:t>요약!B2}}}}</a:t></a:r></a:p></dgm:t></dgm:pt>'
+              '<dgm:pt modelId="{2}"><dgm:t><a:bodyPr/><a:p><a:r><a:rPr lang="ko-KR"/><a:t>{text}</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst></dgm:dataModel>')
+SMART_DRAWING = ('<dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dsp:spTree>'
+                 '<dsp:sp modelId="{{1}}"><dsp:txBody><a:bodyPr/><a:p><a:r><a:rPr lang="ko-KR"/><a:t>매출 {{{{요약!B2}}}}</a:t></a:r></a:p></dsp:txBody></dsp:sp>'
+                 '<dsp:sp modelId="{{2}}"><dsp:txBody><a:bodyPr/><a:p><a:r><a:rPr lang="ko-KR"/><a:t>{text}</a:t></a:r></a:p></dsp:txBody></dsp:sp></dsp:spTree></dsp:drawing>')
+
+
+def with_smartart(plain, patched, data, drawing=None, slide=1):
+    """Add a SmartArt's data part (and its drawn copy) to a slide, as PowerPoint stores them."""
+    with zipfile.ZipFile(plain) as src, zipfile.ZipFile(patched, "w") as dst:
+        for info in src.infolist():
+            content = src.read(info.filename)
+            if info.filename == "[Content_Types].xml":
+                content = content.replace(b"</Types>", b'<Override PartName="/ppt/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>'
+                                          + (b'<Override PartName="/ppt/diagrams/drawing1.xml" ContentType="application/vnd.ms-office.drawingml.diagramDrawing+xml"/>' if drawing else b"") + b"</Types>")
+            if info.filename == f"ppt/slides/_rels/slide{slide}.xml.rels":
+                content = content.replace(b"</Relationships>", b'<Relationship Id="rId98" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/>'
+                                          + (b'<Relationship Id="rId99" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="../diagrams/drawing1.xml"/>' if drawing else b"") + b"</Relationships>")
+            dst.writestr(info, content)
+        dst.writestr("ppt/diagrams/data1.xml", data)
+        if drawing:
+            dst.writestr("ppt/diagrams/drawing1.xml", drawing)
+
+
+def etree_paragraph(texts):
+    from lxml import etree
+    paragraph = etree.Element(core.A_P)
+    for text in texts:
+        run = etree.SubElement(paragraph, core.A_R)
+        etree.SubElement(run, core.A_T).text = text
+    return paragraph
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ A value that cannot be determined never becomes a blank: its placeholder stays v
 and the problem is reported as an issue.
 """
 
+import calendar
 import copy
 import datetime as dt
 import fnmatch
@@ -42,7 +43,7 @@ class _NoPivotCaches(dict):
 # A pivot table's cache holds every source record, read again for each sheet: one public workbook passed 6 GB here. What the table shows is stored in the sheet's cells,
 # and nothing here ever saves a workbook it has read, so the caches are left unread.
 openpyxl.reader.workbook.WorkbookParser.pivot_caches = property(lambda self: _NoPivotCaches())
-from numfmt import format_value
+from numfmt import format_color, format_value
 
 warnings.filterwarnings("ignore", module="openpyxl")
 
@@ -54,6 +55,8 @@ OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy .xls/.ppt, and also en
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A_P, A_R, A_T, A_BR, A_RPR = A + "p", A + "r", A + "t", A + "br", A + "rPr"
+DSP = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+RT_DIAGRAM_DRAWING = "http://schemas.microsoft.com/office/2007/relationships/diagramDrawing"
 
 PLACEHOLDER = re.compile(r"\{\{\s*(.+?)\s*\}\}", re.S)
 MARKER = re.compile(r"\{\{\s*(table|chart|표|차트)\s*:\s*(.+?)\s*\}\}", re.I | re.S)
@@ -105,6 +108,20 @@ RANK = re.compile(r"\s*(순위값|순위|구성비|topvalue|top|share)\s*(\d*)\s
 RANK_NAMES = {"순위": "name", "top": "name", "순위값": "value", "topvalue": "value", "구성비": "share", "share": "share"}
 TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "전국", "전산업", "total", "grandtotal", "sum", "합"}  # 전국 over the regions, 전산업 over the industries
 SUBTOTAL_WORDS = {"소계", "subtotal"}
+GROUP_TOTAL_WORDS = 4  # 경상 수입 계: a short name before 계 or 소계. A longer line is a sentence that happens to end so
+DYNAMIC_TOKEN = re.compile(r"(?:'(?:[^']|'')+'|[^\s!(),:+\-'\"]+)![$A-Za-z0-9:]+(?=[\s,)+\-]|:[A-Za-z]|$)|[A-Za-z]+(?=\s*\()|\d+|[(),:+\-]")  # a sheet's cells, a function, a whole number, or a mark
+DYNAMIC_MAX_SIDE = 200
+DYNAMIC_MAX_CELLS = 1_048_576
+MONTHS_ONLY_YEAR = 2001  # a year no sheet of months alone is about, only to put them in order; a sentence calls them as the sheet does
+SHEET_FIGURE_LINES = 60  # how far along a month's line a figure is looked for
+MONTHS_ONLY_MIN = 3
+YEARS_ACROSS_LOOK = 40
+SHEET_YEAR = re.compile(r"(?<!\d)((?:19|20)\d\d)(?!\d)(?:\s*년)?")
+SHEET_YEAR_ROWS = 4
+SHEET_YEAR_COLUMNS = 10
+SHEET_YEAR_LENGTH = 60
+NAME_LOOK_RIGHT = 3  # columns to the right of a name that may tell two lines of that name apart
+PERIOD_FILTER = re.compile(r"((?:18|19|20|21)\d\d)(?:\s*년|\s*[-./년]\s*(\d{1,2})\s*월?(?:\s*[-./]\s*(\d{1,2})\s*일?)?)?")  # 2022, 2022년, 2022-05 or 2022년 5월, kept by a condition
 SUBTOTALS_ADD_UP = 0.001  # a grand total this close to the other total lines is their sum, not one more kind of thing
 YEAR_IN_HEADING = re.compile(r"(?:19|20)\d\d(?:\s*[-–/]\s*\d{2,4})?")  # the year a column heading names, as 2024-25 or 2025
 BUDGET_NAME = re.compile(r"예산|목표|계획|\b(?:budget|target|plan)(?:s|ned)?\b", re.I)  # what was planned for a period, set beside what happened in it
@@ -146,7 +163,14 @@ YEAR_FIRST = re.compile(r"((?:19|20)\d\d)\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\
 PERIOD_WORD = {"ko": "기간", "en": "Period"}
 ITEM_WORD = {"ko": "항목", "en": "Item"}
 TRAILING_TOTAL = re.compile(r"\s+(?:total|합계|총계)\s*$", re.I)  # the row under a date heading is the sheet's total, not part of what the dates are called
-FISCAL_YEAR_ENDS = (6, 30)  # the file does not say. March, June and September are all in use; before the second calendar year's middle, a 2025-26 figure cannot be called complete
+FISCAL_YEAR_ENDS = (6, 30)  # when the file does not say. March, June and September are all in use; before the second calendar year's middle, a 2025-26 figure cannot be called complete
+_MONTH_NAME = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+_DAY = r"(?:\d{1,2}(?:st|nd|rd|th)?\s+)?"
+FISCAL_END_WORDS = re.compile(rf"\b(?:year|fy)\s+(?:ending|ended|ends|end|to)\s+(?:on\s+)?{_DAY}{_MONTH_NAME}\b", re.I)  # year ending 30 June, FY ended March 31
+FISCAL_MONTH_SPAN = re.compile(rf"\b{_DAY}{_MONTH_NAME}\b(?:\s+(?:19|20)\d\d)?\s*(?:to|through|until|[-–—~])\s*{_DAY}{_MONTH_NAME}\b", re.I)  # July to June, 1 July 2024 to 30 June 2025
+FISCAL_MONTH_SPAN_KO = re.compile(r"(\d{1,2})\s*월(?:\s*\d{1,2}\s*일)?\s*(?:부터|[~～\-–])\s*(?:익년|다음\s*해|이듬해)?\s*(\d{1,2})\s*월")  # 4월~3월, 7월 1일부터 6월 30일
+FISCAL_END_KO = re.compile(r"(\d{1,2})\s*월\s*(?:말\s*)?결산")  # 3월 결산
+FISCAL_WORD_ROWS = 30  # notes on the year sit at the top of a sheet or under its table
 COUNT_WORD_KO = "건수"
 MIN_HEADING_LENGTH = 2
 OUTER_LEVEL_SHARE = 0.5  # labels merged in from the left on most rows are simply how this table is written
@@ -174,6 +198,16 @@ ERRORS = {"missing_name", "missing_sheet", "bad_ref", "range_for_text", "name_no
           "formula_no_cache", "error_value", "marker_in_text", "marker_wrong_shape", "column_mismatch",
           "merged_resize", "chart_too_small", "chart_unsupported", "latest_bad", "latest_no_dates", "latest_ambiguous",
           "latest_duplicates", "latest_sheets_overlap", "latest_sheets_differ", "cross_no_items", "cross_not_additive", "calc_columns", "calc_no_base"}
+
+
+class Shown(str):
+    """A cell's text with the color its number format draws it in ([Red] for a loss). Any change to the text,
+    such as putting it in a sentence, makes a plain str again, so only the value itself is ever colored."""
+
+    def __new__(cls, text, color):
+        made = super().__new__(cls, text)
+        made.color = color
+        return made
 
 
 class SlideFillError(Exception):
@@ -335,6 +369,12 @@ def _fiscal_quarter(raw):
     return dt.datetime(ending - 1, month, 1) if month <= 12 else dt.datetime(ending, month - 12, 1)
 
 
+def _months_later(date, months):
+    """The same day of the month, months later (or earlier when negative). Quarters start on the 1st, so the day always exists."""
+    index = date.year * 12 + date.month - 1 + months
+    return date.replace(year=index // 12, month=index % 12 + 1)
+
+
 def as_month(raw):
     """The month number of a month written with no year, such as 01월 or Jan, otherwise None."""
     if not isinstance(raw, str):
@@ -382,6 +422,41 @@ def _sheet_words(ws, rows=SHEET_WORD_ROWS, columns=SHEET_WORD_COLUMNS):
             if cell is not None and isinstance(cell.value, str):
                 found.append(cell.value)
     return _votes(found)
+
+
+def fiscal_year_end(texts):
+    """The month a financial year ends in, as the file's own words put it, or None when they say nothing or disagree.
+
+    A span of months counts only when it covers a whole year (July to June). December is the calendar year and says
+    nothing about a 2025-26 year, so it is not taken."""
+    found = set()
+
+    def month(name):
+        return MONTH_NUMBERS[name[:3].lower()]
+
+    def whole_year(start, end):
+        return 1 <= start <= 12 and end == (start + 10) % 12 + 1
+
+    for text in texts:
+        found.update(month(m.group(1)) for m in FISCAL_END_WORDS.finditer(text))
+        found.update(month(m.group(2)) for m in FISCAL_MONTH_SPAN.finditer(text) if whole_year(month(m.group(1)), month(m.group(2))))
+        found.update(int(m.group(2)) for m in FISCAL_MONTH_SPAN_KO.finditer(text) if whole_year(int(m.group(1)), int(m.group(2))))
+        found.update(int(m.group(1)) for m in FISCAL_END_KO.finditer(text) if 1 <= int(m.group(1)) <= 12)
+    found.discard(12)
+    return found.pop() if len(found) == 1 else None
+
+
+def _fiscal_words(ws):
+    """The sheet's name and the words at its top and bottom, where a note on the financial year is written."""
+    cells = getattr(ws, "_cells", {})
+    rows = set(range(1, min(ws.max_row, FISCAL_WORD_ROWS) + 1)) | set(range(max(ws.max_row - FISCAL_WORD_ROWS, 1), ws.max_row + 1))
+    found = [ws.title]
+    for row in sorted(rows):
+        for column in range(1, min(ws.max_column, SHEET_WORD_COLUMNS * 3) + 1):
+            cell = cells.get((row, column))
+            if cell is not None and isinstance(cell.value, str):
+                found.append(cell.value)
+    return found
 
 
 def _votes(texts):
@@ -523,7 +598,7 @@ class Series:
         return self._cell(*self.newest)
 
     def source(self, point):
-        return f"{point.date.date().isoformat()} · {self.cell_text(point)}"
+        return f"{_when(point)} · {self.cell_text(point)}"
 
     def newest_issues(self, source):
         if self.line is None:
@@ -652,6 +727,191 @@ def _parse_aggregate(match):
     if by_row is not None and by_row != way:
         raise ValueError(main)
     return Aggregate(kind, word, tuple(lines), product, tuple(filters), numerator), way, None
+
+
+def _dynamic_area(source, formula):
+    """(sheet, (left, top, right, bottom)) of a name that grows with its data, such as OFFSET(표!$B$2,0,0,COUNTA(표!$B:$B)-1,1)
+    or 표!$B$2:INDEX(표!$B:$B,COUNTA(표!$B:$B)). Only OFFSET, INDEX, COUNTA, COUNT, ROWS and COLUMNS over cells, with whole numbers, + and -; anything else is None."""
+    tokens = DYNAMIC_TOKEN.findall(formula.strip().lstrip("="))
+    if not tokens or "".join(tokens).replace(" ", "") != re.sub(r"\s+", "", formula.strip().lstrip("=")):
+        return None
+    at = [0]
+
+    def peek():
+        return tokens[at[0]] if at[0] < len(tokens) else ""
+
+    def take(expected=None):
+        token = peek()
+        if expected is not None and token.upper() != expected:
+            raise ValueError(formula)
+        at[0] += 1
+        return token
+
+    def area(token):
+        sheet, _mark, cells = token.rpartition("!")
+        ws = source._sheets.get(sheet.strip("'").replace("''", "'").casefold())
+        if ws is None:
+            raise ValueError(sheet)
+        first, _colon, last = cells.replace("$", "").partition(":")
+        left, top = _cell_place(first, ws, True)
+        right, bottom = _cell_place(last or first, ws, False)
+        return ws, (left, top, right, bottom)
+
+    def atom():
+        token = take()
+        if token.isdigit():
+            return int(token)
+        if token == "-":
+            return -atom()
+        if token == "(":
+            value = expression()
+            take(")")
+            return value
+        if "!" in token:
+            value = area(token)
+            if peek() == ":":  # 표!$B$2:INDEX(...): from one corner to the other
+                take()
+                other = atom()
+                (ws, (left, top, _r, _b)), (_ws, (_l, _t, right, bottom)) = value, other
+                return ws, (min(left, other[1][0]), min(top, other[1][1]), max(right, other[1][2]), max(bottom, other[1][3]))
+            return value
+        name = token.upper()
+        take("(")
+        args = [expression()]
+        while peek() == ",":
+            take()
+            args.append(expression())
+        take(")")
+        if name in ("COUNTA", "COUNT"):
+            ws, (left, top, right, bottom) = args[0]
+            bottom = min(bottom, ws.max_row)
+            cells = (ws.cell(row, column).value for row in range(top, bottom + 1) for column in range(left, right + 1))
+            return sum(raw not in (None, "") and (name == "COUNTA" or (isinstance(raw, (int, float)) and not isinstance(raw, bool))) for raw in cells)
+        if name in ("ROWS", "COLUMNS"):
+            _ws, (left, top, right, bottom) = args[0]
+            return bottom - top + 1 if name == "ROWS" else right - left + 1
+        if name == "OFFSET" and 3 <= len(args) <= 5:
+            ws, (left, top, right, bottom) = args[0]
+            down, across = args[1], args[2]
+            height = args[3] if len(args) > 3 else bottom - top + 1
+            width = args[4] if len(args) > 4 else right - left + 1
+            if height < 1 or width < 1 or top + down < 1 or left + across < 1:
+                raise ValueError(formula)
+            return ws, (left + across, top + down, left + across + width - 1, top + down + height - 1)
+        if name == "INDEX" and 2 <= len(args) <= 3:
+            ws, (left, top, right, bottom) = args[0]
+            row, column = args[1], args[2] if len(args) > 2 else 1
+            if right == left and len(args) == 2:
+                column = 1
+            if row < 1 or column < 1:
+                raise ValueError(formula)
+            return ws, (left + column - 1, top + row - 1, left + column - 1, top + row - 1)
+        raise ValueError(name)
+
+    def expression():
+        value = atom()
+        while peek() in ("+", "-"):
+            sign = take()
+            other = atom()
+            if not isinstance(value, int) or not isinstance(other, int):
+                raise ValueError(formula)
+            value = value + other if sign == "+" else value - other
+        return value
+
+    try:
+        found = expression()
+    except (ValueError, IndexError, TypeError):
+        return None
+    if at[0] != len(tokens) or not isinstance(found, tuple):
+        return None
+    ws, (left, top, right, bottom) = found
+    return (ws, (left, top, right, bottom)) if right - left < DYNAMIC_MAX_SIDE and bottom - top < DYNAMIC_MAX_CELLS else None
+
+
+def _cell_place(text, ws, start):
+    """(column, row) of A1, or of a whole column A (its first row when start, else its last filled row)."""
+    match = re.fullmatch(r"([A-Za-z]{1,3})(\d*)", text)
+    if not match:
+        raise ValueError(text)
+    column = column_index_from_string(match.group(1).upper())
+    return column, int(match.group(2)) if match.group(2) else (1 if start else ws.max_row)
+
+
+def _years_across(ws, ref, first):
+    """Years on another line, before the months: 2017년 to 2025년 down the first column with 1월 to 12월 across the top. The years are the periods and the months their parts."""
+    end = ws.max_row if ref.by_row else ws.max_column  # how far the lines beside the date line run
+    for position in range(1, first):  # the label column before months laid across, or the heading rows above months laid down
+        cells = [ws.cell(*ref.at(position, line)).value for line in range(ref.date + 1, min(end, ref.date + YEARS_ACROSS_LOOK) + 1)]
+        if sum(as_year(cell) is not None for cell in cells if cell not in (None, "")) >= 2:
+            return True
+    return False
+
+
+def _when(point):
+    """A point's period for the place a figure came from: as the sheet names it when a date cannot (12월, 2024-25), else the date."""
+    return point.label or point.date.date().isoformat()
+
+
+def _months_in_order(months):
+    """{position: month} that runs 1월, 2월, 3월 down a line, each month once: a year of months. 3월 and 1월 here and there are not."""
+    if len(months) < MONTHS_ONLY_MIN:
+        return False
+    order = [months[position] for position in sorted(months)]
+    return len(set(order)) == len(order) and order == sorted(order)
+
+
+def _names_told_apart(ws, ref, labels, specs, order, places):
+    """{old key: fuller name} for items whose name is written on more than one line: 2,001이상 under 일반용 and under 대중탕용.
+    The words that tell them apart come from another column on the same lines, the label columns first, then the nearest to the left, then to the right."""
+    by_name = {}
+    for key in order:
+        by_name.setdefault(key if isinstance(key, str) else key[0], []).append(key)
+    repeated = [keys for keys in by_name.values() if len(keys) > 1]
+    if not repeated:
+        return {}
+    figure_lines = {line for spec in specs for line in (spec.lines if isinstance(spec, Aggregate) else [spec])}
+    first_label = min(labels)
+    nearest = sorted((line for line in range(1, first_label + NAME_LOOK_RIGHT + 1) if line not in figure_lines and line not in labels),
+                     key=lambda line: (line > first_label, abs(line - first_label)))
+    taken = {key if isinstance(key, str) else key[0] for key in order}
+    renamed = {}
+    for keys in repeated:
+        rows = [places.get(key) for key in keys]
+        if None in rows:
+            continue
+        for line in [line for line in reversed(labels[:-1])] + nearest:
+            words = []
+            for row in rows:
+                raw = _merged_value(ws, *ref.at(row, line))
+                words.append(_clean_label(raw) if isinstance(raw, str) and raw.strip() and as_number(raw) is None else "")
+            if all(words) and len(set(words)) == len(words):
+                name = keys[0] if isinstance(keys[0], str) else keys[0][0]
+                fuller = [f"{word} {name}" if line < first_label else f"{name} ({word})" for word in words]
+                if not taken & set(fuller):
+                    renamed.update(zip(keys, fuller))
+                break
+    return renamed
+
+
+def _filtered_period(ref, lang):
+    """The period a condition such as B=2022-05 keeps a comparison to, in words: 2022년 5월, or May 2022. None when no condition is a period."""
+    for value in ref.values:
+        for _line, text in (value.filters if isinstance(value, Aggregate) else ()):
+            span = YEAR_SPAN.fullmatch(str(text).strip())
+            if span and (int(span.group(1)) + 1) % 100 == int(span.group(2)) % 100:
+                return str(text).strip()  # 2025-26, a financial year, as the sheet writes it
+            match = PERIOD_FILTER.fullmatch(str(text).strip())
+            if not match:
+                continue
+            year, month, day = (int(part) if part else None for part in match.groups())
+            if month is None:
+                return f"{year}년" if lang == "ko" else str(year)
+            if not 1 <= month <= 12:
+                return None
+            if day is None:
+                return f"{year}년 {month}월" if lang == "ko" else f"{facts.MONTHS[month - 1]} {year}"
+            return f"{year}년 {month}월 {day}일" if lang == "ko" else f"{day} {facts.MONTHS[month - 1]} {year}"
+    return None
 
 
 def _aggregate_name(spec, names):
@@ -1022,8 +1282,11 @@ def total_word_kind(value):
     if not isinstance(value, str):
         return None
     word = "".join(value.split()).casefold()
-    if word in SUBTOTAL_WORDS:
+    last = value.split()[-1].casefold() if value.split() else ""
+    if word in SUBTOTAL_WORDS or (last in SUBTOTAL_WORDS and len(value.split()) <= GROUP_TOTAL_WORDS):  # 서울 소계
         return "subtotal"
+    if last == "계" and len(value.split()) <= GROUP_TOTAL_WORDS:  # 수입 계 and 지출 계, the total of each part of a statement. 회계 and 생계 run the 계 on
+        return "total"
     if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계", "전체")):  # 공원관리사업소 전체 is the whole office
         return "total"
     if ":" in value and TOTAL_ROW.match(value.rpartition(":")[2].strip()):  # Administered Income: Total administered income, a statement's heading before its line
@@ -1106,7 +1369,21 @@ class ExcelSource:
         for ws in self.wb.worksheets:  # nobody can see the space at the end of a sheet's name when typing it
             self._sheets.setdefault(ws.title.strip().casefold(), ws)
         self._dated = {}
+        self._months_only = set()  # date lines read as months with no year: their points are called as the sheet writes them
         self._made = {}
+        self._fiscal_end = None
+
+    def fiscal_end(self, year):
+        """The last day of the financial year that ends in this calendar year: as the workbook's words say, else the usual guess."""
+        if self._fiscal_end is None:
+            self._fiscal_end = fiscal_year_end([text for ws in self.wb.worksheets for text in _fiscal_words(ws)]) or 0
+        month = self._fiscal_end or FISCAL_YEAR_ENDS[0]
+        return dt.date(year, month, calendar.monthrange(year, month)[1])
+
+    def _fiscal_quarter_shift(self):
+        """Months to move a fiscal quarter by, from the July start it is read with to the start the workbook gives."""
+        self.fiscal_end(2001)
+        return (self._fiscal_end - FISCAL_YEAR_ENDS[0]) if self._fiscal_end else 0
 
     def _load(self, data_only):
         try:
@@ -1170,7 +1447,12 @@ class ExcelSource:
 
     def _locate_defined(self, key, defined):
         if defined.type != "RANGE":
-            raise IssueError("name_not_cells", name=key)  # a constant or a formula such as OFFSET
+            area = _dynamic_area(self, defined.attr_text or "")
+            if area is None:
+                raise IssueError("name_not_cells", name=key)  # a constant, or a formula other than OFFSET and INDEX over counts
+            ws, (left, top, right, bottom) = area
+            coord = f"{get_column_letter(left)}{top}" + (f":{get_column_letter(right)}{bottom}" if (left, top) != (right, bottom) else "")
+            return ws, (left, top, right, bottom), f"{ws.title}!{coord}"
         destinations = list(defined.destinations)
         if len(destinations) != 1:
             raise IssueError("multi_area", name=key)
@@ -1216,6 +1498,9 @@ class ExcelSource:
             return None, "", "General", []
         fmt = self._cell_format(cell)
         text, exact = format_value(raw, fmt, self.wb.epoch)
+        color = format_color(raw, fmt) if exact else None
+        if color:
+            text = Shown(text, color)
         issues = [] if exact else [Issue("format_fallback", {"cell": address, "format": fmt})]
         return raw, text, fmt, issues
 
@@ -1296,6 +1581,16 @@ class ExcelSource:
                 year = self._year_above(ws, ref, position)
                 if year is not None:
                     dates[position] = year.replace(month=month)
+            alone = {position: month for position, month in months.items() if position not in dates}
+            if not dates and _months_in_order(alone) and not _years_across(ws, ref, min(alone)):
+                # 1월 to 12월 with no year over them: the year the sheet's title or name gives, or else the months as the sheet writes them
+                year = self._sheet_year(ws)
+                if year is not None and any(dt.date(year.year, month, 1) > self._as_of() and self._line_has_figure(ws, ref, position) for position, month in alone.items()):
+                    year = None  # tourStat..._2021-07-28 saved that day with August to December filled: the name is when it was exported, not the year of its months
+                for position, month in alone.items():
+                    dates[position] = (year or dt.datetime(MONTHS_ONLY_YEAR, 1, 1)).replace(month=month)
+                if year is None:
+                    self._months_only.add(cache)
             if len(set(years.values())) >= 2 and len(years) > len(dates):
                 dates.update(years)
             self._dated[cache] = [(dates[position], position) for position in sorted(dates)]
@@ -1342,6 +1637,25 @@ class ExcelSource:
 
     def _date_header(self, ws, ref, top):
         return " ".join(self._header(ws, ref, top, line) for line in (ref.date_parts or (ref.date,)))
+
+    @staticmethod
+    def _line_has_figure(ws, ref, position):
+        """True when a date's row (or column) holds a number anywhere along it."""
+        size = ws.max_row if ref.by_row else ws.max_column
+        return any(line != ref.date and as_number(ws.cell(*ref.at(position, line)).value) is not None for line in range(1, min(size, SHEET_FIGURE_LINES) + 1))
+
+    @staticmethod
+    def _sheet_year(ws):
+        """The one year a sheet's title rows or its name give, such as 2025년 월별 실적 or 2025 Sales: what months with no year of their own belong to. None when there is none, or more than one."""
+        found = set()
+        for row in range(1, min(ws.max_row, SHEET_YEAR_ROWS) + 1):
+            for column in range(1, min(ws.max_column, SHEET_YEAR_COLUMNS) + 1):
+                raw = ws.cell(row, column).value
+                if isinstance(raw, str) and len(raw) <= SHEET_YEAR_LENGTH:
+                    found |= {int(year) for year in SHEET_YEAR.findall(raw)}
+        if not found:
+            found = {int(year) for year in SHEET_YEAR.findall(ws.title)}
+        return dt.datetime(found.pop(), 1, 1) if len(found) == 1 else None
 
     @staticmethod
     def _year_above(ws, ref, position):
@@ -1460,16 +1774,19 @@ class ExcelSource:
             return [Issue("latest_partial_year", {"date": points[-1].date.strftime("%Y-%m"), "months": months})]
         as_of = self._as_of()
         if ws is not None and not ref.date_parts and self._fiscal_years(ws, ref):  # 2025-26 is read as 2026, and it is over long before 2026 is
-            if as_of >= dt.date(points[-1].date.year, *FISCAL_YEAR_ENDS):
+            if as_of >= self.fiscal_end(points[-1].date.year):
                 return []
             return [self._unfinished_issue(points, as_of)]
+        if ws is not None and self._in_fiscal_quarters(points, ref) and self._fiscal_quarter_shift():  # Q1 FY24 was read as starting in July
+            shift = self._fiscal_quarter_shift()
+            points = [replace(point, date=_months_later(point.date, shift)) for point in points]
         # 학년도 2026 is not the calendar year 2026, so a calendar cannot say it is unfinished.
         if not SCHOOL_YEAR.search(date_header) and facts.unfinished(points, as_of):
             return [self._unfinished_issue(points, as_of)]
         return []
 
     def _unfinished_issue(self, points, as_of):
-        params = {"date": points[-1].date.date().isoformat(), "saved": as_of.isoformat()}
+        params = {"date": _when(points[-1]), "saved": as_of.isoformat()}
         stated = self._stated_as_of()
         # The date the file itself gives says more than the day it was saved, if it falls where it could: another date in a note must not move the period.
         if stated and stated <= as_of and len(points) >= 2 and stated > points[-2].date.date():
@@ -1483,10 +1800,17 @@ class ExcelSource:
             return facts.plain_number
         return lambda value: format_value(value, fmt, self.wb.epoch)[0]
 
+    @staticmethod
+    def _day(ref, i, position, date):
+        """A row's date for the place a figure came from: 12월 as the sheet writes it when the months have no year, else the date."""
+        if date.year == MONTHS_ONLY_YEAR:
+            return " ".join(str(ref.sheets[i].cell(*ref.at(position, ref.date)).value).split())
+        return date.date().isoformat()
+
     def _latest_date_text(self, ref):
         """{{최신:시트!A+B}}: the newest date of a date split across cells."""
         date, i, position = self._latest_rows(ref)[-1]
-        return self._date_cell(ref, i, position)[1], f"{date.date().isoformat()} · {ref.sheets[i].title}!{_line_name(ref, ref.date)}", self._row_notes(ref, date)
+        return self._date_cell(ref, i, position)[1], f"{self._day(ref, i, position, date)} · {ref.sheets[i].title}!{_line_name(ref, ref.date)}", self._row_notes(ref, date)
 
     def _fully_filled(self, rows, ref):
         """The rows filled as a row of this sheet usually is. Asked only for the date, there is no column to judge by, and a month ahead with only its target written must not pass for the latest."""
@@ -1512,7 +1836,7 @@ class ExcelSource:
         row, column = ref.at(position, line)
         cell = f"{ref.sheets[i].title}!{get_column_letter(column)}{row}"
         # The date goes first: it is how you spot an old workbook, and the list may clip the end of this text.
-        return ref.sheets[i], row, column, f"{newest.date().isoformat()} · {cell}", self._row_notes(ref, newest)
+        return ref.sheets[i], row, column, f"{self._day(ref, i, position, newest)} · {cell}", self._row_notes(ref, newest)
 
     def _header(self, ws, ref, top, line):
         """The nearest filled cell before the first data row or column, or the line's name when the sheet has no header."""
@@ -1588,7 +1912,7 @@ class ExcelSource:
                 issues.extend(cell_issues)
             table.append(line_cells)
         letters = ",".join(_line_name(ref, line) for line in lines)
-        first, last = picked[0][0].date().isoformat(), picked[-1][0].date().isoformat()
+        first, last = self._day(ref, picked[0][1], picked[0][2], picked[0][0]), self._day(ref, picked[-1][1], picked[-1][2], picked[-1][0])
         dates = last if first == last else f"{first} ~ {last}"
         return table, f"{dates} · {_sheet_names(ref)}!{letters}", issues
 
@@ -1629,7 +1953,7 @@ class ExcelSource:
         show = found.show(self)
         for point in picked:
             table.append([self._date_cell(ref, point.sheet, point.row), (point.value, show(point.value), "General")])
-        first, last = picked[0].date.date().isoformat(), picked[-1].date.date().isoformat()
+        first, last = _when(picked[0]), _when(picked[-1])
         dates = last if first == last else f"{first} ~ {last}"
         return table, f"{dates} · {_sheet_names(ref)}!{_line_name(ref, ref.date)},{ref.values[0].word}", issues
 
@@ -1678,7 +2002,7 @@ class ExcelSource:
         if unread:
             notes.append(Issue("figures_not_read", {"count": len(unread), "text": str(unread[-1]).strip()}))
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
-            notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
+            notes.append(Issue("latest_zero", {"date": _when(points[-1])}))
         newest = rows[-1]
         top_ws = ref.sheets[rows[0][1]]
         top = self._dated_rows(top_ws, ref)[0][1]
@@ -1713,9 +2037,18 @@ class ExcelSource:
         if self._fiscal_years(ref.sheets[points[0].sheet], ref):
             return [replace(point, label=f"{point.date.year - 1}-{point.date.year % 100:02d}") for point in points]
         raws = [ref.sheets[point.sheet].cell(*ref.at(point.row, ref.date)).value for point in points]
-        if all(isinstance(raw, str) and _fiscal_quarter(DATE_MARK.sub("", raw.strip())) for raw in raws):
+        if any((ws.title, ref.by_row, ref.date, ref.start, ref.end, ref.date_parts) in self._months_only for ws in ref.sheets):
+            return [replace(point, label=" ".join(str(raw).split())) for point, raw in zip(points, raws)]  # 12월, not December of a year no one wrote
+        if self._in_fiscal_quarters(points, ref):
             return [replace(point, label=" ".join(raw.split())) for point, raw in zip(points, raws)]
         return points
+
+    def _in_fiscal_quarters(self, points, ref):
+        """True when every point is a quarter of a financial year, such as Q1 FY24."""
+        if not points or ref.date_parts:
+            return False
+        raws = [ref.sheets[point.sheet].cell(*ref.at(point.row, ref.date)).value for point in points]
+        return all(isinstance(raw, str) and _fiscal_quarter(DATE_MARK.sub("", raw.strip())) for raw in raws)
 
     def _summed_series(self, ref):
         """Rows added up per calendar day: the person asked for this by writing 합계( ) or 건수( ). Nothing is summed unasked."""
@@ -1763,7 +2096,7 @@ class ExcelSource:
         found = Series(ref, points, (newest.sheet, newest.row), None if spec.kind in ("count", "rate") or spec.product else spec.lines[0], name, [])
         found.notes = self._period_issues(points, self._date_header(top_ws, ref, top), top_ws, ref) + _group_notes(days, groups)
         if len(points) >= 3 and points[-1].value == 0 and points[-2].value != 0:
-            found.notes.append(Issue("latest_zero", {"date": points[-1].date.date().isoformat()}))
+            found.notes.append(Issue("latest_zero", {"date": _when(points[-1])}))
         found.percent = spec.kind == "rate"
         first_fmt = self._cell_format(top_ws.cell(*ref.at(top, spec.lines[0]))) if spec.kind in ("sum", "mean") and spec.lines else ""
         found.rate = spec.kind == "rate" or (spec.kind != "count" and self._is_rate_series(top_ws, ref, top, spec.lines[0], name, first_fmt))
@@ -1891,11 +2224,11 @@ class ExcelSource:
             return None, found.newest_cell(), issues
         newest = points[-1]
         issues = found.notes + issues
-        when = newest.date.date().isoformat()
+        when = _when(newest)
         cell = found.cell_text(newest)
         if name in ("peak", "low"):
             top = facts.extreme(points, int(count or 30), highest=name == "peak")
-            return self._date_cell(ref, top.sheet, top.row)[1], f"{top.date.date().isoformat()} · {found.cell_text(top)}", issues
+            return self._date_cell(ref, top.sheet, top.row)[1], f"{_when(top)} · {found.cell_text(top)}", issues
         if name in ("읽는법", "reading"):
             note, read, _pack = self._series_words(found, "ko" if name == "읽는법" else "en")
             read = [fact for fact in read if fact.text not in note] or read  # a rate's sentence already holds its change, and the slide shows both
@@ -1907,11 +2240,11 @@ class ExcelSource:
         if name == "avg":
             size = int(count or 7)
             base = facts.mean_before(points, size) if size >= 1 else None
-            against = f"{points[-size - 1].date.date().isoformat()} ~ {points[-2].date.date().isoformat()}" if base is not None else ""
+            against = f"{_when(points[-size - 1])} ~ {_when(points[-2])}" if base is not None else ""
         else:
             before = facts.previous(points) if name == "prev" else facts.week_ago(points)
             base = before.value if before else None
-            against = before.date.date().isoformat() if before else ""
+            against = _when(before) if before else ""
         if found.rate and base is not None:
             lang = "ko" if HANGUL.search(word) else "en"
             return facts.points_text(newest.value - base, lang, found.scale), f"{when} ↔ {against} · {cell}", issues
@@ -1978,6 +2311,12 @@ class ExcelSource:
                 counts[key] = [int(b is not None) for b in numbers]
                 order.append(key)
         order = [key for key in order if items[key][-1] is not None]
+        named = _names_told_apart(ws, ref, labels, specs, order, places)
+        if named:  # 2,001이상 of 일반용 and of 대중탕용: one name for two rates reads as one
+            items = {named.get(key, key): numbers for key, numbers in items.items()}
+            counts = {named.get(key, key): numbers for key, numbers in counts.items()}
+            places = {named.get(key, key): position for key, position in places.items()}
+            order = [named.get(key, key) for key in order]
         for key in order:  # a mean or a rate is worked out once every row of the item is in
             items[key] = [value / count if value is not None and isinstance(spec, Aggregate) and spec.kind in ("mean", "rate") else value
                           for value, count, spec in zip(items[key], counts[key], specs)]
@@ -2059,6 +2398,8 @@ class ExcelSource:
                 if matching or abs(stated[-1] - added) <= abs(stated[-1]) * TOTAL_TOLERANCE:
                     total = stated[-1]
                     has_total = True
+                elif whole_lines:  # 수입 계 and 지출 계: no one line is the sum of everything listed, and the sentences give each total line instead
+                    total = None
                 else:
                     issues.append(Issue("cross_total_differs", {"stated": facts.plain_number(stated[-1]), "added": facts.plain_number(added)}))
                     total = None
@@ -2110,6 +2451,9 @@ class ExcelSource:
         lang = "ko" if name in ("읽는법", "해설") else "en"
         if name in ("읽는법", "reading"):
             text = " ".join(fact.text for fact in facts.item_readings(found.items, found.show, lang, found.total, found.additive, found.before_total, limit=5, stated=found.stated, rate=found.rate, scale=found.scale, basis=found.basis, wholes=found.wholes))
+            period = _filtered_period(ref, lang)
+            if period and text:  # items of one month under a sentence about one day: without it, 22 of 36 reads as the whole survey
+                text = f"{period} 기준, {text}" if lang == "ko" else f"In {period}, {text[0].lower() + text[1:] if text.startswith('The ') else text}"
         else:
             text = facts.item_sentence(found.items, found.label, found.show, lang, found.total, found.additive, found.before_total, found.stated, found.rate, found.scale, found.basis, found.wholes)
         return text, found.source, found.issues
@@ -2186,7 +2530,7 @@ class ExcelSource:
         lang = facts.detect_language(words + [found.header])
         note, read, pack = self._series_words(found, lang)
         pack = _with_sheet(pack, ref, lang, found.label, _period_of(pack, found.label))
-        source = f"{newest.date.date().isoformat()} · {found.cell_text(newest)}"
+        source = f"{_when(newest)} · {found.cell_text(newest)}"
         fallback = " ".join([note] + [fact.text for fact in read if fact.text not in note])  # a rate's sentence already holds its readings
         request = InsightRequest(key, lang, pack, facts.fingerprint(pack, lang), fallback, source)
         return request, source, found.notes + issues
@@ -2292,31 +2636,75 @@ def replace_in_paragraph(paragraph, resolve):
     for runs in list(_run_groups(paragraph)):
         texts = [r.find(A_T).text or "" for r in runs]
         joined = "".join(texts)
+        sizes = [len(text) for text in texts]  # the original lengths: matches are found in the joined original text
         replaced = {}
-        emptied = set()
+        colored = {}  # run -> [start, end, color] of values whose format colors them, in the run's new text
         for match in reversed(list(PLACEHOLDER.finditer(joined))):
             new = resolve(match.group(1))
             if new is None:
                 continue
             start, end = match.span()
             pos = 0
-            for i, text in enumerate(texts):
-                run_start, run_end = pos, pos + len(text)
+            for i, size in enumerate(sizes):
+                run_start, run_end = pos, pos + size
                 pos = run_end
                 if run_end <= start or run_start >= end:
                     continue
-                left = text[:max(start - run_start, 0)]
-                right = text[max(end - run_start, 0):] if end < run_end else ""
+                text = texts[i]
+                cut_from, cut_to = max(start - run_start, 0), min(end - run_start, size)  # later matches were replaced first, so this part of the run is still as it was
                 middle = new if run_start <= start < run_end else ""
-                texts[i] = left + middle + right
+                texts[i] = text[:cut_from] + middle + text[cut_to:]
+                shift = len(middle) - (cut_to - cut_from)
+                for span in colored.get(i, []):
+                    if span[0] >= cut_to:
+                        span[0] += shift
+                        span[1] += shift
+                if middle and getattr(new, "color", None):
+                    colored.setdefault(i, []).append([cut_from, cut_from + len(middle), new.color])
                 replaced[i] = True
-                if not texts[i]:
-                    emptied.add(i)
         for i in replaced:
-            if i in emptied:
+            if not texts[i]:
                 paragraph.remove(runs[i])
+            elif i in colored:
+                _write_colored_run(runs[i], texts[i], sorted(colored[i]))
             else:
                 _write_run(runs[i], texts[i])
+
+
+def _write_colored_run(run, text, spans):
+    """Split a run so each colored value gets its own run with that color, and the words around it keep theirs."""
+    pieces, at = [], 0
+    for start, end, color in spans:
+        pieces += [(text[at:start], None), (text[start:end], color)]
+        at = end
+    pieces.append((text[at:], None))
+    for piece, color in [p for p in pieces if p[0]]:
+        made = copy.deepcopy(run)
+        if color:
+            set_run_color(made, color)
+        run.addprevious(made)
+        _write_run(made, piece)  # line breaks it adds go right after it, so still before the original run
+    run.getparent().remove(run)
+
+
+FILLS = {A + name for name in ("noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill")}
+
+
+def set_run_color(run, color):
+    """Give a run a solid text color, in the place the schema keeps it: after a:ln, before effects and fonts."""
+    rpr = run.find(A_RPR)
+    if rpr is None:
+        rpr = etree.Element(A_RPR)
+        run.insert(0, rpr)
+    for fill in [child for child in rpr if child.tag in FILLS]:
+        rpr.remove(fill)
+    solid = etree.Element(A + "solidFill")
+    etree.SubElement(solid, A + "srgbClr", val=color)
+    line = rpr.find(A + "ln")
+    if line is not None:
+        line.addnext(solid)
+    else:
+        rpr.insert(0, solid)
 
 
 def _iter_shapes(shapes, in_group=False):
@@ -2358,6 +2746,8 @@ def set_cell_text(tc, text):
         else:
             paragraph.append(run)
         etree.SubElement(run, A_T)
+    if getattr(text, "color", None):
+        set_run_color(run, text.color)
     _write_run(run, text)
 
 
@@ -2622,6 +3012,63 @@ class _Run:
             if paragraph not in self.filled_paragraphs:
                 replace_in_paragraph(paragraph, resolve)
 
+    def fill_slide_diagrams(self, slide_part, where):
+        """SmartArt keeps its words in a data part, and PowerPoint draws it from a drawn copy sized for the words
+        it had: a long value would spill out of its box. So once a value goes into the data, the drawn copy is
+        dropped, and PowerPoint lays the SmartArt out again from the data when it opens the report
+        (tools/smartart_check.ps1). A drawn copy that cannot be matched to its data is filled the same way instead."""
+        parts = _diagram_parts(slide_part)
+        for data in [p for p in parts if str(p.partname).startswith("/ppt/diagrams/data")]:
+            root = self.fill_diagram_text(data, where)
+            if root is None:
+                continue
+            for ext in root.iter(f"{{{DSP}}}dataModelExt"):
+                rel = slide_part.rels.get(ext.get("relId") or "")
+                if rel is None or rel.is_external or rel.reltype != RT_DIAGRAM_DRAWING:
+                    continue
+                self.done_parts.add(rel.target_part)
+                slide_part.rels.pop(ext.get("relId"))
+                holder = ext.getparent()  # <a:ext uri=...>; the list it sits in goes too when it is left empty
+                listing = holder.getparent()
+                listing.remove(holder)
+                if len(listing) == 0:
+                    listing.getparent().remove(listing)
+            if not isinstance(data, XmlPart):
+                data._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+        for drawing in [p for p in parts if str(p.partname).startswith("/ppt/diagrams/drawing") and p not in self.done_parts]:
+            root = self.fill_diagram_text(drawing, where)
+            if root is not None and not isinstance(drawing, XmlPart):
+                drawing._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    def fill_diagram_text(self, part, where):
+        """Fill a SmartArt part's paragraphs. Returns its XML when a value went in, else None."""
+        if part in self.done_parts:
+            return None
+        if isinstance(part, XmlPart):
+            root = part._element
+        else:
+            raw = part.blob
+            if not PLACEHOLDER.search(raw.decode("utf-8", "ignore")):
+                return None
+            try:
+                root = etree.fromstring(raw, etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False))
+            except etree.XMLSyntaxError:
+                return None  # left for flag_unreachable to report
+        if any(PLACEHOLDER.search(text) for text in root.xpath("//text()[not(parent::a:t)]", namespaces={"a": A[1:-1]})):
+            return None  # a placeholder outside the text runs: not a place a value can go, so it is reported, not filled
+        self.done_parts.add(part)
+        resolve, filled = self.resolve_text(where), []
+
+        def counted(key):
+            new = resolve(key)
+            if new is not None:
+                filled.append(key)
+            return new
+
+        for paragraph in root.iter(A_P):
+            replace_in_paragraph(paragraph, counted)
+        return root if filled else None
+
     def fill_marked_shape(self, shape, where, in_group):
         element = _alt_text_element(shape)
         descr = element.get("descr") if element is not None else None
@@ -2674,6 +3121,7 @@ class _Run:
         self.fill_part_text(slide.part, where)
         for part in charts:
             self.fill_part_text(part, where)
+        self.fill_slide_diagrams(slide.part, where)
         if slide.has_notes_slide:
             self.fill_part_text(slide.notes_slide.part, ("notes", number))
 
@@ -2687,16 +3135,19 @@ class _Run:
         self.flag_unreachable()
 
     def flag_unreachable(self):
-        """Placeholders in parts we do not edit, such as SmartArt, are reported rather than silently left."""
+        """Placeholders in parts we do not edit, such as SmartArt we could not read, are reported rather than silently left."""
+        left = []
         for part in self.prs.part.package.iter_parts():
             name = str(part.partname)
             if part in self.done_parts or not name.startswith("/ppt/") or not name.endswith(".xml"):
                 continue
             if isinstance(part, XmlPart) and not name.startswith(("/ppt/diagrams/", "/ppt/charts/")):
                 continue
-            if name.startswith("/ppt/diagrams/drawing"):  # PowerPoint's drawn copy of the SmartArt beside it, not a second place to fix
-                continue
-            if not PLACEHOLDER.search(part.blob.decode("utf-8", "ignore")):
+            if PLACEHOLDER.search(part.blob.decode("utf-8", "ignore")):
+                left.append((part, name))
+        data_left = any(name.startswith("/ppt/diagrams/data") for _part, name in left)
+        for part, name in left:
+            if data_left and name.startswith("/ppt/diagrams/drawing"):  # PowerPoint's drawn copy of the SmartArt beside it, not a second place to fix
                 continue
             item = self.item("unsupported", name, ("part", name))
             self.add_issues(item, [Issue("unsupported_location", {"part": name, "slide": self.slide_holding(part)})])
@@ -2707,6 +3158,22 @@ class _Run:
             if any(not rel.is_external and rel.target_part is part for rel in slide.part.rels.values()):
                 return number
         return "?"
+
+
+def _diagram_parts(slide_part):
+    """A slide's SmartArt data parts and their drawn copies. The drawing may hang from the slide or from the data part."""
+    found, todo = [], [slide_part]
+    while todo:
+        part = todo.pop()
+        for rel in part.rels.values():
+            if rel.is_external:
+                continue
+            target = rel.target_part
+            name = str(target.partname)
+            if name.startswith(("/ppt/diagrams/data", "/ppt/diagrams/drawing")) and target not in found:
+                found.append(target)
+                todo.append(target)
+    return found
 
 
 def _chart_error_as_warning(issue):

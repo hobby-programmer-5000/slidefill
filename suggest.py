@@ -47,10 +47,11 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total", "people_across_kinds")
 PERIOD_COLUMNS_MIN = 4
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
+MEAN_ROW = re.compile(r"평균|평균값|산술평균|mean|average|avg\.?", re.I)
 LEVEL_MIN_ROWS = 10
 LEVEL_SPREAD = 0.05
 HEADING_MIN_ROWS = 5
@@ -109,7 +110,16 @@ DATED_LOG_CELLS = 10
 SAME_FIGURE_ITEMS = 3  # two items with one value can just be equal
 NAMELESS_LINES_BELOW = 2  # a line with no name right under the items, where a sheet puts the whole of what it lists
 NAMELESS_COLUMNS = 60
+# People counted, who can be in more than one kind of a column: a patient is in 외래 and in 약국
+PEOPLE_NAME = re.compile(r"인원|환자|수급자|이용자|가입자|수혜자|사람\s*수|(?<![가-힣])명\s*\)|\b(?:persons?|people|patients?|clients?|customers?|users?|members?|individuals?|beneficiaries|recipients)\b", re.I)
+# Kinds that split people without overlap: sex, ages, places, nationality, years. Adding people across them counts each once
+PARTITION_VALUE = re.compile(r"남|여|남자|여자|남성|여성|male|female|men|women|boys?|girls?|\d+\s*(?:세|대|살)\D*|.*\d+\s*(?:[-~]|to)\s*\d+.*|.*(?:under|over|미만|이상|이하)\s*\d*.*|\d+\s*\+|.+(?:시|군|구|동|읍|면|도|리)|내국인|외국인|국내|해외|(?:19|20)\d\d.*|\d+", re.I)
+PEOPLE_KINDS_MAX = 8
 NOT_DATA_SHEET = re.compile(r"표지|목차|설명|안내|주석|index|contents|cover|notes?\b|copyright", re.I)
+# A data dictionary: each line describes a field of some other table, and its Field Width or 자릿수 are no one's figures
+FIELD_HEADING = re.compile(r"(?:field|column|attribute)\s*(?:name|type|width|length|size|description)|data\s*type|nullable|필드\s*명|컬럼\s*명|칼럼\s*명|항목\s*명|속성\s*명|데이터\s*(?:타입|유형|형식)|자료\s*형|자릿수|null\s*(?:허용|여부)", re.I)
+FIELD_HEADINGS = 2
+FIELD_ROWS = 5
 YEAR_IN_NAME = re.compile(r"(?:19|20)\d\d")
 ATTRIBUTE_DATE = re.compile(r"설치|준공|건립|설립|취득|출생|생년|지정|\b(?:installed|installation|built|established|founded|acquired|birth|designated|designation)", re.I)  # when each thing on a list came to be, not when its figure was counted
 PLAIN_SHEET_NAME = re.compile(r"(?:data|sheet\s*\d*|시트\s*\d*|table\s*\d*|\d+)", re.I)  # says nothing, so it is not worth a heading
@@ -166,6 +176,7 @@ class Value:
     counted: bool = False  # nothing to add up, so rows are counted
     reaches_newest: bool = True  # False when the sheet's newest period has no figure for it: a programme that ended years ago
     size: float = 0  # how large its figures are together, for telling a grand total from a part of it
+    added_up: bool = False  # the sheet's own 소계 lines are the sums of the rows above them, so the rows are amounts to add
 
 
 @dataclass
@@ -257,7 +268,7 @@ def data_sheets(source):
     """The sheets worth offering, best first: sheets with numbers before logs with only dates, actuals before plans, a summary, then the newest by the year in its name, or the one the workbook opens on."""
     def holds_figures(ws):
         """2 for a sheet with numbers, 1 for a log with only a date on each line, else 0."""
-        if ws.max_row < 2 or NOT_DATA_SHEET.search(ws.title) or _titled_as_contents(ws):
+        if ws.max_row < 2 or NOT_DATA_SHEET.search(ws.title) or _titled_as_contents(ws) or _describes_fields(ws):
             return 0
         columns = min(ws.max_column, SAMPLE_COLUMNS)  # once: openpyxl counts every cell to find it
         cells = [ws.cell(r, c).value for r in range(1, min(ws.max_row, 60) + 1) for c in range(1, columns + 1)]
@@ -273,6 +284,16 @@ def data_sheets(source):
     years = {ws.title: max((int(y) for y in YEAR_IN_NAME.findall(ws.title)), default=0) for ws in found}
     # A survey's raw answers come after the sheets that tally them. 2027 사업계획 does not lead over what has happened, and 요약 leads over 2022년(432개소), a list of places with one line each
     return sorted(found, key=lambda ws: (level[ws.title] < 2, TARGET_NAME.search(ws.title) is not None, SUMMARY_SHEET.search(ws.title) is None, -years[ws.title], ws is not active, source.wb.worksheets.index(ws)))
+
+
+def _describes_fields(ws):
+    """A data dictionary: a heading row with Field Name and Field Type, or 컬럼명 and 데이터 타입. Its numbers are widths of fields, not figures."""
+    columns = min(ws.max_column, SAMPLE_COLUMNS)
+    for row in range(1, min(ws.max_row, FIELD_ROWS) + 1):
+        cells = [ws.cell(row, column).value for column in range(1, columns + 1)]
+        if sum(isinstance(raw, str) and FIELD_HEADING.fullmatch(raw.strip()) is not None for raw in cells) >= FIELD_HEADINGS:
+            return True
+    return False
 
 
 def _titled_as_contents(ws):
@@ -624,6 +645,15 @@ def _levels_under(ws, ref, positions):
     return levels
 
 
+def _years_heading_row(ws, row, numeric):
+    """A row that heads the figure columns with bare years, 2024 and 2025 written as numbers: a heading, not a line of figures."""
+    cells = [ws.cell(row, column).value for column in numeric]
+    years = [core.as_year(cell) for cell in cells if cell not in (None, "")]
+    return len(years) >= 2 and all(year is not None for year in years) and years == sorted(set(years)) and \
+        any(core.as_number(ws.cell(below, column).value) is not None and core.as_year(ws.cell(below, column).value) is None
+            for below in range(row + 1, row + 4) for column in numeric)
+
+
 def _steps_by_one(numbers):
     """A running number, not a figure, even one that starts again for each kind of thing listed."""
     found = [n for n in numbers if n is not None]
@@ -639,8 +669,10 @@ def _read_name_bases(source, ws, codes):
     words = [c for c, (p, d) in profiles.items() if p["text"] + p["month"] >= 2 and c not in numeric and any(core.as_date(ws.cell(r, c).value) is None for r in range(1, 3))]
     if not numeric or not words:
         return []
-    data_rows = [r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None]
+    headings = {r for r in range(1, min(limit, HEADING_MAX_ABOVE + 1) + 1) if _years_heading_row(ws, r, numeric)}  # 항목 | 2024 | 2025 heads the columns
+    data_rows = [r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None and r not in headings]
     empty = {c for c, (p, _d) in profiles.items() if not p["filled"]}
+    naming = {c for c in words if _names_items(ws, c, data_rows)}  # a column of only 소계 and 총계 names nothing, so it starts no table of its own
     bases = []
     for c in words[:MAX_NAME_BASES]:
         p, d = profiles[c]
@@ -649,9 +681,9 @@ def _read_name_bases(source, ws, codes):
         # Words only from rows with figures, so a heading is not offered as a value to choose.
         d = Counter(str(core._merged_value(ws, r, c)).strip() for r in data_rows if core._merged_value(ws, r, c) not in (None, "") and core.as_number(core._merged_value(ws, r, c)) is None)
         ref = source._parse_ref(f"{ws.title}!{get_column_letter(c)}", "x")
-        first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None), 2)
+        first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, numeric[0]).value) is not None and r not in headings), 2)
         name = source._header(ws, ref, first_filled, c)
-        stacked = _first_stacked_table(ws, c, limit, numeric) or _first_of_unlike_tables(ws, c, limit, [n for n in numeric if not _beside_another_table(c, n, empty, words)])
+        stacked = _first_stacked_table(ws, c, limit, numeric) or _first_of_unlike_tables(ws, c, limit, [n for n in numeric if not _beside_another_table(c, n, empty, naming)])
         if stacked:
             d = Counter(str(core._merged_value(ws, r, c)).strip() for r in data_rows if stacked[0] <= r <= stacked[1] and core._merged_value(ws, r, c) not in (None, "") and core.as_number(core._merged_value(ws, r, c)) is None)
         repeats = sum(d.values()) > len(d) * 1.5
@@ -687,10 +719,10 @@ def _read_name_bases(source, ws, codes):
         items = _item_rows(ws, base, figure_rows)
         own = core.column_index_from_string(base.spec.split(":")[-1] if re.fullmatch(r"[A-Z]+:[A-Z]+", base.spec) else _name_line(base.spec))  # A:C, labels spread across columns, ends at C
         for c in numeric:
-            if _beside_another_table(own, c, empty, words):
+            if _beside_another_table(own, c, empty, naming):
                 continue
             ref = source._parse_ref(f"{ws.title}!{_name_line(base.spec)}", "x")
-            first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, c).value) is not None), 2)
+            first_filled = next((r for r in range(1, limit + 1) if core.as_number(ws.cell(r, c).value) is not None and r not in headings), 2)
             name = source._header(ws, ref, first_filled, c)
             numbers = [core.as_number(ws.cell(r, c).value) for r in range(1, limit + 1)]
             years = [ws.cell(r, c).value for r in data_rows if ws.cell(r, c).value not in (None, "")]
@@ -698,12 +730,50 @@ def _read_name_bases(source, ws, codes):
                 continue
             if years and all(core.as_year(raw) is not None for raw in years) and _can_be_years(ws, c, limit):  # 회계연도 2025 on every line of a budget, but not 1987 to 2036 under 건수
                 continue
-            base.values.append(Value(get_column_letter(c), name))
+            added_up = base.many_rows and _added_up_by_the_sheet(ws, core.column_index_from_string(_name_line(base.spec)), c, range(1, limit + 1), words)  # every row: a 소계 line need not fill the first figure column
+            base.values.append(Value(get_column_letter(c), name, added_up=added_up))
         for c, other, p, d in bases:
             if other.spec != base.spec and d and 2 <= len(d) <= MAX_GROUP_VALUES and sum(d.values()) > len(d):
                 base.groups.append(Group(_name_line(other.spec), other.name, list(d)))
         _newest_period_first(ws, base)
     return ordered
+
+
+def _added_up_by_the_sheet(ws, names, column, rows, words):
+    """True when at least two of the sheet's own 소계 lines equal the rows of their name above them, and none differs.
+    흥안대로 104, 90, 80, 70, 60 and then 소계 404: the sheet adds this column up itself, so it holds amounts, not ages or prices."""
+    matched, group, running = 0, None, None
+    for row in rows:
+        number = core.as_number(ws.cell(row, column).value)
+        if number is None:
+            continue
+        kinds = {core.total_word_kind(str(raw).strip()) for line in words if (raw := core._merged_value(ws, row, line)) not in (None, "")}
+        if "subtotal" in kinds:
+            if running is not None:
+                if abs(running - number) > 1e-9 * max(abs(number), 1):
+                    return False
+                matched += 1
+            group, running = None, None
+        elif "total" in kinds:
+            group, running = None, None
+        else:
+            name = core._merged_value(ws, row, names)
+            if name != group or running is None:  # a line with no name right after a 소계 starts a new run too
+                group, running = name, 0
+            running += number
+    return matched >= 2
+
+
+def _names_items(ws, column, rows):
+    """True when a column of words names at least two of the rows with figures: not only their totals."""
+    found = 0
+    for row in rows:
+        raw = core._merged_value(ws, row, column)
+        if raw not in (None, "") and core.as_number(raw) is None and not core.total_word_kind(str(raw).strip()):
+            found += 1
+            if found >= 2:
+                return True
+    return False
 
 
 def _item_rows(ws, base, figure_rows):
@@ -877,7 +947,7 @@ def default_how(base, value):
     if value is not None and (_is_level(value.name) or facts.is_price(value.name)):
         return "mean"
     # Rows of named things, such as staff by department: the column could be anything, an age or a salary, so it is only added if it says it is an amount.
-    if base.kind == "name" and not (value is not None and AMOUNT_NAME.search(value.name)) and not _splits_by_group(base):
+    if base.kind == "name" and not (value is not None and (AMOUNT_NAME.search(value.name) or value.added_up)) and not _splits_by_group(base):
         return "count"
     return "sum"
 
@@ -1010,19 +1080,26 @@ def default_conditions(source, shape, base, value, how):
     ws = source._sheet(shape.sheet)
     ref = source._parse_ref(f"{shape.sheet}!{base.spec}", base.spec)
     rows = [(date, position) for date, position in source._dated_rows(ws, ref)][:SAMPLE_ROWS]
+    # 최대 and 최소 on the rows under each month, with no date of their own: they are that month's rows, and a mean of the three is no one's figure
+    positions = [position for _date, position in rows]
+    date_of = dict((position, date) for date, position in rows)
+    under = [(date_of[max(position for position in positions if position < row)], row) for row in _rows_under(ws, ref, positions, positions)] if positions else []
+    rows = sorted(rows + under[:SAMPLE_ROWS], key=lambda pair: pair[1])
     chosen = []
     # Each company's heating value can be averaged, so 회사 is left alone. BOD beside COD cannot, so a column of kinds still narrows it to one.
     level_only = value is not None and _is_level(value.name) and not MEAN_NAME.search(value.name)
     for group in base.groups:
         if len({date for date, _p in rows}) == len(rows):
             break
-        if level_only and not KIND_COLUMN.search(group.name):
+        mean = next((word for word in group.values if MEAN_ROW.fullmatch("".join(str(word).split()))), None)  # 평 균, spaced out to fill its cell, is 평균 too
+        if level_only and not KIND_COLUMN.search(group.name) and mean is None:  # 평균, 최대, 최소 under each month are kinds whatever the column is headed
             continue
         line = core.column_index_from_string(group.spec)
-        narrowed = [(d, p) for d, p in rows if str(ws.cell(*ref.at(p, line)).value).strip() == group.values[0]]
+        kept = mean if mean is not None else group.values[0]  # 최대, 평균, 최소 under each month: the mean is the month's level
+        narrowed = [(d, p) for d, p in rows if str(ws.cell(*ref.at(p, line)).value).strip() == kept]
         if narrowed:
             rows = narrowed
-            chosen.append((group.spec, group.values[0]))
+            chosen.append((group.spec, kept))
     return chosen
 
 
@@ -1199,13 +1276,15 @@ def find_doubts(source, shape, base, value, found):
     if how == "count" or value.counted:
         add("count_only")
     numbers = _figure_rows(ws, value)
-    if how == "sum" and not AVERAGE_OVER_TIME.search(name) and base.many_rows and _nearly_the_same(list(numbers.values())):  # a level by its name is averaged already
+    # A level by its name is averaged already. A Count of 1 on every line of a log is one thing each: adding them counts them.
+    if how == "sum" and not AVERAGE_OVER_TIME.search(name) and base.many_rows and set(numbers.values()) != {1} and _nearly_the_same(list(numbers.values())):
         add("sum_of_levels")
     if core.BOUNDED_LINE.fullmatch(base.spec) or any(code == "note_first_table" for code, _params in base.notes):
         add("first_table")
     if value.spec.isalpha() and _heading_below_first_figure(ws, value, numbers):
         add("heading_below")
-    if base.kind == "date" and value.spec.isalpha() and _figures_without_dates(source, ws, shape, base, numbers):
+    conditions = default_conditions(source, shape, base, value, how)
+    if base.kind == "date" and value.spec.isalpha() and _figures_without_dates(source, ws, shape, base, numbers, conditions):
         add("dates_sparse")
     figure_row = int(value.spec) if value.spec.isdigit() else min(numbers, default=None)
     if how not in ("mean", "count") and not facts.is_rate(name) and not core.in_per_cent(ws, figure_row) and _says_per_cent(ws):  # a note that says so outright is simply believed
@@ -1220,7 +1299,10 @@ def find_doubts(source, shape, base, value, found):
     over = _over_a_hundred_among_shares(ws, base, value, numbers)
     if over:
         add("count_among_shares", item=over)
-    shared = _rows_under_one_merged_name(ws, base, value, numbers, default_conditions(source, shape, base, value, how))
+    across = _people_across_kinds(base, value, how, conditions)
+    if across:
+        add("people_across_kinds", kind=across[0], values=across[1])
+    shared = None if how == "sum" and value.added_up else _rows_under_one_merged_name(ws, base, value, numbers, conditions)  # added up as the sheet's own 소계 lines do, no one line stands for the name
     if shared:
         add("merged_names", item=shared[0], count=shared[1])
     left = _whole_on_a_nameless_line(ws, base, value, numbers)
@@ -1238,6 +1320,22 @@ def find_doubts(source, shape, base, value, found):
     if nested is not None:
         add("parts_by_sum", parent=nested.params.get("parent", "?"), parts=nested.params.get("parts", "?"))
     return doubts
+
+
+def _people_across_kinds(base, value, how, conditions):
+    """(column, its kinds) when a count of people is added across a column of kinds that people can share: 진료인원 of 입원, 외래 and 약국 together counts a patient who saw a doctor and then a pharmacy twice.
+    Sexes, ages, places and years split people without overlap, so adding across them is a count of people."""
+    if how != "sum" or not base.many_rows or not PEOPLE_NAME.search(value.name or ""):
+        return None
+    chosen = {spec for spec, _word in conditions}
+    for group in base.groups:
+        kinds = [str(word).strip() for word in group.values if str(word).strip()]
+        if group.spec in chosen or not 2 <= len(kinds) <= PEOPLE_KINDS_MAX:
+            continue
+        if any(core.total_word_kind(kind) for kind in kinds) or all(PARTITION_VALUE.fullmatch(kind) for kind in kinds):
+            continue
+        return group.name, ", ".join(kinds[:4]) + (" …" if len(kinds) > 4 else "")
+    return None
 
 
 def _over_a_hundred_among_shares(ws, base, value, numbers):
@@ -1392,12 +1490,17 @@ def _heading_below_first_figure(ws, value, numbers):
     return False
 
 
-def _figures_without_dates(source, ws, shape, base, numbers):
+def _figures_without_dates(source, ws, shape, base, numbers, conditions=()):
+    """Many rows with figures and no date. Rows a condition leaves out are not read, so they do not count: 최대 and 최소 under each month, with 평균 chosen."""
     ref = source._parse_ref(f"{shape.sheet}!{base.spec}", base.spec)
     if ref.by_row or len(numbers) < LEVEL_MIN_ROWS:
         return False
     dated = {position for _date, position in source._dated_rows(ws, ref)}
-    figure_rows = [row for row in numbers if row > min(dated, default=0)]
+    if conditions:  # 평균 on the second row under each month belongs to that month, as the condition reads it
+        dated |= set(_rows_under(ws, ref, sorted(dated), sorted(dated)))
+    plain = lambda raw: "".join(str(raw).split()).casefold() if raw is not None else ""  # noqa: E731
+    wanted = [(core.column_index_from_string(spec), plain(word)) for spec, word in conditions if re.fullmatch(r"[A-Z]+", spec)]
+    figure_rows = [row for row in numbers if row > min(dated, default=0) and all(plain(core._merged_value(ws, row, line)) == word for line, word in wanted)]
     missing = sum(row not in dated and core._merged_value(ws, row, ref.date) in (None, "") for row in figure_rows)
     return bool(figure_rows) and missing >= len(figure_rows) * DATES_MISSING_SHARE
 

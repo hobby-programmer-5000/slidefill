@@ -2,7 +2,7 @@
 
 .csv .tsv .txt  plain text, in whichever encoding opens it
 .xls            xlrd, with number formats. Many a system's ".xls" is really an HTML table or a renamed .xlsx, so the content decides.
-.xlsb .ods      python-calamine. It gives values without number formats, so 85% reads as 0.85.
+.xlsb .ods      python-calamine for the values. It gives no number formats, so they are read from the file's own style records: 85% stays 85%.
 """
 
 import csv
@@ -11,6 +11,8 @@ import html.parser
 import io
 import os
 import re
+import struct
+import xml.etree.ElementTree as ET  # expat fetches no external entities
 import zipfile
 
 import openpyxl
@@ -26,6 +28,16 @@ PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?")
 GROUPED_NUMBER = re.compile(r"-?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?")
 BAD_IN_TITLE = re.compile(r"[\\/*?:\[\]]")
 MAX_TITLE = 31
+MAX_SPAN = 1000  # a rowspan of 65534 written by mistake would otherwise fill the sheet
+# .xlsb records (MS-XLSB 2.3.2): a row's start, the cell records that each begin with column and style, and the styles' formats
+XLSB_ROW, XLSB_CELLS, XLSB_FORMAT, XLSB_XF, XLSB_BEGIN_CELL_XFS, XLSB_END_CELL_XFS, XLSB_SHEET = 0, frozenset(range(1, 12)), 44, 47, 617, 618, 156
+XLSB_MERGE = 176  # BrtMergeCell: first row, last row, first column, last column, from 0
+ODS = {"table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0", "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+       "style": "urn:oasis:names:tc:opendocument:xmlns:style:1.0", "number": "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0"}
+ODS_VALUE_TYPES = ("float", "percentage", "currency", "date")
+ODS_MAX_COLUMNS = 16384
+ODS_MAX_REPEATED_ROWS = 1000  # a style carried down a million empty rows holds nothing to show
+MAX_FORMATTED_CELLS = 2_000_000
 
 
 class Protected(Exception):
@@ -96,14 +108,14 @@ def _from_text(path, raw, ext):
 
 
 class _Tables(html.parser.HTMLParser):
-    """Rows of every <table>. Cell spans are spread out, so columns stay lined up."""
+    """Rows of every <table>, each cell as (text, rows it spans, columns it spans)."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.tables = []
         self.row = None
         self.cell = None
-        self.span = 1
+        self.span = (1, 1)
 
     def handle_starttag(self, tag, attrs):
         if tag == "table":
@@ -112,24 +124,60 @@ class _Tables(html.parser.HTMLParser):
             self.row = []
         elif tag in ("td", "th") and self.row is not None:
             self.cell = []
-            try:
-                self.span = max(1, int(dict(attrs).get("colspan") or 1))
-            except ValueError:
-                self.span = 1
+            given = dict(attrs)
+            self.span = tuple(min(MAX_SPAN, max(1, _whole(given.get(name)))) for name in ("rowspan", "colspan"))
 
     def handle_endtag(self, tag):
         if tag in ("td", "th") and self.cell is not None:
-            self.row.append(" ".join("".join(self.cell).split()))
-            self.row.extend("" for _ in range(self.span - 1))
+            self.row.append((" ".join("".join(self.cell).split()), *self.span))
             self.cell = None
         elif tag == "tr" and self.row is not None:
-            if self.tables and any(self.row):
+            if self.tables and self.row:
                 self.tables[-1].append(self.row)
             self.row = None
 
     def handle_data(self, data):
         if self.cell is not None:
             self.cell.append(data)
+
+
+def _whole(text):
+    try:
+        return int(str(text).strip())
+    except ValueError:
+        return 1
+
+
+def _laid_out(table):
+    """(rows of texts, merged ranges) for an HTML table, as Excel lays it out: a cell spanning rows or columns is merged, its text in the top left.
+    A rowspan from the row above takes its place in the rows below, so their cells move right and stay under their headings."""
+    grid, merges, taken = [], [], set()
+    for r, cells in enumerate(table):
+        row, c = [], 0
+        for text, down, across in cells:
+            while (r, c) in taken:
+                c += 1
+            for dr in range(down):
+                for dc in range(across):
+                    taken.add((r + dr, c + dc))
+            row.append((c, text))
+            if down > 1 or across > 1:
+                merges.append((r + 1, c + 1, r + down, c + across))
+            c += across
+        grid.append(row)
+    rows = []
+    for r, row in enumerate(grid):
+        width = max([c + 1 for c, _text in row] + [c + 1 for (tr, c) in taken if tr == r], default=0)
+        line = [""] * width
+        for c, text in row:
+            line[c] = text
+        rows.append(line)
+    keep = [r for r, line in enumerate(rows) if any(line) or any(top <= r + 1 <= bottom for top, _l, bottom, _r in merges)]
+    if len(keep) != len(rows):  # rows with nothing in them and no span through them: drop them, and move spans up with the rows
+        moved = {old + 1: new + 1 for new, old in enumerate(keep)}
+        rows = [rows[r] for r in keep]
+        merges = [(moved[top], left, moved.get(bottom, moved[top]), right) for top, left, bottom, right in merges if top in moved]
+    return rows, merges
 
 
 def _from_html(path, raw):
@@ -143,7 +191,10 @@ def _from_html(path, raw):
     for number, table in enumerate(tables):
         ws = wb.active if number == 0 else wb.create_sheet()
         ws.title = _title(stem if number == 0 else f"{stem} {number + 1}", [s.title for s in wb.worksheets if s is not ws])
-        _put_rows(ws, table)
+        rows, merges = _laid_out(table)
+        _put_rows(ws, rows)
+        for top, left, bottom, right in merges:
+            ws.merge_cells(start_row=top, start_column=left, end_row=bottom, end_column=right)
     return wb
 
 
@@ -189,14 +240,190 @@ def _from_xls(path):
     return wb
 
 
+def _records(data):
+    """(type, body) of each BIFF12 record in an .xlsb part: type and size are written 7 bits a byte, the high bit set while more follow."""
+    at, end = 0, len(data)
+    while at < end:
+        kind = data[at] & 0x7F
+        if data[at] & 0x80:
+            kind |= (data[at + 1] & 0x7F) << 7
+            at += 2
+        else:
+            at += 1
+        size, shift = 0, 0
+        for _ in range(4):
+            byte = data[at]
+            at += 1
+            size |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                break
+        yield kind, data[at:at + size]
+        at += size
+
+
+def _wide(body, at):
+    """An XLWideString starting at at: its text, and where it ends."""
+    count = struct.unpack_from("<I", body, at)[0]
+    start = at + 4
+    return body[start:start + count * 2].decode("utf-16-le", "replace"), start + count * 2
+
+
+def _xlsb_formats(path):
+    """({sheet name: {(row, column): number format}}, {sheet name: [(top, left, bottom, right)]}) with 1-based places: the cells of an .xlsb whose format is not General, and its merged cells (MS-XLSB records)."""
+    from openpyxl.styles.numbers import BUILTIN_FORMATS
+    with zipfile.ZipFile(path) as package:
+        names = set(package.namelist())
+        codes, styles, inside = {}, [], False
+        for kind, body in _records(package.read("xl/styles.bin")):
+            if kind == XLSB_FORMAT:
+                codes[struct.unpack_from("<H", body, 0)[0]] = _wide(body, 2)[0]
+            elif kind in (XLSB_BEGIN_CELL_XFS, XLSB_END_CELL_XFS):
+                inside = kind == XLSB_BEGIN_CELL_XFS
+            elif kind == XLSB_XF and inside:
+                number = struct.unpack_from("<H", body, 2)[0]
+                styles.append(codes.get(number) or BUILTIN_FORMATS.get(number, "General"))
+        rels = package.read("xl/_rels/workbook.bin.rels").decode("utf-8", "replace")
+        targets = {}
+        for tag in re.findall(r"<Relationship\b[^>]*>", rels):
+            ident, target = re.search(r'\bId="([^"]+)"', tag), re.search(r'\bTarget="([^"]+)"', tag)
+            if ident and target:
+                targets[ident.group(1)] = target.group(1)
+        found, merged = {}, {}
+        for kind, body in _records(package.read("xl/workbook.bin")):
+            if kind != XLSB_SHEET:
+                continue
+            relation, at = ("", 12) if struct.unpack_from("<I", body, 8)[0] == 0xFFFFFFFF else _wide(body, 8)
+            name = _wide(body, at)[0]
+            target = targets.get(relation, "").lstrip("/")
+            part = target if target.startswith("xl/") else "xl/" + target
+            if part not in names:
+                continue
+            cells, row, merges = {}, 0, []
+            for record, data in _records(package.read(part)):
+                if record == XLSB_MERGE and len(data) >= 16:
+                    top, bottom, left, right = struct.unpack_from("<IIII", data, 0)
+                    merges.append((top + 1, left + 1, bottom + 1, right + 1))
+                elif record == XLSB_ROW and len(data) >= 4:
+                    row = struct.unpack_from("<I", data, 0)[0]
+                elif record in XLSB_CELLS and len(data) >= 8:
+                    column, style = struct.unpack_from("<II", data, 0)
+                    style &= 0xFFFFFF
+                    code = styles[style] if style < len(styles) else "General"
+                    if code != "General":
+                        cells[(row + 1, column + 1)] = code
+                        if len(cells) > MAX_FORMATTED_CELLS:
+                            break
+            found[name], merged[name] = cells, merges
+        return found, merged
+
+
+def _ods_code(style):
+    """An Excel number format for an OpenDocument data style: 0.0% for a percentage with one decimal, #,##0 for grouped digits, yyyy-mm for a year and month. None where General serves."""
+    kind = style.tag.rpartition("}")[2]
+    if kind == "date-style":
+        parts = []
+        for part in style:
+            name, long = part.tag.rpartition("}")[2], part.get(f"{{{ODS['number']}}}style") == "long"
+            if name == "year":
+                parts.append("yyyy" if long else "yy")
+            elif name == "month":
+                parts.append("mmm" if part.get(f"{{{ODS['number']}}}textual") == "true" else "mm" if long else "m")
+            elif name == "day":
+                parts.append("dd" if long else "d")
+            elif name == "text":
+                parts.append("".join(ch if ch in "-/. " else f"\\{ch}" for ch in (part.text or "")))
+        return "".join(parts) or None
+    number = style.find("number:number", ODS)
+    if number is None or kind not in ("number-style", "percentage-style", "currency-style"):
+        return None
+    places = int(number.get(f"{{{ODS['number']}}}decimal-places") or 0)
+    grouped = number.get(f"{{{ODS['number']}}}grouping") == "true" or kind == "currency-style"
+    if kind == "number-style" and not grouped and number.get(f"{{{ODS['number']}}}decimal-places") is None:
+        return None  # N0: what General shows
+    code = ("#,##0" if grouped else "0") + ("." + "0" * places if places else "")
+    return code + "%" if kind == "percentage-style" else code
+
+
+def _ods_formats(path):
+    """({sheet name: {(row, column): number format}}, {sheet name: [(top, left, bottom, right)]}) with 1-based places: the value cells of an .ods whose data style is not General, and its merged cells."""
+    with zipfile.ZipFile(path) as package:
+        roots = [ET.fromstring(package.read(part)) for part in ("styles.xml", "content.xml") if part in package.namelist()]
+    codes, data_style, parent = {}, {}, {}
+    for root in roots:
+        for style in root.iter():
+            name = style.get(f"{{{ODS['style']}}}name")
+            if name is None:
+                continue
+            if style.tag.startswith(f"{{{ODS['number']}}}"):
+                code = _ods_code(style)
+                if code:
+                    codes[name] = code
+            elif style.tag == f"{{{ODS['style']}}}style" and style.get(f"{{{ODS['style']}}}family") == "table-cell":
+                data_style[name] = style.get(f"{{{ODS['style']}}}data-style-name")
+                parent[name] = style.get(f"{{{ODS['style']}}}parent-style-name")
+
+    def code_of(cell_style):
+        for _ in range(5):  # a style without a data style takes its parent's
+            if cell_style is None:
+                return None
+            if data_style.get(cell_style):
+                return codes.get(data_style[cell_style])
+            cell_style = parent.get(cell_style)
+        return None
+
+    found, merged = {}, {}
+    content = roots[-1] if roots else None
+    for table in (content.iter(f"{{{ODS['table']}}}table") if content is not None else ()):
+        defaults = []
+        for column in table.iter(f"{{{ODS['table']}}}table-column"):
+            defaults += [column.get(f"{{{ODS['table']}}}default-cell-style-name")] * min(int(column.get(f"{{{ODS['table']}}}number-columns-repeated") or 1), ODS_MAX_COLUMNS)
+        cells, row, merges = {}, 0, []
+        for line in table.iter(f"{{{ODS['table']}}}table-row"):
+            repeat = int(line.get(f"{{{ODS['table']}}}number-rows-repeated") or 1)
+            column, values = 0, []
+            for cell in line:
+                if cell.tag not in (f"{{{ODS['table']}}}table-cell", f"{{{ODS['table']}}}covered-table-cell"):
+                    continue
+                across = int(cell.get(f"{{{ODS['table']}}}number-columns-repeated") or 1)
+                wide, tall = (min(int(cell.get(f"{{{ODS['table']}}}number-{kind}-spanned") or 1), MAX_SPAN) for kind in ("columns", "rows"))
+                if wide > 1 or tall > 1:  # a merged cell: the cells it covers follow as covered-table-cell
+                    merges.append((row + 1, column + 1, row + tall, column + wide))
+                if cell.get(f"{{{ODS['office']}}}value-type") in ODS_VALUE_TYPES:
+                    style = cell.get(f"{{{ODS['table']}}}style-name") or (defaults[column] if column < len(defaults) else None)
+                    code = code_of(style)
+                    if code:
+                        values += [(column + k, code) for k in range(min(across, ODS_MAX_COLUMNS))]
+                column += across
+            if values:
+                for k in range(min(repeat, ODS_MAX_REPEATED_ROWS)):
+                    cells.update({(row + k + 1, c + 1): code for c, code in values})
+            row += repeat
+            if len(cells) > MAX_FORMATTED_CELLS:
+                break
+        found[table.get(f"{{{ODS['table']}}}name")] = cells
+        merged[table.get(f"{{{ODS['table']}}}name")] = merges
+    return found, merged
+
+
+def _formats(path):
+    """(number formats, merged cells) a reader of values leaves out, or nothing when the file's own records cannot be read: the values still are."""
+    try:
+        return _xlsb_formats(path) if path.lower().endswith(".xlsb") else _ods_formats(path)
+    except (KeyError, ValueError, struct.error, ET.ParseError, zipfile.BadZipFile, IndexError):
+        return {}, {}
+
+
 def _from_calamine(path):
     from python_calamine import CalamineWorkbook
     book = CalamineWorkbook.from_path(path)
+    formats, merged = _formats(path)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name in book.sheet_names:
         ws = wb.create_sheet(_title(name, [s.title for s in wb.worksheets]))
         sheet = book.get_sheet_by_name(name)
+        shown = formats.get(name, {})
         for r, row in enumerate(sheet.to_python(skip_empty_area=False), start=1):
             for c, value in enumerate(row, start=1):
                 if value in ("", None):
@@ -207,10 +434,14 @@ def _from_calamine(path):
                 cell = ws.cell(r, c, value)
                 if isinstance(value, str):
                     cell.data_type = "s"
+                elif (r, c) in shown and not isinstance(value, bool):
+                    cell.number_format = shown[(r, c)]  # 85% as the file shows it, not 0.85
                 elif isinstance(value, (dt.datetime, dt.date)):
                     cell.number_format = "yyyy-mm-dd"
-        for (top, left), (bottom, right) in getattr(sheet, "merged_cell_ranges", None) or []:
-            ws.merge_cells(start_row=top + 1, start_column=left + 1, end_row=bottom + 1, end_column=right + 1)
+        ranges = [(top + 1, left + 1, bottom + 1, right + 1) for (top, left), (bottom, right) in getattr(sheet, "merged_cell_ranges", None) or []]
+        for top, left, bottom, right in ranges or merged.get(name, []):  # the reader gives merges for .xls only; .xlsb and .ods have them from their own records
+            if bottom >= top and right >= left and (bottom, right) != (top, left):
+                ws.merge_cells(start_row=top, start_column=left, end_row=bottom, end_column=right)
     return wb
 
 
