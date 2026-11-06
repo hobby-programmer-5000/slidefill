@@ -105,6 +105,8 @@ RANK = re.compile(r"\s*(순위값|순위|구성비|topvalue|top|share)\s*(\d*)\s
 RANK_NAMES = {"순위": "name", "top": "name", "순위값": "value", "topvalue": "value", "구성비": "share", "share": "share"}
 TOTAL_WORDS = {"합계", "총계", "총합", "총합계", "계", "전체", "전국", "전산업", "total", "grandtotal", "sum", "합"}  # 전국 over the regions, 전산업 over the industries
 SUBTOTAL_WORDS = {"소계", "subtotal"}
+SUBTOTALS_ADD_UP = 0.001  # a grand total this close to the other total lines is their sum, not one more kind of thing
+YEAR_IN_HEADING = re.compile(r"(?:19|20)\d\d(?:\s*[-–/]\s*\d{2,4})?")  # the year a column heading names, as 2024-25 or 2025
 BUDGET_NAME = re.compile(r"예산|목표|계획|\b(?:budget|target|plan)(?:s|ned)?\b", re.I)  # what was planned for a period, set beside what happened in it
 TOTAL_ROW = re.compile(r"totals?(?![a-z])(?!.*\b(?:pty|ltd|inc|limited|llc|corp|plc|gmbh)\b)", re.I)  # Total revenue, not Total Tools Importing Pty Ltd or TotalEnergies
 TOTAL_TOLERANCE = 0.005  # a stated total this close to the items' sum is taken to be their total, allowing for rounding
@@ -123,6 +125,8 @@ YEAR_LINE = re.compile(r"연간|연평균|연계|연합계|년간|annual|yearly|
 MONTH_LINE = re.compile(r"(?:0?[1-9]|1[0-2])\s*월|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?", re.I)
 MIN_MONTH_LINES = 6
 PART_CODE = re.compile(r"([0-9A-Za-z]+(?:[-.][0-9A-Za-z]+)*)")  # 611 and 611-01 at the start of an account's name
+BRACKETED_LOSS_DIGITS = 3
+COLUMN_MARK = re.compile(r"\(\s*\d{1,2}\s*\)(?:\s*[=+\-−×*/÷]\s*(?:\(\s*\d{1,2}\s*\)|\d+))*")  # (1), (3)=(1)-(2): a column's number, not a figure
 NEGATIVE_TEXT = re.compile(r"[△▵−]\s*(" + DIGITS + r"(?:\.\d+)?)|\(\s*(" + DIGITS + r"(?:\.\d+)?)\s*\)")
 QUARTER_SCAN = 30
 QUARTER_WORD = re.compile(r"Q\s*([1-4])|([1-4])\s*(?:분기|Q)", re.I)
@@ -398,6 +402,8 @@ def figure_number(raw):
     match = NEGATIVE_TEXT.fullmatch(raw.strip())
     if not match:
         return None
+    if match.group(2) and len(re.sub(r"\D", "", match.group(2))) < BRACKETED_LOSS_DIGITS and not re.search(r"[,. \u00a0\u202f]", match.group(2)):
+        return None  # (1) (2) (3) under the headings number the columns; a loss kept as text is (300) or (1,234)
     number = -float(GROUPING.sub("", match.group(1) or match.group(2)))
     return int(number) if number.is_integer() else number
 
@@ -414,7 +420,7 @@ def _holds_quarters(ws, ref, line):
 
 def _unread_figure(raw):
     """Digits where a figure belongs that cannot be read as one, such as ▲500 or 14000 and 15000 in one cell: leaving them out changes the total, so it must not go unsaid. With letters in it, it is a heading or a note."""
-    return isinstance(raw, str) and any(c.isdigit() for c in raw) and not any(c.isalpha() for c in raw) and figure_number(raw) is None and as_date(raw) is None
+    return isinstance(raw, str) and any(c.isdigit() for c in raw) and not any(c.isalpha() for c in raw) and figure_number(raw) is None and as_date(raw) is None and not COLUMN_MARK.fullmatch(raw.strip())
 
 
 def as_part_of_date(raw):
@@ -814,12 +820,21 @@ def _rows_in_inner_label_columns(ws, ref, labels, figures):
         beside = [ws._cells.get(ref.at(position, line)) for line in figures]
         if not any(other is not None and as_number(other.value) is not None for other in beside):
             continue
-        named = [index for index, line in enumerate(labels) if (cell := ws._cells.get(ref.at(position, line))) is not None and isinstance(cell.value, str) and cell.value.strip() and as_number(cell.value) is None]
+        named, said = [], None
+        for index, line in enumerate(labels):
+            cell = ws._cells.get(ref.at(position, line))
+            if cell is not None and isinstance(cell.value, str) and cell.value.strip() and as_number(cell.value) is None:
+                if "".join(cell.value.split()) != said:  # 관평로 written again in each of A, B and C is one name, not three levels
+                    named.append(index)
+                said = "".join(cell.value.split())
         if named:
             lines[position] = named
     if not lines or sum(len(named) == 1 for named in lines.values()) < len(lines) * ONE_LABEL_SHARE:
         return frozenset()
-    level = {position: named[0] for position, named in lines.items()}
+    # A column is a level only where it names lines of its own. 서울 beside 강남 on a group's first line names the group, and the line is 강남's, one of the districts;
+    # 평촌대로 and 관평로 beside 동안로 on one switchboard's line, and nowhere else, are more roads for that line, not a level under 동안로.
+    alone = {named[0] for named in lines.values() if len(named) == 1}
+    level = {position: next((index for index in reversed(named) if index in alone), named[0]) for position, named in lines.items()}
     counts = Counter(level.values())
     outer = min((index for index, count in counts.items() if count >= 2), default=None)
     if outer is None or len(set(level.values())) < 2:
@@ -991,7 +1006,15 @@ def _several_totals(names, totals):
             continue
         seen.add(label.casefold())
         found.append(facts.Item(label, numbers[-1], numbers[0] if len(numbers) == 2 else None))
-    return found if len(found) >= 2 else []
+    if len(found) < 2:
+        return []
+    # 서울 합계 30 and 부산 합계 12 under 총계 42 are groups of one kind, the grand total their sum: the usual comparison holds.
+    # Income and expenses do not add up to a line of the table, however close they come (33,037 against 33,118).
+    for whole in found:
+        rest = sum(item.value for item in found if item is not whole)
+        if abs(whole.value - rest) <= abs(whole.value) * SUBTOTALS_ADD_UP:
+            return []
+    return found
 
 
 def total_word_kind(value):
@@ -1989,8 +2012,11 @@ class ExcelSource:
             second_name = self._header(ws, ref, first or ref.start, first_line)
             if _reads_backwards(first_name, second_name):
                 issues.append(Issue("cross_backwards", {"first": first_name, "second": second_name}))
-            if BUDGET_NAME.search(first_name) and not BUDGET_NAME.search(second_name):
-                basis = "budget"  # 2024-25 Published Budget beside 2024-25 Actual: the same year, what was planned and what happened
+            planned = BUDGET_NAME.search(first_name)
+            years = [YEAR_IN_HEADING.findall(name) for name in (first_name, second_name)]
+            if planned and not BUDGET_NAME.search(second_name) and (not all(years) or years[0] == years[1]):
+                # 2024-25 Published Budget beside 2024-25 Actual: the same year, what was planned and what happened. A 2026 budget beside 2025 actuals is not that
+                basis = "budget" if re.search(r"예산|budget", planned.group(0), re.I) else "target" if re.search(r"목표|target", planned.group(0), re.I) else "plan"
         whole_lines = _several_totals(total_names, totals)
         if whole_lines:
             issues.append(Issue("cross_several_totals", {"count": len(whole_lines), "names": ", ".join(item.label for item in whole_lines[:3])}))

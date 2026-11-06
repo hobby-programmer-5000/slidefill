@@ -40,6 +40,8 @@ function Launch() {
         Start-Sleep -Milliseconds 500
     }
     if (-not $p) { throw "no window appeared" }
+    # Tk shows its window as "tk" for a moment before the app sets the title.
+    for ($i = 0; $i -lt 20 -and $p.MainWindowTitle -ne "SlideFill"; $i++) { Start-Sleep -Milliseconds 500; $p.Refresh() }
     if ($p.MainWindowTitle -ne "SlideFill") { throw "unexpected window: $($p.MainWindowTitle)" }
     Start-Sleep -Seconds 3
     return $p
@@ -66,6 +68,8 @@ $p = Launch
 Check "first run opens a window with no settings file" ($p.MainWindowHandle -ne 0)
 Shot $p "1_first_run"
 Close $p
+# Settings are written when the person picks a file, changes the language, or previews; closing alone writes nothing.
+Check "closing without doing anything writes no settings file" (-not (Test-Path $settings))
 
 $seed = @{ template = "$root\samples\sample_template.pptx"; excel = "$root\samples\sample_data.xlsx"; output = $Work; lang = "ko" }
 [IO.File]::WriteAllText($settings, ($seed | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))

@@ -3730,6 +3730,78 @@ class SixthMeasure(Base):
         self.assertNotIn("nameless_total", self.doubts(self.book("보수2.xlsx", Remuneration=rows)))
 
 
+class ColdReviewBeforeRelease(Base):
+    """What a review with no context of the work found before the first release, on 2026-11-06: each a wrong figure or a table no longer read."""
+
+    book = TriedReports.book
+    doubts = TriedReports.doubts
+    text = FifthMeasure.text
+
+    def test_a_group_name_on_its_first_line_does_not_drop_the_rest(self):
+        rows = [["시도", "시군구", "인구"]]
+        for region, districts in (("서울", (500, 300, 150, 120, 380)), ("부산", (400, 170, 260, 270, 280)), ("대구", (410, 550, 430, 340, 160))):
+            rows += [[region if n == 0 else None, f"{region}{n}구", people] for n, people in enumerate(districts)]
+        text = core.ExcelSource(self.book("인구.xlsx", 표=rows)).text_value("읽는법:표!A:B,C")[0]
+        self.assertIn("항목 합계 4,720", text)  # only each group's first district was kept: 1,310
+        self.assertIn("항목 15개", text)
+        roads = [["노선", None, None, "등기구"], ["동안로", None, None, 35], [None, None, None, 41], ["달안로", None, None, 78], [None, None, None, 71],
+                 ["시민대로", "평촌대로", "관평로", 68], [None, None, None, 18], ["먹거리로", None, None, 35], [None, None, None, 20]]
+        text = core.ExcelSource(self.book("노선.xlsx", 표=roads)).text_value("읽는법:표!A:C,D")[0]
+        self.assertIn("항목 합계 216", text)  # one switchboard on three roads is a line of its own, not a level under 시민대로: its 68 was dropped, leaving 148
+        self.assertIn("관평로(68", text)
+
+    def test_column_numbers_in_brackets_are_not_losses(self):
+        rows = [["구분", "매출", "비용", "이익"], ["열번호", "(1)", "(2)", "(3)=(1)-(2)"], ["서울", 500, 300, 200], ["부산", 400, 250, 150], ["대구", 300, 220, 80], ["광주", 200, 150, 50]]
+        path = self.book("열번호.xlsx", 표=rows)
+        self.assertNotIn("-1", self.text(path))  # 열번호 ranked last at -1
+        self.assertNotIn("figures_not_read", self.doubts(path))
+        self.assertIsNone(core.figure_number("(2)"))
+        self.assertEqual(core.figure_number("(300)"), -300)
+        self.assertEqual(core.figure_number("(1,234)"), -1234)
+
+    def test_years_under_a_title_are_still_years(self):
+        rows = [["매출 현황 보고"], [], ["구분", "매출", "비용"]] + [[year, 1000 + n * 100, 800 + n * 50] for n, year in enumerate((2018, 2019, 2021, 2022, 2023, 2024))]
+        self.assertIn("2024년 매출 1,500", self.text(self.book("연도.xlsx", 표=rows)))  # the title, not 구분, was taken as the years' heading, and nothing was read
+        census = [["Population census"], [], ["Census", "Population"]] + [[year, 40000 + n * 1500] for n, year in enumerate(range(1990, 2025, 5))]
+        text = self.text(self.book("센서스.xlsx", 표=census))  # every five years is still a run of years
+        self.assertIn("2020년 Population 49,000", text)  # not 1월 1일(수)
+        self.assertNotIn("년 연속", text)  # six rises five years apart are not six years in a row
+
+    def test_group_subtotals_under_a_grand_total_are_compared_as_usual(self):
+        rows = [["지역", "매출"], ["서울 강남", 10], ["서울 강북", 20], ["서울 합계", 30], ["부산 해운대", 5], ["부산 수영", 7], ["부산 합계", 12], ["총계", 42]]
+        source = core.ExcelSource(self.book("소계.xlsx", 표=rows))
+        text, _where, issues = source.text_value("읽는법:표!A,B")
+        self.assertIn("전체 42", text)
+        self.assertNotIn("cross_several_totals", [issue.code for issue in issues])
+
+    def test_an_index_or_an_average_is_not_a_column_of_per_cents(self):
+        rows = [["지역", "소비자물가지수"]] + [[f"지역{n}", value] for n, value in enumerate((96.8, 101.3, 99.9, 102.4, 98.0, 100.6))]
+        self.assertNotIn("count_among_shares", self.doubts(self.book("지수.xlsx", 표=rows)))
+        rows = [["품목", "평균 가격"]] + [[name, value] for name, value in (("소고기", 450), ("마늘", 77), ("쌀", 52), ("양파", 18), ("배추", 40))]
+        self.assertNotIn("count_among_shares", self.doubts(self.book("가격.xlsx", 표=rows)))
+
+    def test_a_plan_is_called_a_plan_and_next_years_budget_is_no_budget(self):
+        rows = [["항목", "계획", "실적"], ["인건비", 500, 520], ["운영비", 300, 280], ["시설비", 200, 260], ["홍보비", 100, 90]]
+        text = core.ExcelSource(self.book("계획.xlsx", 표=rows)).text_value("읽는법:표!A,B,C")[0]
+        self.assertIn("계획 1,100 대비 실적 1,150", text)
+        self.assertNotIn("예산", text)
+        rows[0] = ["항목", "2026 예산", "2025 실적"]
+        self.assertNotIn("예산", core.ExcelSource(self.book("내년.xlsx", 표=rows)).text_value("읽는법:표!A,B,C")[0])
+
+    def test_model_facts_against_a_budget_hold_no_share_and_back_no_superlative(self):
+        """Found by running the real model on a budget table: 연구소's 53.6% share passed as its ratio to budget, and +10.3% as the highest when 관리부 rose 33.0%."""
+        items = [facts.Item(name, actual, budget) for name, budget, actual in (("영업부", 8734, 9612), ("생산부", 2072, 2026), ("관리부", 843, 1121), ("연구소", 17645, 19468), ("총무부", 3980, 4120))]
+        pack = facts.item_pack(items, facts.plain_number, "ko", total=36347, before_total=33274, stated=False, basis="budget")
+        first = next(fact for fact in pack if fact.id == "item_1")
+        self.assertEqual(first.text, "연구소 실적 19,468, 예산 17,645 대비 +10.3%")  # no 53.6%, no 1위
+        claim = lambda text, cited: insight.check({"statement": text, "fact_ids": cited}, pack, "ko")  # noqa: E731
+        self.assertIn("superlative", claim("연구소 실적은 예산 대비 +10.3%로 가장 높은 증가율을 보였습니다.", ["item_1"]))
+        self.assertEqual(claim("연구소 실적은 예산 대비 10.3% 증가했습니다.", ["item_1"]), [])
+        self.assertNotIn("superlative", claim("예산보다 가장 크게 웃돈 항목은 관리부입니다.", ["read_most_up"]))
+        series = [facts.Fact("rank", "최근 12개 값 중 1번째로 높음", ("12", "1")), facts.Fact("value", "2025년 12월 매출: 180", ("2025", "12", "180"))]
+        self.assertNotIn("superlative", insight.check({"statement": "2025년 12월 매출은 최근 12개 값 중 가장 높습니다.", "fact_ids": ["rank"]}, series, "ko"))
+
+
 class CompanyTemplates(Base):
     """What a company-style template made in real PowerPoint and Excel turned up, on 2026-11-05."""
 

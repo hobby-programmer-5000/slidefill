@@ -13,6 +13,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOC = os.path.join(ROOT, "build", "SlideFill", "Analysis-00.toc")
 COMMON = os.path.join(ROOT, "tools", "notices_common.md")
+READERS = os.path.join(ROOT, "tools", "notices_readers.md")  # xlrd and python-calamine, with the Rust crates built into calamine: kept by hand
+READER_ROWS = [("xlrd", "Python package, for `.xls`", "BSD-3-Clause, with parts under a BSD-style license (in its license text)"),
+               ("python-calamine", "Python package with a compiled module, for `.xlsb` and `.ods`", "MIT; the Rust crates built into it are listed below")]
 PYTHON_LICENSE = os.path.join(os.path.dirname(os.path.realpath(sys.base_prefix + os.sep + "python.exe")), "LICENSE.txt")
 
 PACKAGES = [("python-pptx", "MIT"), ("openpyxl", "MIT"), ("et_xmlfile", "MIT"), ("lxml", "BSD-3-Clause, and libxml2/libxslt under MIT"),
@@ -93,7 +96,14 @@ def main():
     if leaked:
         raise SystemExit(f"Excluded libraries got into the build: {leaked}")
 
+    with open(READERS, encoding="utf-8") as fh:
+        readers = fh.read().strip()
     rows, sections = [], []
+    for name, files, license_name in READER_ROWS:
+        version = metadata.version(name)
+        if f"## {name} {version}" not in readers:  # a new version may bring other crates: the hand-kept text must be redone, not left stale
+            raise SystemExit(f"{READERS} has no section for {name} {version}")
+        rows.append(f"| {name} | {version} | {files} | {license_name} |")
     for name, license_name in PACKAGES:
         text, version = license_text(name)
         rows.append(f"| {name} | {version} | Python package | {license_name} |")
@@ -106,7 +116,7 @@ def main():
 
     head = f"""# Third-party notices
 
-SlideFill's own license has not been chosen yet (see `README.md`). This file covers what the Windows executable `SlideFill.exe` bundles, each part under its own license.
+SlideFill itself is under the MIT License (see `LICENSE`). This file covers what the Windows executable `SlideFill.exe` bundles, each part under its own license.
 
 | Component | Version | Files in `SlideFill.exe` | License |
 |---|---|---|---|
@@ -124,7 +134,7 @@ SlideFill's own license has not been chosen yet (see `README.md`). This file cov
 
 The build excludes TLS and bzip2, xz and Zstandard compression (see `build.bat`), so OpenSSL, bzip2, xz and Zstandard are **not** in `SlideFill.exe`. `tools/make_notices.py` fails if any of them appears. Python's license file below is reproduced unchanged and may still mention them.
 
-The socket modules are present only because the standard library's XML helpers import them. SlideFill makes no network connections.
+The socket modules are present because the standard library's XML helpers import them, and because the optional insight step talks to Ollama at 127.0.0.1 on the same PC. SlideFill makes no other network connections.
 
 ---
 
@@ -145,6 +155,10 @@ The socket modules are present only because the standard library's XML helpers i
 ## mpdecimal
 
 {fence(MPDECIMAL)}
+
+---
+
+{readers}
 
 ---
 

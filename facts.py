@@ -49,6 +49,7 @@ OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]
 SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
 MAX_LISTED = 6
 SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
+PLANNED = {"budget": {"ko": "예산", "en": "budget"}, "target": {"ko": "목표", "en": "target"}, "plan": {"ko": "계획", "en": "plan"}}  # what the older column was, in the words a sentence uses
 SEPARATE_TOTALS = {"ko": "합계 줄이 여러 개 있어(수입과 지출 등) 줄끼리 크기를 비교하지 않았습니다.", "en": "There are several total lines, as with income and expenses, so the lines were not ranked against one another."}
 RATE_SYLLABLE = r"(?<![법규자])[율률](?![가-힣])"  # 달성률 and 환율, not 법률상담건수 or 자율주행
 RATE_WORD = re.compile(RATE_SYLLABLE + r"|%|퍼센트|지수|평균|단가|점수|만족도|온도|증감|순위|지표|배율|\b(?:rates?|ratios?|percent(?:age)?|index|average|mean|scores?|rank)\b", re.I)
@@ -224,7 +225,19 @@ def is_quarterly(points):
 
 
 def is_yearly(points):
-    return _usual_gap(points) in (365, 366) or partial_year(points) is not None
+    return _usual_gap(points) in (365, 366) or partial_year(points) is not None or _years_apart(points)
+
+
+def _years_apart(points):
+    """True when every recent point falls on one day of the year, in different years: a census every five years is read by the year, not as 1 January."""
+    recent = [point.date for point in points[-31:]]
+    return len(recent) >= 2 and len({(d.month, d.day) for d in recent}) == 1 and len({d.year for d in recent}) == len(recent)
+
+
+def one_year_apart(points):
+    """True when the recent points are a year apart each, so a run of them is a run of years."""
+    recent = [point.date for point in points[-31:]]
+    return all(later.year - earlier.year == 1 for earlier, later in zip(recent, recent[1:]))
 
 
 def partial_year(points):
@@ -430,11 +443,16 @@ def readings(points, show, lang="ko", limit=3):
 
     if is_yearly(points):
         if prev_change is not None:
-            found.append(("read_prev_year", f"직전 해 {day(before)} {show(before.value)} 대비 {percent(prev_change)}입니다." if ko else
-                          f"{percent(prev_change)} against the year before, {day(before)}, {show(before.value)}."))
+            found.append(("read_prev_year", f"직전 해 {day(before)} {show(before.value)} 대비 {percent(prev_change)}입니다." if ko and one_year_apart([before, newest]) else
+                          f"직전 {day(before)} {show(before.value)} 대비 {percent(prev_change)}입니다." if ko else
+                          f"{percent(prev_change)} against the year before, {day(before)}, {show(before.value)}." if one_year_apart([before, newest]) else
+                          f"{percent(prev_change)} against {day(before)}, {show(before.value)}."))
         run = streak(points)
         if abs(run) >= 2:
-            found.append(("read_year_run", f"{abs(run)}년 연속 {'증가' if run > 0 else '감소'}했습니다." if ko else f"It has {'risen' if run > 0 else 'fallen'} {abs(run)} years in a row."))
+            if one_year_apart(points):
+                found.append(("read_year_run", f"{abs(run)}년 연속 {'증가' if run > 0 else '감소'}했습니다." if ko else f"It has {'risen' if run > 0 else 'fallen'} {abs(run)} years in a row."))
+            else:  # five years apart: three rises in a row are not three years
+                found.append(("read_year_run", f"{abs(run)}번 연속 {'증가' if run > 0 else '감소'}했습니다." if ko else f"It has {'risen' if run > 0 else 'fallen'} {abs(run)} times in a row."))
 
     if is_monthly(points) or is_quarterly(points):
         unit = "달" if is_monthly(points) else "분기"
@@ -806,13 +824,14 @@ def _one_level_of_parts(items, by_sums):
     return kept if changed and len(kept) >= 2 else None
 
 
-def _against_budget(item, show, lang):
+def _against_budget(item, show, lang, basis="budget"):
     """A line set against its budget: 실적 33,037, 예산 28,120 대비 +17.5%. A budget of 0 or less gives no percentage."""
     ko = lang == "ko"
+    plan = PLANNED[basis][lang]
     change = f", {percent(ratio(item.value, item.before))}" if item.before > 0 else ""
     if ko:
-        return f"{item.label} 실적 {show(item.value)}, 예산 {show(item.before)}" + (f" 대비 {change[2:]}" if change else "") + "."
-    return f"{item.label} came to {show(item.value)} against a budget of {show(item.before)}{change}."
+        return f"{item.label} 실적 {show(item.value)}, {plan} {show(item.before)}" + (f" 대비 {change[2:]}" if change else "") + "."
+    return f"{item.label} came to {show(item.value)} against a {plan} of {show(item.before)}{change}."
 
 
 def item_readings(items, show, lang="ko", total=None, additive=True, before_total=None, limit=3, stated=True, rate=False, scale=1, basis="", wholes=()):
@@ -823,7 +842,8 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     wholes are the total lines of a table that totals unlike things (Total income, Total expenses). Its lines are not ranked against one another, and only the wholes are set against their budget.
     """
     ko = lang == "ko"
-    budget = basis == "budget"
+    budget = basis in PLANNED
+    plan = PLANNED[basis][lang] if budget else ""
     whole = ("전체" if stated else "항목 합계") if ko else ("the total" if stated else "the items' sum")
     if len(items) < 2:
         return []
@@ -831,7 +851,7 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     if len(wholes) >= 2:
         paired = [item for item in wholes if item.before is not None]
         if paired and budget:
-            found = [("read_whole_budget", _against_budget(item, show, lang)) for item in paired]
+            found = [("read_whole_budget", _against_budget(item, show, lang, basis)) for item in paired]
         elif paired:
             found = [("read_whole_change", f"{item.label}는 {show(item.before)} → {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}입니다." if item.before > 0 else "입니다.") if ko else
                       f"{item.label} went from {show(item.before)} to {show(item.value)}" + (f", {percent(ratio(item.value, item.before))}." if item.before > 0 else ".")) for item in paired]
@@ -841,14 +861,14 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     if any(item.before is not None for item in items):
         pairs = [item for item in items if item.before is not None]
         if budget:
-            pair = lambda item, change: f"예산 {show(item.before)}, 실적 {show(item.value)}, {change}" if ko else f"{show(item.value)} against a budget of {show(item.before)}, {change}"  # noqa: E731
+            pair = lambda item, change: f"{plan} {show(item.before)}, 실적 {show(item.value)}, {change}" if ko else f"{show(item.value)} against a {plan} of {show(item.before)}, {change}"  # noqa: E731
         else:
             pair = lambda item, change: f"{show(item.before)} → {show(item.value)}, {change}" if ko else f"from {show(item.before)} to {show(item.value)}, {change}"  # noqa: E731
         if not rate:
             if additive and total is not None and before_total:
                 if budget:
-                    found.append(("read_total_change", f"{whole}는 예산 {show(before_total)} 대비 실적 {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
-                                  f"{whole.capitalize()} came to {show(total)} against a budget of {show(before_total)}, {percent(ratio(total, before_total))}."))
+                    found.append(("read_total_change", f"{whole}는 {plan} {show(before_total)} 대비 실적 {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
+                                  f"{whole.capitalize()} came to {show(total)} against a {plan} of {show(before_total)}, {percent(ratio(total, before_total))}."))
                 else:
                     found.append(("read_total_change", f"{whole}는 {show(before_total)} → {show(total)}, {percent(ratio(total, before_total))}입니다." if ko else
                                   f"{whole.capitalize()} went from {show(before_total)} to {show(total)}, {percent(ratio(total, before_total))}."))
@@ -863,7 +883,7 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
         if ups:
             change, item = max(ups, key=lambda m: m[0])
             if budget:
-                found.append(("read_most_up", f"예산보다 가장 크게 웃돈 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} ran furthest over budget, {pair(item, word(change))}."))
+                found.append(("read_most_up", f"{plan}보다 가장 크게 웃돈 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} ran furthest over {plan}, {pair(item, word(change))}."))
             else:
                 found.append(("read_most_up", f"가장 크게 늘어난 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} rose most, {pair(item, word(change))}."))
             if additive and total is not None:  # A small item can lead by percent while another adds far more. With overlapping rows the sum says nothing.
@@ -871,13 +891,13 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
                 if biggest is not item:
                     grew = percent(ratio(biggest.value, biggest.before))
                     if budget:
-                        found.append(("read_most_added", f"예산 초과액이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} went over budget by the most, {pair(biggest, grew)}."))
+                        found.append(("read_most_added", f"{plan} 초과분이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} went over {plan} by the most, {pair(biggest, grew)}."))
                     else:
                         found.append(("read_most_added", f"증가량이 가장 큰 항목은 {biggest.label}({pair(biggest, grew)})입니다." if ko else f"{biggest.label} added the most, {pair(biggest, grew)}."))
         if downs:
             change, item = min(downs, key=lambda m: m[0])
             if budget:
-                found.append(("read_most_down", f"예산에 가장 크게 못 미친 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell furthest short of budget, {pair(item, word(change))}."))
+                found.append(("read_most_down", f"{plan}에 가장 크게 못 미친 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell furthest short of {plan}, {pair(item, word(change))}."))
             else:
                 found.append(("read_most_down", f"가장 크게 줄어든 항목은 {item.label}({pair(item, word(change))})입니다." if ko else f"{item.label} fell most, {pair(item, word(change))}."))
         # A percentage of a negative base means nothing, but a loss that moved is often the most important line of the table.
@@ -887,7 +907,7 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
             found.append(("read_negative_base", f"기준값이 음수라 비율을 낼 수 없는 항목: {named}." if ko else f"A negative base gives no percentage for: {named}."))
         if not moves and not negative:
             if budget:
-                found.append(("read_no_change", "실적과 예산이 같습니다." if ko else "The actuals match the budget."))
+                found.append(("read_no_change", f"실적과 {plan}{'가' if plan == '목표' else '이'} 같습니다." if ko else f"The actuals match the {plan}."))
             else:
                 found.append(("read_no_change", "두 기간의 값이 같습니다." if ko else "The two periods have the same values."))
         return [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in found[:limit]]
@@ -942,15 +962,19 @@ def item_pack(items, show, lang="ko", total=None, additive=True, before_total=No
     pack = []
     if len(wholes) >= 2:
         for number, item in enumerate(wholes[:10], start=1):
-            planned = (f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}") if basis == "budget" and item.before is not None else (f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}") if item.before is not None else ""
+            planned = f", {PLANNED[basis][lang]} {show(item.before)}" if basis in PLANNED and item.before is not None else (f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}") if item.before is not None else ""
             pack.append((f"whole_{number}", f"합계 줄 {item.label} {show(item.value)}{planned}" if ko else f"total line {item.label} {show(item.value)}{planned}"))
         return readings + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
     for place, item in enumerate(ranked_items(items)[:10], start=1):
+        if basis in PLANNED and item.before is not None:
+            # Against a budget, a line's own share of the total reads as its ratio to budget (연구소 53.6% taken as the highest against budget), and a place by size as a place by that ratio
+            pack.append((f"item_{place}", _against_budget(item, show, lang, basis).rstrip(".")))
+            continue
         share = f", {_share(item.value, total)}" if additive and total else ""
         if item.before is None:
             earlier = ""
-        elif basis == "budget":
-            earlier = f", 예산 {show(item.before)}" if ko else f", budget {show(item.before)}"
+        elif basis in PLANNED:
+            earlier = f", {PLANNED[basis][lang]} {show(item.before)}"
         else:
             earlier = f", 이전 {show(item.before)}" if ko else f", from {show(item.before)}"
         pack.append((f"item_{place}", f"{place}위 {item.label} {show(item.value)}{share}{earlier}" if ko else f"number {place} {item.label} {show(item.value)}{share}{earlier}"))
