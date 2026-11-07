@@ -30,7 +30,7 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 
 ## Install
 
-Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-5000/slide-fill/releases) and run it. It is one portable file: no installer and no admin rights. Its settings are kept in `SlideFill.json` next to it, which appears the first time you pick a file, preview, or change the language.
+Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-5000/slidefill/releases) and run it. It is one portable file: no installer and no admin rights. Its settings are kept in `SlideFill.json` next to it, which appears the first time you pick a file, preview, or change the language.
 
 The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
 

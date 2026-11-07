@@ -30,7 +30,7 @@
 
 ## 설치
 
-[Releases](https://github.com/hobby-programmer-5000/slide-fill/releases)에서 `SlideFill.exe`를 받아 실행하세요. 포터블 파일 하나이고, 설치와 관리자 권한이 필요 없습니다. 설정은 옆의 `SlideFill.json`에 저장되고, 이 파일은 처음 파일을 고르거나 미리보기하거나 언어를 바꿀 때 생깁니다.
+[Releases](https://github.com/hobby-programmer-5000/slidefill/releases)에서 `SlideFill.exe`를 받아 실행하세요. 포터블 파일 하나이고, 설치와 관리자 권한이 필요 없습니다. 설정은 옆의 `SlideFill.json`에 저장되고, 이 파일은 처음 파일을 고르거나 미리보기하거나 언어를 바꿀 때 생깁니다.
 
 exe에 코드 서명이 없어 처음 실행할 때 Windows SmartScreen이 "Windows의 PC 보호"라고 할 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
