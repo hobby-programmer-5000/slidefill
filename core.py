@@ -121,6 +121,8 @@ SHEET_YEAR_ROWS = 4
 SHEET_YEAR_COLUMNS = 10
 SHEET_YEAR_LENGTH = 60
 NAME_LOOK_RIGHT = 3  # columns to the right of a name that may tell two lines of that name apart
+PERIOD_COLUMN_LOOK = 500  # cells of a condition's column read to tell whether it holds periods
+PERIOD_COLUMN_SHARE = 0.6  # its heading and a note or two below need not be dates
 PERIOD_FILTER = re.compile(r"((?:18|19|20|21)\d\d)(?:\s*년|\s*[-./년]\s*(\d{1,2})\s*월?(?:\s*[-./]\s*(\d{1,2})\s*일?)?)?")  # 2022, 2022년, 2022-05 or 2022년 5월, kept by a condition
 SUBTOTALS_ADD_UP = 0.001  # a grand total this close to the other total lines is their sum, not one more kind of thing
 YEAR_IN_HEADING = re.compile(r"(?:19|20)\d\d(?:\s*[-–/]\s*\d{2,4})?")  # the year a column heading names, as 2024-25 or 2025
@@ -166,7 +168,7 @@ TRAILING_TOTAL = re.compile(r"\s+(?:total|합계|총계)\s*$", re.I)  # the row 
 FISCAL_YEAR_ENDS = (6, 30)  # when the file does not say. March, June and September are all in use; before the second calendar year's middle, a 2025-26 figure cannot be called complete
 _MONTH_NAME = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
 _DAY = r"(?:\d{1,2}(?:st|nd|rd|th)?\s+)?"
-FISCAL_END_WORDS = re.compile(rf"\b(?:year|fy)\s+(?:ending|ended|ends|end|to)\s+(?:on\s+)?{_DAY}{_MONTH_NAME}\b", re.I)  # year ending 30 June, FY ended March 31
+FISCAL_END_WORDS = re.compile(rf"\b(?:(?:year|fy)\s+(?:ending|ended|ends|end)|(?:financial|fiscal)\s+year\s+to|fy\s+to)\s+(?:on\s+)?{_DAY}{_MONTH_NAME}\b", re.I)  # year ending 30 June, FY ended March 31; a bare "year to October" is a year to date
 FISCAL_MONTH_SPAN = re.compile(rf"\b{_DAY}{_MONTH_NAME}\b(?:\s+(?:19|20)\d\d)?\s*(?:to|through|until|[-–—~])\s*{_DAY}{_MONTH_NAME}\b", re.I)  # July to June, 1 July 2024 to 30 June 2025
 FISCAL_MONTH_SPAN_KO = re.compile(r"(\d{1,2})\s*월(?:\s*\d{1,2}\s*일)?\s*(?:부터|[~～\-–])\s*(?:익년|다음\s*해|이듬해)?\s*(\d{1,2})\s*월")  # 4월~3월, 7월 1일부터 6월 30일
 FISCAL_END_KO = re.compile(r"(\d{1,2})\s*월\s*(?:말\s*)?결산")  # 3월 결산
@@ -204,10 +206,13 @@ class Shown(str):
     """A cell's text with the color its number format draws it in ([Red] for a loss). Any change to the text,
     such as putting it in a sentence, makes a plain str again, so only the value itself is ever colored."""
 
-    def __new__(cls, text, color):
+    def __new__(cls, text, color=None):
         made = super().__new__(cls, text)
         made.color = color
         return made
+
+    def __reduce__(self):  # copy and pickle keep the color
+        return Shown, (str(self), self.color)
 
 
 class SlideFillError(Exception):
@@ -785,7 +790,8 @@ def _dynamic_area(source, formula):
         if name in ("COUNTA", "COUNT"):
             ws, (left, top, right, bottom) = args[0]
             bottom = min(bottom, ws.max_row)
-            cells = (ws.cell(row, column).value for row in range(top, bottom + 1) for column in range(left, right + 1))
+            stored = getattr(ws, "_cells", {})  # ws.cell would make an empty cell at every place it is asked about
+            cells = (cell.value for row in range(top, bottom + 1) for column in range(left, right + 1) if (cell := stored.get((row, column))) is not None)
             return sum(raw not in (None, "") and (name == "COUNTA" or (isinstance(raw, (int, float)) and not isinstance(raw, bool))) for raw in cells)
         if name in ("ROWS", "COLUMNS"):
             _ws, (left, top, right, bottom) = args[0]
@@ -801,9 +807,9 @@ def _dynamic_area(source, formula):
         if name == "INDEX" and 2 <= len(args) <= 3:
             ws, (left, top, right, bottom) = args[0]
             row, column = args[1], args[2] if len(args) > 2 else 1
-            if right == left and len(args) == 2:
-                column = 1
-            if row < 1 or column < 1:
+            if top == bottom and right > left and len(args) == 2:  # INDEX(B2:G2, 6): in one row the number counts across, as Excel reads it
+                row, column = 1, args[1]
+            if not (1 <= row <= bottom - top + 1 and 1 <= column <= right - left + 1):  # Excel gives #REF! outside the range
                 raise ValueError(formula)
             return ws, (left + column - 1, top + row - 1, left + column - 1, top + row - 1)
         raise ValueError(name)
@@ -893,10 +899,21 @@ def _names_told_apart(ws, ref, labels, specs, order, places):
     return renamed
 
 
+def _holds_periods(ref, line):
+    """True when most filled cells of a condition's column, on the first sheet, read as dates, years or financial years."""
+    ws = ref.sheets[0]
+    size = min(ws.max_column if ref.by_row else ws.max_row, PERIOD_COLUMN_LOOK)
+    cells = [raw for position in range(1, size + 1) if (raw := _merged_value(ws, *ref.at(position, line))) not in (None, "")]
+    periods = sum(as_date(raw) is not None or as_year(raw) is not None or (isinstance(raw, str) and YEAR_SPAN.fullmatch(raw.strip()) is not None) for raw in cells)
+    return bool(cells) and periods >= len(cells) * PERIOD_COLUMN_SHARE
+
+
 def _filtered_period(ref, lang):
     """The period a condition such as B=2022-05 keeps a comparison to, in words: 2022년 5월, or May 2022. None when no condition is a period."""
     for value in ref.values:
-        for _line, text in (value.filters if isinstance(value, Aggregate) else ()):
+        for line, text in (value.filters if isinstance(value, Aggregate) else ()):
+            if not _holds_periods(ref, line):
+                continue  # B=2100 on a column of product codes keeps a product, not a year
             span = YEAR_SPAN.fullmatch(str(text).strip())
             if span and (int(span.group(1)) + 1) % 100 == int(span.group(2)) % 100:
                 return str(text).strip()  # 2025-26, a financial year, as the sheet writes it
@@ -1285,7 +1302,7 @@ def total_word_kind(value):
     last = value.split()[-1].casefold() if value.split() else ""
     if word in SUBTOTAL_WORDS or (last in SUBTOTAL_WORDS and len(value.split()) <= GROUP_TOTAL_WORDS):  # 서울 소계
         return "subtotal"
-    if last == "계" and len(value.split()) <= GROUP_TOTAL_WORDS:  # 수입 계 and 지출 계, the total of each part of a statement. 회계 and 생계 run the 계 on
+    if last == "계" and len(value.split()) <= GROUP_TOTAL_WORDS and len("".join(value.split()[:-1])) >= 2:  # 수입 계 and 지출 계, the total of each part of a statement. 회계 and 생계 run the 계 on, and so do 회  계 and 통  계 spaced out to fill their cells
         return "total"
     if word in TOTAL_WORDS or TOTAL_ROW.match(value.strip()) or word.endswith(("합계", "총계", "전체")):  # 공원관리사업소 전체 is the whole office
         return "total"
@@ -3145,12 +3162,24 @@ class _Run:
                 continue
             if PLACEHOLDER.search(part.blob.decode("utf-8", "ignore")):
                 left.append((part, name))
-        data_left = any(name.startswith("/ppt/diagrams/data") for _part, name in left)
+        paired = {drawing for part, name in left if name.startswith("/ppt/diagrams/data") for drawing in self._drawings_of(part)}
         for part, name in left:
-            if data_left and name.startswith("/ppt/diagrams/drawing"):  # PowerPoint's drawn copy of the SmartArt beside it, not a second place to fix
+            if part in paired:  # PowerPoint's drawn copy of a SmartArt already listed, not a second place to fix
                 continue
             item = self.item("unsupported", name, ("part", name))
             self.add_issues(item, [Issue("unsupported_location", {"part": name, "slide": self.slide_holding(part)})])
+
+    def _drawings_of(self, data):
+        """The drawn copies of a SmartArt data part: what its dataModelExt names on the slide that holds it, or else the drawing numbered as it is."""
+        found = []
+        ids = re.findall(rb'dataModelExt[^>]*\brelId="([^"]+)"', data.blob)
+        for slide in self.prs.slides:
+            if any(not rel.is_external and rel.target_part is data for rel in slide.part.rels.values()):
+                found += [slide.part.rels[i.decode()].target_part for i in ids if i.decode() in slide.part.rels]
+        if not found:
+            number = re.search(r"(\d+)\.xml$", str(data.partname))
+            found = [part for part in self.prs.part.package.iter_parts() if number and str(part.partname) == f"/ppt/diagrams/drawing{number.group(1)}.xml"]
+        return found
 
     def slide_holding(self, part):
         """The number of the slide that uses a part, so a person can find it."""

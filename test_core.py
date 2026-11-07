@@ -5737,6 +5737,95 @@ def with_smartart(plain, patched, data, drawing=None, slide=1):
             dst.writestr("ppt/diagrams/drawing1.xml", drawing)
 
 
+class ColdReview(Base):
+    """What the review before v0.2.0, by a reader who had not seen the work, found in it."""
+
+    def test_a_long_html_table_is_laid_out_quickly(self):
+        import time
+        import readers
+        table = [[(f"{r}-{c}", 1, 1) for c in range(15)] for r in range(20000)]
+        started = time.perf_counter()
+        rows, merges = readers._laid_out(table)
+        self.assertLess(time.perf_counter() - started, 5)  # 3,000 rows took 19 s when every row looked through every cell
+        self.assertEqual((len(rows), len(rows[0]), merges), (20000, 15, []))
+
+    def test_a_word_spaced_out_before_gye_is_not_a_total(self):
+        for word in ("회  계", "설  계", "통  계"):
+            self.assertIsNone(core.total_word_kind(word), word)  # 회계, 설계, 통계 spaced out to fill a cell
+        for word, kind in (("수입 계", "total"), ("합  계", "total"), ("총  계", "total"), ("소  계", "subtotal")):
+            self.assertEqual(core.total_word_kind(word), kind, word)
+
+    def _named(self, formula):
+        from openpyxl.workbook.defined_name import DefinedName
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        ws.append(["월", "1월", "2월", "3월", "4월", "5월", "6월"])
+        ws.append(["매출", 10, 20, 30, 40, 50, 60])
+        wb.defined_names["끝"] = DefinedName("끝", attr_text=formula)
+        path = os.path.join(self.dir, "이름.xlsx")
+        wb.save(path)
+        return core.ExcelSource(path)
+
+    def test_index_over_one_row_counts_across(self):
+        source = self._named("INDEX(표!$B$2:$G$2,COUNTA(표!$B$2:$G$2))")
+        self.assertEqual(source.text_value("끝")[:2], ("60", "표!G2"))  # Excel's G2, not B7 below the row
+        for formula in ("INDEX(표!$B$2:$G$2,7)", "INDEX(표!$B$1:$B$2,3)"):
+            with self.assertRaises(core.IssueError):  # past the range Excel gives #REF!
+                self._named(formula).locate("끝")
+
+    def test_counting_a_whole_column_makes_no_cells(self):
+        source = self._named("OFFSET(표!$A$2,0,COUNTA(표!$A$2:$G$2)-1)")
+        ws = source.wb["표"]
+        ws.cell(50, 1, "주석")  # a note far below: column B is empty from row 3 down to here
+        before = len(ws._cells)
+        self.assertEqual(source.text_value("끝")[0], "60")
+        core._dynamic_area(source, "INDEX(표!$B:$B,COUNTA(표!$B:$B))")
+        self.assertEqual(len(ws._cells), before)
+
+    def test_a_condition_on_a_column_of_codes_is_not_a_period(self):
+        rows = [["코드", "부문", "금액"], [2100, "가", 10], [2100, "나", 20], [3100, "가", 5], [3100, "나", 7]]
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "표"
+        for row in rows:
+            ws.append(row)
+        path = os.path.join(self.dir, "코드.xlsx")
+        wb.save(path)
+        text = core.ExcelSource(path).text_value("읽는법:표!B,합계(C, A=2100)")[0]
+        self.assertNotIn("2100년", text)
+        self.assertIn("나(20)", text)
+
+    def test_a_year_to_date_note_is_not_the_end_of_a_financial_year(self):
+        self.assertIsNone(core.fiscal_year_end(["Calendar year to October 2025"]))
+        self.assertEqual(core.fiscal_year_end(["Financial year to 30 June"]), 6)
+
+    def test_a_coloured_value_can_be_copied(self):
+        import copy
+        shown = copy.deepcopy(core.Shown("-5", "FF0000"))
+        self.assertEqual((shown, shown.color, type(shown)), ("-5", "FF0000", core.Shown))
+
+    def test_a_drawing_of_another_smartart_is_still_reported(self):
+        self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        self.prs.save(self.pptx)
+        patched = os.path.join(self.dir, "two.pptx")
+        with zipfile.ZipFile(self.pptx) as src, zipfile.ZipFile(patched, "w") as dst:
+            for info in src.infolist():
+                content = src.read(info.filename)
+                if info.filename == "[Content_Types].xml":
+                    content = content.replace(b"</Types>", b'<Override PartName="/ppt/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>'
+                                              b'<Override PartName="/ppt/diagrams/drawing2.xml" ContentType="application/vnd.ms-office.drawingml.diagramDrawing+xml"/></Types>')
+                if info.filename == "ppt/slides/_rels/slide1.xml.rels":
+                    content = content.replace(b"</Relationships>", b'<Relationship Id="rId98" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/></Relationships>')
+                if info.filename == "ppt/slides/_rels/slide2.xml.rels":
+                    content = content.replace(b"</Relationships>", b'<Relationship Id="rId99" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="../diagrams/drawing2.xml"/></Relationships>')
+                dst.writestr(info, content)
+            dst.writestr("ppt/diagrams/data1.xml", "<x>{{매출}}</x>")  # slide 1: a SmartArt it cannot read
+            dst.writestr("ppt/diagrams/drawing2.xml", "<x>{{매출}}</x>")  # slide 2: another one's drawing, left too
+        report = core.run(patched, self.xlsx)
+        self.assertEqual(sorted(item.key for item in report.items if item.kind == "unsupported"), ["/ppt/diagrams/data1.xml", "/ppt/diagrams/drawing2.xml"])
+
+
 def etree_paragraph(texts):
     from lxml import etree
     paragraph = etree.Element(core.A_P)

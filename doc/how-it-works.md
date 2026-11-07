@@ -34,7 +34,7 @@ SmartArt keeps its words in a data part, and PowerPoint draws it from a second c
 
 ## Names that grow with their data
 
-A defined name such as `OFFSET(Sheet!$B$1,COUNTA(Sheet!$B:$B)-1,0)` or `Sheet!$B$2:INDEX(Sheet!$B:$B,COUNTA(Sheet!$B:$B))` is worked out the way Excel would: `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS`, `COLUMNS`, whole numbers, `+` and `-`. Anything else in a name, such as `SUM`, is reported as a name that is not cells.
+A defined name such as `OFFSET(Sheet!$B$1,COUNTA(Sheet!$B:$B)-1,0)` or `Sheet!$B$2:INDEX(Sheet!$B:$B,COUNTA(Sheet!$B:$B))` is worked out the way Excel would: `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS`, `COLUMNS`, whole numbers, `+` and `-`. In a range of one row, `INDEX(B2:G2, 3)` counts across the row as Excel does, and a number outside the range is not read. Anything else in a name, such as `SUM`, is reported as a name that is not cells.
 
 ## When a value cannot be determined
 
@@ -113,7 +113,7 @@ For a table with no dates:
 - **People added across kinds that can overlap**: a number of people (`인원`, `환자`, `persons`) added across a column of kinds one person can be in more than once, such as inpatient, outpatient and pharmacy, may count the same person twice, so it asks first. Kinds that split people apart, such as sex, age, region or year, are added without asking.
 - **A comparison of items under a period condition** says the period first: "2022년 5월 기준, ..." or "In May 2022, ...", and `2025-26 기준` for a financial year.
 - **One name on several lines** is told apart by the column beside it that differs between them: a rate table's `일반용` becomes `일반용 2,001이상`.
-- **`수입 계` and `지출 계`** (a `계` set apart, in four words or fewer) are total lines; `서울 소계` is a subtotal. With several total lines, the items are not checked against a total of another kind.
+- **`수입 계` and `지출 계`** (a `계` set apart, in four words or fewer) are total lines; `서울 소계` is a subtotal. The words before the `계` must hold two letters or more, so `회  계` and `통  계`, spaced out to fill their cells, are still words, not totals. With several total lines, the items are not checked against a total of another kind.
 - **A heading row of bare years** (`항목 | 2024 | 2025`, the years written as numbers) heads the columns, so the figure is called `2025`, not `C`, and the change between the two years is stated.
 - **Mean, maximum and minimum under each month**, on lines with empty date cells: those lines belong to the month above them, and the mean line is chosen rather than all three added or averaged, also when it is spaced out to fill its cell (`평 균`).
 - **An `.xls` that is really an HTML table** has its `rowspan` and `colspan` laid out as Excel does, so the columns under a wide heading stay in place.

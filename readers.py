@@ -151,13 +151,14 @@ def _whole(text):
 def _laid_out(table):
     """(rows of texts, merged ranges) for an HTML table, as Excel lays it out: a cell spanning rows or columns is merged, its text in the top left.
     A rowspan from the row above takes its place in the rows below, so their cells move right and stay under their headings."""
-    grid, merges, taken = [], [], set()
+    grid, merges, taken, reach = [], [], set(), {}
     for r, cells in enumerate(table):
         row, c = [], 0
         for text, down, across in cells:
             while (r, c) in taken:
                 c += 1
             for dr in range(down):
+                reach[r + dr] = max(reach.get(r + dr, 0), c + across)  # how far each row is covered, kept as it goes: scanning taken for every row is slow on a long table
                 for dc in range(across):
                     taken.add((r + dr, c + dc))
             row.append((c, text))
@@ -167,12 +168,13 @@ def _laid_out(table):
         grid.append(row)
     rows = []
     for r, row in enumerate(grid):
-        width = max([c + 1 for c, _text in row] + [c + 1 for (tr, c) in taken if tr == r], default=0)
+        width = max([c + 1 for c, _text in row] + [reach.get(r, 0)])
         line = [""] * width
         for c, text in row:
             line[c] = text
         rows.append(line)
-    keep = [r for r, line in enumerate(rows) if any(line) or any(top <= r + 1 <= bottom for top, _l, bottom, _r in merges)]
+    spanned = {row for top, _l, bottom, _r in merges for row in range(top, bottom + 1)}
+    keep = [r for r, line in enumerate(rows) if any(line) or r + 1 in spanned]
     if len(keep) != len(rows):  # rows with nothing in them and no span through them: drop them, and move spans up with the rows
         moved = {old + 1: new + 1 for new, old in enumerate(keep)}
         rows = [rows[r] for r in keep]
