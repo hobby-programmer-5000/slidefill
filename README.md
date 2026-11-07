@@ -186,17 +186,19 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - SlideFill reads the values Excel last **saved**. Save the workbook first.
 - Files with a password or document security (DRM) cannot be read. It tells you so.
 - Reads `.xlsx .xlsm .xltx .xltm .xls .xlsb .ods .csv .tsv .txt`. Macros never run. A file named `.xls` that is really an HTML table or an `.xlsx` is read too.
-- `.xlsb` and `.ods` give values only, without number formats or merged cells, so 85% shows as 0.85. Save as `.xlsx` if the display matters.
+- `.xlsb` and `.ods` keep their number formats and merged cells, read from the file's own records, so 85% stays 85%. An `.xls` that is really an HTML table keeps cells that span rows or columns, as Excel lays them out.
 - `.ppt` is not supported.
 - Hidden sheets are left out of the automatic choice, and read only when no other sheet holds figures. A sheet named as a forecast, plan or budget is not joined to the actuals.
 - The automatic choice takes a sheet named as a summary (요약, 총괄, 종합, summary) first, then the one with the newest year in its name. A log with only words and dates, such as a list of complaints, is read as a count by date, after any sheet that holds numbers (such as one tallying survey answers).
 - `△500`, `(300)` and `(1,234)` read as negatives. `(1)`, `(2)` under the headings number the columns and are not figures. Digits it cannot read, such as `▲500` or `1,2,3` with commas that do not group thousands, are left out, so it asks first.
 - A table beyond an empty column, or another table under a blank row, is not mixed in. Of tables stacked on one sheet only the first is read, and it asks first, as it does when rows may have been left out because a sum matched by chance.
-- Placeholders inside SmartArt cannot be filled. They are reported, with the slide they are on.
+- Placeholders inside SmartArt are filled. PowerPoint then lays the SmartArt out again when it opens the report, so a long value fits its box. A SmartArt saved in a shape SlideFill cannot read is reported, with the slide it is on.
+- A number format's colour, such as `[Red]` for a loss, carries to the slide: only the value is coloured, in text and in tables. `[Black]` and `[White]` keep the template's own colour, and a value put into a sentence is not coloured.
 - A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
-- Dynamic names such as `OFFSET(...)` cannot be resolved. Use an Excel table instead.
+- Dynamic names built from `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS` and `COLUMNS` are worked out to the cells they cover, so a name that grows with its data is read. A name holding any other formula is reported.
+- A financial year (`2025-26`, `Q1 FY24`) ends when the workbook says it does, in words such as `year ending 31 March`, `July to June`, `4월~3월` or `3월 결산`. If it says nothing, or says two different things, June is assumed, and calling a period unfinished can then be a few months off.
 - Unusual number formats (fractions, `[DBNum1]` and the like) fall back to the plain value with a warning. Conditions such as `[>=5]#,##0` show as Excel shows them.
-- Thousands and decimal separators are always `,` and `.`. Spaces that group thousands, as in `39 925`, are read too.
+- Numbers are written with `,` for thousands and `.` for decimals on every PC. Excel follows the PC's region, so on a PC set to German it shows `1.234,5` where the slide says `1,234.5`. This is on purpose: the sentences SlideFill writes use the same marks, and a report should read the same whichever PC made it. Text such as `1.234,5` typed into a cell is not read as a number, so it asks first. Spaces that group thousands, as in `39 925`, are read.
 
 ## How it is checked
 
@@ -204,6 +206,7 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 |---|---|
 | Numbers match Excel | `tools/compare_with_excel.py` has real Excel display over 100 values and formats, then compares every one |
 | Reports open cleanly | `tools/verify_powerpoint.ps1` opens a report in real PowerPoint and opens each chart's data |
+| SmartArt shows its values | `tools/smartart_check.ps1` has real PowerPoint draw a SmartArt with placeholders, then reads the filled report's SmartArt back and saves pictures of it |
 | The window works | `tools/gui_check.py` runs the shortcuts and dialogs; `tools/gui_check.ps1` starts the real exe |
 | Everything else | `test_core.py`, which `build.bat` runs every time |
 | Reading rules fire on the right days | Run on every day of real public data, 2022 to 2025. See [how it works](doc/how-it-works.md) |
