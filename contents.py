@@ -2,11 +2,13 @@
 
 import atexit
 import ctypes
+import math
 import os
 import queue
 import threading
 import tkinter as tk
 from dataclasses import dataclass
+from fractions import Fraction
 from tkinter import ttk
 
 import core
@@ -84,9 +86,21 @@ class DropTarget:
 
 def draw_chart(canvas, left, top, width, height, rows, bars, font, color_text):
     """A picture of the chart: enough to see what it will show, not PowerPoint's own drawing."""
+    if not rows:
+        return
+
+    def numeric(value):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, Fraction)):
+            return Fraction(value)
+        if isinstance(value, float) and math.isfinite(value):
+            return Fraction(value)
+        return None
+
     names = [str(cell[1]) for cell in rows[0][1:]]
     labels = [str(row[0][1]) for row in rows[1:]]
-    series = [[row[c + 1][0] if isinstance(row[c + 1][0], (int, float)) else None for row in rows[1:]] for c in range(len(names))]
+    series = [[numeric(row[c + 1][0]) if c + 1 < len(row) else None for row in rows[1:]] for c in range(len(names))]
     known = [value for line in series for value in line if value is not None]
     if not known or not labels:
         return
@@ -94,20 +108,37 @@ def draw_chart(canvas, left, top, width, height, rows, bars, font, color_text):
     span = (high - low) or 1
     plot_top, plot_bottom = top + 4, top + height - font * 3.4
     plot_left, plot_right = left + font * 5, left + width - 4
-    canvas.create_line(plot_left, plot_bottom, plot_right, plot_bottom, fill="#808080")
+    if plot_right <= plot_left or plot_bottom <= plot_top:
+        return
+    # Normalize exactly before converting to screen coordinates. Converting huge
+    # finite values first can overflow, and subtracting close floats loses scale.
+    y_of = lambda value: plot_bottom - float((value - low) / span) * (plot_bottom - plot_top)  # noqa: E731
+    baseline = y_of(0)
+    canvas.create_line(plot_left, baseline, plot_right, baseline, fill="#808080")
     canvas.create_line(plot_left, plot_top, plot_left, plot_bottom, fill="#808080")
     for value, y, anchor in ((high, plot_top, "ne"), (low, plot_bottom, "se")):
-        canvas.create_text(plot_left - 3, y, text=f"{value:,.0f}" if abs(value) >= 10 else f"{value:g}", anchor=anchor, font=(FONT_FAMILY, -font), fill=color_text)
+        label = f"{value:,.0f}" if 10 <= abs(value) < 10**9 else f"{value:.3g}"
+        canvas.create_text(plot_left - 3, y, text=label, anchor=anchor, font=(FONT_FAMILY, -font), fill=color_text)
     step = (plot_right - plot_left) / len(labels)
-    y_of = lambda value: plot_bottom - (value - low) / span * (plot_bottom - plot_top)  # noqa: E731
     for line, values in enumerate(series):
         color = SERIES_COLORS[line % len(SERIES_COLORS)]
-        points = [(plot_left + step * (place + 0.5), y_of(value)) for place, value in enumerate(values) if value is not None]
+        points = [None if value is None else (plot_left + step * (place + 0.5), y_of(value)) for place, value in enumerate(values)]
         if bars:
-            for x, y in points:
-                canvas.create_rectangle(x - step * 0.3, y, x + step * 0.3, plot_bottom, fill=color, outline="")
-        elif len(points) >= 2:
-            canvas.create_line(*[coordinate for point in points for coordinate in point], fill=color, width=2)
+            for point in points:
+                if point is not None:
+                    x, y = point
+                    canvas.create_rectangle(x - step * 0.3, min(y, baseline), x + step * 0.3, max(y, baseline), fill=color, outline="")
+        else:
+            run = []
+            for point in [*points, None]:
+                if point is None:
+                    if len(run) >= 2:
+                        canvas.create_line(*[coordinate for pair in run for coordinate in pair], fill=color, width=2)
+                    run = []
+                else:
+                    run.append(point)
+                    x, y = point
+                    canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color, outline="")
     canvas.create_text(plot_left, plot_bottom + 2, text=labels[0][:12], anchor="nw", font=(FONT_FAMILY, -font), fill=color_text)
     canvas.create_text(plot_right, plot_bottom + 2, text=labels[-1][:12], anchor="ne", font=(FONT_FAMILY, -font), fill=color_text)
     x = plot_left

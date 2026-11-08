@@ -85,6 +85,7 @@ class Fact:
     numbers: tuple
     figure: str = ""  # on a subject fact: which figure all of a file's facts are about
     period: str = ""  # and which period is "now"; any other period is only something to compare with
+    relative_change: Fraction = None  # exact (now-base)/abs(base), only when this fact computes that operation
 
 
 def readable_name(name):
@@ -113,7 +114,9 @@ def detect_language(texts):
 
 def fingerprint(pack, lang):
     """Changes whenever the calculated results change, so a sentence chosen for old data is not used on new data."""
-    joined = "\n".join(f"{fact.id}: {fact.text}" for fact in pack)
+    joined = "\n".join(f"{fact.id}: {fact.text}" +
+                       (f"\nrelative_change={fact.relative_change}" if fact.relative_change is not None else "")
+                       for fact in pack)
     return hashlib.sha256(f"{lang}\n{joined}".encode("utf-8")).hexdigest()
 
 
@@ -397,14 +400,22 @@ def day_text(date, lang):
     return f"{MONTHS[date.month - 1]} {date.day} ({weekday})"
 
 
+def _movement_size(change, lang):
+    """Magnitude of an exact relative change; a nonzero subdisplay move is never zero."""
+    size = format_value(abs(change), "0.0%")[0]
+    if change and size == "0.0%":
+        return "0.05% 미만" if lang == "ko" else "less than 0.05%"
+    return size
+
+
 def _movement(change, lead, lang):
     words = WORDS[lang]
-    size = format_value(abs(change), "0.0%")[0]
+    size = _movement_size(change, lang)
     if lang == "ko":
-        if size == '0.0%':
+        if not change:
             return f"{lead} {words['flat']}"
         return f"{lead} {size} {words['up'] if change > 0 else words['down']}"
-    if size == '0.0%':
+    if not change:
         return f"{words['flat']} {lead}"
     return f"{words['up'] if change > 0 else words['down']} {size} {lead}"
 
@@ -624,6 +635,7 @@ def fact_pack(points, header, show, lang="ko"):
     daily_data = is_daily(points)
     day = lambda p: point_text(p.date, points, lang)  # noqa: E731
     pack = [("value", f"{day(newest)} {header}: {show(newest.value)}")]
+    changes = {}  # exact operands stay separate from rounded prose used by the model
     months = partial_year(points)
     if months:  # Rank, streak and means against whole years would all mislead, so only the fair comparison goes in.
         change = ratio(quotient(newest.value,months), quotient(points[-2].value,12))
@@ -645,11 +657,13 @@ def fact_pack(points, header, show, lang="ko"):
         if change is not None:
             pack.append(("year", f"전년 같은 {word} {day(found)} {show(found.value)} 대비 {percent(change)}" if ko else
                          f"{percent(change)} against the same {word} last year, {day(found)}, {show(found.value)}"))
+            changes["year"] = change
     found = previous(points)
     change = ratio(newest.value, found.value) if found else None
     if change is not None:
         pack.append(("prev", f"직전 값 {day(found)} {show(found.value)} 대비 {percent(change)}" if ko else
                      f"{percent(change)} against the previous value, {day(found)}, {show(found.value)}"))
+        changes["prev"] = change
     base = mean_before(points, 7)
     avg_change = ratio(newest.value, base) if base is not None else None
     if avg_change is not None:
@@ -707,7 +721,7 @@ def fact_pack(points, header, show, lang="ko"):
                          f"in the latest {len(recent)}: weekday mean {show(mean(weekdays))}, weekend mean {show(mean(weekends))}, weekend {percent(change)} against weekdays"))
     latest =", ".join(f"{day(p)} {show(p.value)}" for p in points[-7:])
     pack.append(("recent", f"최근 값: {latest}" if ko else f"latest values: {latest}"))
-    return readings(points, show, lang, limit=9) + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
+    return readings(points, show, lang, limit=9) + [Fact(name, text, tuple(NUMBER.findall(text)), relative_change=changes.get(name)) for name, text in pack]
 
 
 @dataclass(frozen=True)
@@ -769,10 +783,11 @@ def cross_file_readings(entries, lang="ko"):
     word = {"year": "전년 같은 기간보다" if ko else "against a year earlier", "prev": "직전보다" if ko else "against the period before"}[basis]
     moved = []
     for name, change, _period, _basis in known:
+        size = _movement_size(Fraction(str(change)) / 100, lang)
         if ko:
-            moved.append(f"{name} {abs(change):.1f}% {'증가' if change > 0 else '감소'}" if change else f"{name} 변동 없음")
+            moved.append(f"{name} {size} {'증가' if change > 0 else '감소'}" if change else f"{name} 변동 없음")
         else:
-            moved.append(f"{name} {'up' if change > 0 else 'down'} {abs(change):.1f}%" if change else f"{name} unchanged")
+            moved.append(f"{name} {'up' if change > 0 else 'down'} {size}" if change else f"{name} unchanged")
     signs = {(change > 0) - (change < 0) for _name, change, _period, _basis in known}
     if signs == {1}:
         ending = "모두 늘었습니다" if ko else "all rose"

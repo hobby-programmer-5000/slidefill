@@ -20,6 +20,12 @@ Category, date-axis and XY charts are checked against their series names, catego
 
 Integer comparisons are exact. Decimal/float serialization has a two-ULP budget; explicit grouped aggregates retain exact rational intermediates through formatting or a required container conversion, independently reconstructed from source operands. A chart integer must survive float conversion exactly, and explicit supported formats must keep their displayed precision in the cache/embedded data. There is no operation-count ULP multiplier for aggregates. See the [aggregate contract](binary-verification.md#exact-aggregates-and-source-decoding-error). These are enforced comparison policies, not a formal floating-point error theorem or an independent proof of the shared display formatter.
 
+## Optional insight and contents-sketch checks
+
+The optional insight editor and core reuse check supported numeric magnitudes against the current calculated facts using bounded exact decimal identities. Equivalent spellings can match, while differing low digits, malformed forms and excessive literals are rejected. An invalid edit keeps the prior choice and leaves the editor open. Use a number from the displayed facts, or clear the field for the calculated sentence. An invalid stored choice is replaced with that fallback and a numeric warning. Signs/direction words, units, subjects, excluded dates/quarters and arbitrary sentence meaning remain separate. Scientific-literal support in the checker does not guarantee complete scientific metadata from every fact producer; conservative rejection is possible.
+
+Cross-file direction uses exact relative-change payloads, including tiny nonzero signs; a move below one-decimal display precision is described as less than `0.05%`. It never reconstructs the change from rounded prose. The **Change contents** chart sketch preserves finite Fraction data, missing gaps and mixed-sign zero baselines, with exact normalization before screen-coordinate conversion. The sketch remains a schematic. See the [boundary contracts](reliability-hardening.md#preserving-information-between-calculations-and-wording) and [research rationale](research-methods.md). Manual content selections still lack a complete schema-drift contract.
+
 ## Special cases and notes in the report
 
 | Situation | Existing app/report behavior | What the reader still needs to check |
@@ -29,6 +35,7 @@ Integer comparisons are exact. Decimal/float serialization has a two-ULP budget;
 | Unknown fiscal-year end, incomplete periods or an unconfirmed automatic choice | Uses the existing qualified sentences/notes or withholds a comparison. | The actual year end, covered dates and chosen measure. |
 | Unsupported independent source format/formula/expression | Shows partial verification and refuses saving; checks it can perform still run. | Correct or simplify the input using the stated reason. Re-preview; there is no generic override. |
 | Changed input, altered chart/cache/embedded workbook or missing required source warning | Blocks saving; the generic “create anyway” confirmation cannot override it. | Reopen the intended input, correct the cause and preview again. |
+| A chosen insight contains an unsupported or unbacked numeric token | The editor rejects the edit; core reuse substitutes the calculated fallback and adds a numeric warning. | Correct the token using the current facts, or clear the choice. Read the sentence for signs, units and meaning. |
 
 For example, if food is 10, operations is 20 and the source total is 35, the report retains 35 and notes that the components add to 30. A passed check can mean that these values and the required warning were correctly preserved; it does not certify the source total as correct.
 

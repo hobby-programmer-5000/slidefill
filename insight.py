@@ -12,7 +12,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from facts import HANGUL, LATIN, NUMBER
+from facts import HANGUL, LATIN
+from numeric_text import NUMBER, NOT_A_FIGURE, figure_tokens, number_identity, unbacked_numbers
 
 URL = "http://127.0.0.1:11434/api/"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # a system proxy must never see this data
@@ -79,8 +80,6 @@ MIN_ITEM_NAME = 2  # 가 alone would be found in almost any sentence
 BRACKET = re.compile(r"^\[[^\]]*\]\s*")
 FILE_PREFIX = re.compile(r"^file\d+_")
 HAN = re.compile(r"[一-鿿]")
-# Only dates are not figures. "12개월 연속" and "3번째" are claims, and must come from a fact it cites.
-NOT_A_FIGURE = re.compile(r"\bQ\d\b|(?<![\d.,])\d\s*분기|(?<![\d.,])\d+\s*(?:월(?!\s*연속)|일|년)|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d+|(?<![\d.,])\d{4}(?![\d,.])")
 LEAK = re.compile(r"신호_|signal_|read_|fact_ids?|fact_\d|item_\d")
 CITATION_TEXT = re.compile(r"\s*\(fact_ids?:[^)]*\)")
 # 평년 for a recent mean, 17th of 30 as "the top 17%" or "near the top", and a station's figure as the whole system's.
@@ -201,16 +200,17 @@ def schema_for(pack):
 
 
 def _number(text):
-    return f"{float(text.replace(',', '').rstrip('.')):g}"
+    """Exact magnitude identity; sign/direction is checked separately below."""
+    return number_identity(text, magnitude=True)
 
 
 def _with_missing_citations(cited, pack, text):
     """A model often forgets to cite a fact whose figure it used rightly. If one fact holds the figure, it is added; if several do, which was meant cannot be told, so it stays missing."""
     held = {_number(n) for fact in cited for n in fact.numbers}
     added = list(cited)
-    for raw in NUMBER.findall(NOT_A_FIGURE.sub(" ", text)):
+    for raw in figure_tokens(text):
         value = _number(raw)
-        if value in held:
+        if value is None or value in held:
             continue
         holders = [fact for fact in pack if value in {_number(n) for n in fact.numbers} and not fact.id.endswith(("subject", "files"))]
         current = [fact for fact in holders if fact.id.endswith("value")]  # the current value is also the highest of the last five, and it is still the current value
@@ -230,8 +230,7 @@ def check(item, pack, lang):
     if not cited:
         problems.append("citation")
     cited = _with_missing_citations(cited, pack, text)
-    allowed = {_number(n) for fact in cited for n in fact.numbers}
-    if {_number(n) for n in NUMBER.findall(NOT_A_FIGURE.sub(" ", text))} - allowed:
+    if unbacked_numbers(text, (n for fact in cited for n in fact.numbers)):
         problems.append("number")
     if CAUSE.search(text):
         problems.append("cause")

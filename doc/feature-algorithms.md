@@ -2,7 +2,7 @@
 
 # Feature principles, formulas and algorithms
 
-This is a feature-by-feature reference for the development source at `d58471b`. The numeric hardening described here is **unreleased** and is not included in the published v0.3.0 executable. This document explains the implementation; it does not introduce new behavior or a new accuracy measurement.
+This is a feature-by-feature reference for the current development source. The numeric hardening described here is **unreleased** and is not included in the published v0.3.0 executable. This document explains the implementation; it is not a new accuracy measurement. The [research methods guide](research-methods.md) separates literature evidence, our implementation choices and their limits.
 
 The arithmetic, source selection, descriptive rules and optional model wording have different guarantees. Exact arithmetic establishes an answer to a declared calculation. It cannot establish that the chosen measure, source or business definition was appropriate.
 
@@ -24,9 +24,9 @@ Category A does not mean the implementation can never contain a bug. It describe
 | Descriptive statistics | Calculate the declared median, MAD, spread, change and threshold predicate. | Whether “three spreads and 7%” means an important anomaly in this business. A threshold being met is not evidence of a cause or statistical significance. |
 | Word before/after | Compute exact means/differences for two declared source windows. | Name/event matching, event-date index, window size, sparse periods and causal interpretation. Document-number overlap is only a hint. |
 | Saved-formula audit | Independently evaluate the expected rational result of a supported expression. | Parser/grammar coverage, operand decoding and the two-ULP noninteger cache policy; this is not exact bit identity or a complete Excel engine. |
-| Cross-file direction | Compare signs of supplied changes under the stated rules. | Period/basis compatibility and percentages extracted from formatted text with float; display rounding can change a tiny move's classification. No correlation is calculated. |
-| Numeric display and PPTX | Apply the declared rounding rule; compare supported saved strings, integers, dimensions, order and data bindings. | General's digit limit, chart float conversion/format policy, axes/labels, overflow, clipping and native Office layout. The contents sketch can omit Fraction-valued series. |
-| Optional insight prose | Compare citation IDs and evaluate the specified rule predicates. | Probabilistic wording, missed semantic errors, six-significant-digit number normalization and user edits that are not re-filtered. This is not exact arithmetic certification. |
+| Cross-file direction | Compare signs of exact typed relative changes; tiny nonzero moves retain their direction. | Period/basis and business-measure compatibility still need confirmation. A prose-only fact has no exact change payload. No correlation is calculated. |
+| Numeric display and PPTX | Apply the declared rounding rule; compare supported saved strings, integers, dimensions, order and data bindings. The contents sketch preserves finite rational series, gaps and the zero baseline. | General's digit limit, chart float conversion/format policy, axes/labels, overflow, clipping and native Office layout. A schematic is not a native Office render. |
+| Optional insight prose | Compare supported numeric tokens with exact bounded decimal identities, check citation IDs and specified predicates, and recheck chosen numeric magnitudes at editing and core reuse. | Probabilistic wording, uncovered signs/units/meaning, excluded dates/quarters and missed semantic errors. Numeric agreement does not certify a sentence. |
 | Final verification/save | Reconstruct declared numeric evidence, compare supported saved representations, check fingerprints and publish to a new name. | A wrong declared recipe/business scope, shared decoder/formatter errors, uncovered prose/layout and runtime/filesystem assumptions. Independent paths can still share a faulty bridge. |
 
 For example, the mean of rates `100/100` and `0/900` is exactly **50%**, while the combined rate is exactly **10%**. Both arithmetic answers are correct for their definitions. Choosing which definition belongs in the report is category B. Likewise an exact Word mean does not establish that a dated paragraph refers to that series, and an exact MAD does not establish that a point is a business error.
@@ -109,7 +109,7 @@ Ties move away from zero: `2.675 → 2.68`, `-2.675 → -2.68` at two places. Th
 
 `General` keeps whole integers below `10^15`, uses scientific notation at larger magnitudes or `0 < abs(x) < 10^-4`, and otherwise uses limited significant-digit precision (9 below 1, 10 otherwise). Unsupported formats fall back to a plain display with a warning. Locale-sensitive date separators/built-ins and supported number colors are handled separately; numeric output uses comma grouping and a decimal point. This is not a complete Excel renderer.
 
-Code: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L423), [figure_number](../core.py#L497), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). Tests: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
+Code: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L424), [figure_number](../core.py#L498), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). Tests: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
 
 ## 2. Workbook-only report and Change contents
 
@@ -127,7 +127,7 @@ The bottom/status information states selected and omitted contents. Doubts inclu
 
 With a company template, Ctrl+R opens **Suggest references** for the first workbook. It does not remap every placeholder in an arbitrary template. The GUI's custom-template path uses the first workbook; multi-file automatic reporting is a different route.
 
-Code: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L818). Tests: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
+Code: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L823). Tests: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
 ## 3. Cell/name references and existing templates
 
@@ -137,7 +137,7 @@ Resolution accepts explicit cells/areas, case-insensitive defined names (global 
 
 Dynamic named areas have a separate bounded interpreter: `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS`, `COLUMNS`, integer `+/-` and cell areas. For example, `OFFSET(Sheet!$B$1,COUNTA(Sheet!$B:$B)-1,0)` can select the last occupied row. This is not the same grammar as the independent saved-formula checker in section 14. A named formula that cannot resolve to supported cells is reported, rather than evaluated as arbitrary Excel code. The final dynamic area is limited to 200 columns and 1,048,576 rows; this is not a one-million-total-cell guarantee.
 
-Code: [ExcelSource.locate](../core.py#L1451), [_dynamic_area](../core.py#L762), [_Run.fill_marked_shape](../core.py#L3392). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
+Code: [ExcelSource.locate](../core.py#L1452), [_dynamic_area](../core.py#L763), [_Run.fill_marked_shape](../core.py#L3396). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
 
 ## 4. Latest values and calendar selection
 
@@ -151,7 +151,7 @@ Cadence is a heuristic based on sorted whole-day gaps among at most the latest 3
 
 Completion uses the earlier of the workbook's saved-modified date and today, or today if unavailable. Period-end rules follow the detected cadence and fiscal evidence. A daily value on that same date warns as unfinished only when it is also at least 15% below its historical weekday level. These checks cannot prove source freshness or completeness.
 
-Code: [ExcelSource._parse_ref](../core.py#L1576), [ExcelSource._latest_rows](../core.py#L1750), [ExcelSource._plain_series](../core.py#L2040), [ExcelSource._as_of](../core.py#L1816), [ExcelSource._period_issues](../core.py#L1821), [_usual_gap](../facts.py#L236), [unfinished](../facts.py#L355). Tests: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
+Code: [ExcelSource._parse_ref](../core.py#L1577), [ExcelSource._latest_rows](../core.py#L1751), [ExcelSource._plain_series](../core.py#L2041), [ExcelSource._as_of](../core.py#L1817), [ExcelSource._period_issues](../core.py#L1822), [_usual_gap](../facts.py#L239), [unfinished](../facts.py#L358). Tests: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
 
 ## 5. Filters, sums, products, counts and means
 
@@ -173,7 +173,7 @@ In an explicitly grouped series, a date can cover subsequent blank-date rows unt
 
 **Rate definitions matter:** rows `100/100` and `0/900` have equal-row mean `(1+0)/2=50%`, but the combined rate is `(100+0)/(100+900)=10%`. `mean` and record `rate` do not invent weights. When the combined rate is required, supply explicit numerators/denominators, for example a supported source formula `SUM(C2:C3)/SUM(D2:D3)`. Automatic rate means raise a scope doubt.
 
-Code: [_matches](../core.py#L1242), [_aggregate_value](../core.py#L1254), [ExcelSource._summed_series](../core.py#L2112), [value_spec](../suggest.py#L1140). Tests: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
+Code: [_matches](../core.py#L1243), [_aggregate_value](../core.py#L1255), [ExcelSource._summed_series](../core.py#L2113), [value_spec](../suggest.py#L1140). Tests: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
 ## 6. Change placeholders, averages and extreme dates
 
@@ -190,7 +190,7 @@ For a rate/score, the result is a difference: `points=(x_n-b)*s`, with `s=100` f
 
 Use a positive N. An average base for previous values 100,110,120 is 110; a newest value 130 is `+18.2%` against that base. These are retained-point windows, not N consecutive calendar days. A missing base leaves a visible unresolved placeholder/problem. Small changes are called unchanged according to the actual one-decimal percentage rendering, so a half-tie rendered as `0.1%` is not called unchanged.
 
-Code: [ratio](../facts.py#L120), [points_text](../facts.py#L152), [previous](../facts.py#L173), [week_ago](../facts.py#L177), [mean_before](../facts.py#L183), [extreme](../facts.py#L189), [ExcelSource._calc_text](../core.py#L2291). Tests: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
+Code: [ratio](../facts.py#L123), [points_text](../facts.py#L155), [previous](../facts.py#L176), [week_ago](../facts.py#L180), [mean_before](../facts.py#L186), [extreme](../facts.py#L192), [ExcelSource._calc_text](../core.py#L2292). Tests: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
 
 ## 7. Item ranking, shares and paired measures
 
@@ -202,7 +202,7 @@ Explicit totals/subtotals and supported hierarchy levels are kept out of the ite
 
 Paired measures use the same change arithmetic, but relative growth prose requires positive bases and filters tiny items when naming largest movements (1% of the largest item). Absolute contribution and largest relative growth are distinct. Negative bases are shown as actual before→after values. Actual vs budget/target for the same period uses a plan comparison, not a historical growth claim or an automatic good/bad judgment.
 
-Code: [rank](../facts.py#L223), [ranked_items](../facts.py#L721), [is_additive](../facts.py#L736), [without_parts](../facts.py#L804), [item_readings](../facts.py#L867), [ExcelSource._read_comparison](../core.py#L2354), [ExcelSource._rank_text](../core.py#L2557), [ExcelSource._rank_range](../core.py#L2580). Tests: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
+Code: [rank](../facts.py#L226), [ranked_items](../facts.py#L735), [is_additive](../facts.py#L750), [without_parts](../facts.py#L819), [item_readings](../facts.py#L882), [ExcelSource._read_comparison](../core.py#L2355), [ExcelSource._rank_text](../core.py#L2558), [ExcelSource._rank_range](../core.py#L2581). Tests: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
 
 ## 8. Calculated note/reading: seasonal and anomaly rules
 
@@ -234,7 +234,7 @@ No usable spread means no usual-range result. The coefficient and thresholds are
 
 Latest-7/28/30 windows count retained observations. The rules do not assume those points cover continuous calendar days. Fewer than three values can leave reading unresolved; 3–13 points can state that a usual level cannot yet be judged. A running or fiscally unresolved period has qualified wording/comparison restrictions. These rules do not forecast, test significance, identify causes or prove business appropriateness.
 
-Code: [same_weekday](../facts.py#L208), [stands_out](../facts.py#L374), [week_total_change](../facts.py#L229), [year_ago](../facts.py#L306), [year_to_date](../facts.py#L325), [readings](../facts.py#L436), [fact_pack](../facts.py#L620), [ExcelSource._series_words_plain](../core.py#L2198). Tests: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). Background and historical tuning limits: [reading rules](how-it-works.md#reading-rules).
+Code: [same_weekday](../facts.py#L211), [stands_out](../facts.py#L377), [week_total_change](../facts.py#L232), [year_ago](../facts.py#L309), [year_to_date](../facts.py#L328), [readings](../facts.py#L447), [fact_pack](../facts.py#L631), [ExcelSource._series_words_plain](../core.py#L2199). Tests: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). Background and historical tuning limits: [reading rules](how-it-works.md#reading-rules).
 
 ## 9. Supported structured descriptive tables
 
@@ -250,11 +250,13 @@ Code: [_rates](../layouts.py#L107), [_organizations](../layouts.py#L167), [_outl
 
 ## 10. Several workbooks and direction comparison
 
-Each file first produces its own calculated facts and retains its file/measure labels. Cross-file wording needs at least two usable percentage changes with the same latest period label and comparison basis. It prefers an existing year-over-year fact, otherwise a previous-period fact. Points-only changes are not treated as percentages.
+Each file first produces its own calculated facts and retains its file/measure labels. Cross-file wording needs at least two exact relative changes with the same latest period label and comparison basis. `Fact.relative_change` carries `(now-base)/abs(base)` for calculated `year` and `prev` facts; core converts it to exact percentage units. It prefers an existing year-over-year fact, otherwise a previous-period fact. Points-only changes and manually constructed prose-only facts do not supply a relative change.
 
-For compatible entries it compares signs: all positive, all negative, all zero, or mixed. It does **not** compute correlation, regression, causation or significance. Importantly, the direction summary extracts percentages from already-formatted fact text with regex/float; a move rounded to zero can count as zero. This is not a new exact statistic over raw values. Different periods or `year`/`prev` bases produce an incompatibility note instead.
+For compatible entries it compares exact signs: all positive, all negative, all zero, or mixed. A nonzero move that would round to `0.0%` is described as up/down **less than 0.05%**; the one-decimal display uses half-away rounding. Display text is never parsed back into the change. Different periods or `year`/`prev` bases produce an incompatibility note. Equal labels do not prove matching business definitions. The summary does **not** compute correlation, regression, causation or significance.
 
-Code: [Sources._gather](../core.py#L3689), [_lead_change](../core.py#L3760), [cross_file_readings](../facts.py#L755). Tests: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
+Code: [Sources._gather](../core.py#L3693), [_lead_change](../core.py#L3764), [cross_file_readings](../facts.py#L769). Tests: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
+
+Additional boundary code/tests: [Fact](../facts.py#L81), [fact_pack](../facts.py#L631), [_movement_size](../facts.py#L403), [ExactCrossFile](../verification/test_exact_cross_file.py#L14).
 
 ## 11. Word context, events and before/after means
 
@@ -294,17 +296,24 @@ Language selection counts Hangul/Latin letters after machine-name cleanup; sourc
 
 The model receives calculated facts, permitted fact IDs and a request for structured statements/supporting IDs/separate hypotheses. Defaults: three runs with consecutive seeds, temperature 0.2, context 4096 and prediction limit 900. Malformed output produces no candidate for that run; accepted statements are deduplicated. A hypothesis is shown for the person to check and is not automatically inserted.
 
-The client filters known unsupported numbers, periods, directions, subjects, causes, evaluations and other observed misreadings. Number matching uses float-to-`g` normalization (normally six significant digits), **not the exact rational numeric guard**. These explicit filters do not prove every semantic claim. The editable chosen-text field is saved without rerunning the candidate filter; user edits are not semantically certified either.
+The client filters known unsupported numbers, periods, directions, subjects, causes, evaluations and other observed misreadings. `numeric_text.number_identity` normalizes supported decimal/scientific tokens into a sign, trimmed coefficient and decimal exponent without float conversion, rounding or exponent expansion. It preserves `11 = 11.0 = 1.1e1` and valid comma grouping; adjacent large integers and differing long decimals remain distinct. Malformed forms and excessive lengths are rejected. Current limits are 4,096 token characters and written exponent magnitude 4,096 (at most four exponent digits). Date/quarter exclusions are separate. Scientific-literal support in this checker does not guarantee that every fact producer retains a whole scientific literal; incomplete fact metadata can conservatively reject it.
+
+The editor and core reuse both run the narrow `unbacked_numbers` check against the current fact pack. An unbacked or unsupported numeric token leaves the previous choice intact and the editor open. Correct it using a number in the displayed facts, or clear the field to restore the calculated sentence. If a stored choice was changed outside the editor, core uses the calculated fallback and reports the numeric warning. The check compares **magnitudes**: sign/direction words, units, subjects and meaning need separate review. It does not rerun every candidate semantic filter over arbitrary edited text.
 
 Choices are stored by reference with:
 
 ```text
-H = SHA256(lang + "\n" + join("\n", fact.id + ": " + fact.text))
+payload(fact) = fact.id + ": " + fact.text
+                + ("\nrelative_change=" + str(fact.relative_change)
+                   if fact.relative_change is not None else "")
+H = SHA256(lang + "\n" + join("\n", payload(fact)))
 ```
 
-Reuse requires the current displayed fact pack's fingerprint to match. Otherwise the calculated fallback returns. The hash covers these facts/language, not every raw source byte or every possible change in business meaning. The final guard preserves saved wording and audits declared inputs; it does not independently prove all chosen prose.
+Reuse requires the current fact pack's fingerprint to match. Available exact relative-change payloads are included, so a below-display change can invalidate a choice even when the rounded text is unchanged. Otherwise the calculated fallback returns. The hash covers these facts/language, not every raw source byte or every possible change in business meaning. Manual content selections do not yet have a complete schema-drift contract. The final guard preserves saved wording and audits declared inputs; it does not independently prove all chosen prose.
 
-Code: [detect_language](../facts.py#L108), [fingerprint](../facts.py#L114), [make_candidates](../insight.py#L557), [check](../insight.py#L224), [_number](../insight.py#L203), [App.apply_insight](../app.py#L803). Tests: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
+Code: [detect_language](../facts.py#L109), [fingerprint](../facts.py#L115), [make_candidates](../insight.py#L556), [check](../insight.py#L224), [_number](../insight.py#L202), [App.apply_insight](../app.py#L804). Tests: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
+
+Additional boundary code/tests: [number_identity](../numeric_text.py#L19), [unbacked_numbers](../numeric_text.py#L64), [_Run.resolve_insight](../core.py#L3300), [InsightWindow.apply](../app.py#L1082), [ExactInsightNumbers](../verification/test_insight_numbers.py#L13), [ChosenNumberTests](../verification/test_chosen_numbers.py#L19).
 
 ## 13. Writing text, tables and charts
 
@@ -316,9 +325,11 @@ Code: [detect_language](../facts.py#L108), [fingerprint](../facts.py#L114), [mak
 
 The guard requires exact integer survival and checks declared explicit-format precision against actual caches/embedded data. An exact table value such as `1000000000000000.05` can therefore be saved in a table while its chart is refused. General charts do not promise every source decimal digit.
 
-**Contents-window sketch:** Ctrl+R's canvas is a schematic, not a native PowerPoint render. Long table strings can be shortened there. Its current chart-number filter accepts int/float only, so Fraction-valued derived series can be absent from that sketch even though the actual saved chart writer supports them. Do not use the sketch as a complete chart/number verification result.
+**Contents-window sketch:** Ctrl+R's canvas is a schematic, not a native PowerPoint render. Long table strings can be shortened there. Its chart filter accepts finite `int`, `float` and `Fraction` values, excluding Boolean/nonfinite values. Values are normalized as exact fractions before the bounded coordinate is converted to float, preserving geometry for huge finite magnitudes. Missing slots break lines, isolated valid points remain visible, and positive/negative bars meet `y(0)`. The sketch does not replace saved-chart checks or final Office inspection.
 
-Code: [replace_in_paragraph](../core.py#L2908), [_Run.walk](../core.py#L3464), [fill_table](../core.py#L3111), [fill_chart](../core.py#L3175), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L85). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
+Code: [replace_in_paragraph](../core.py#L2909), [_Run.walk](../core.py#L3468), [fill_table](../core.py#L3112), [fill_chart](../core.py#L3176), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L87). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
+
+Additional boundary code/tests: [ContentsChartTests](../verification/test_contents_chart.py#L50).
 
 ## 14. Preview, numeric verification, save and local controls
 
@@ -350,7 +361,7 @@ The generated mathematical kernel has six executable contracts: integer Sum, seq
 
 Other controls: Ctrl+E adds files, Ctrl+T chooses a template, Ctrl+L changes language, F1 opens help; Open report/folder opens an existing result/location. Background jobs use queues/job identifiers so superseded results are ignored; closing a window cancels its owned timers. Path/language/template-mode settings and chosen insight text are saved locally, beside the app when writable or under `%APPDATA%/SlideFill`. JSON is staged through `.tmp`; damaged settings can be moved to `.broken`. A settings-save failure does not prevent current-session work.
 
-Code: [run](../core.py#L3856), [Session.verify](../verification/automatic.py#L153), [Session.publish](../verification/automatic.py#L257), [Audit.cell](../verification/formulas.py#L211), [expected](../verification/text_values.py#L13), [sum_rationals](../verification/kernel.py#L33), [output_path](../core.py#L3896), [settings_path](../core.py#L3910), [App.generate](../app.py#L676), [WindowTimers](../ui_timers.py#L5). Tests: [FormulaArithmetic](../verification/test_formulas.py#L19), [AutomaticGuard](../verification/test_automatic.py#L36), [ReportReliability](../verification/test_reliability.py#L72), [Settings](../test_core.py#L5301).
+Code: [run](../core.py#L3865), [Session.verify](../verification/automatic.py#L153), [Session.publish](../verification/automatic.py#L257), [Audit.cell](../verification/formulas.py#L211), [expected](../verification/text_values.py#L13), [sum_rationals](../verification/kernel.py#L33), [output_path](../core.py#L3905), [settings_path](../core.py#L3919), [App.generate](../app.py#L677), [WindowTimers](../ui_timers.py#L5). Tests: [FormulaArithmetic](../verification/test_formulas.py#L19), [AutomaticGuard](../verification/test_automatic.py#L36), [ReportReliability](../verification/test_reliability.py#L72), [Settings](../test_core.py#L5301).
 
 ## Reading the evidence
 

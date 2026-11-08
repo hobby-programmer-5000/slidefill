@@ -41,7 +41,7 @@ SlideFill은 지원하는 값과 저장 표현을 자동 검사하지만 원본 
 
 개발 소스는 정확한 유리수로 계산 중간값을 유지하고 제한된 저장 수식·수치 텍스트 자리표시자를 독립 검산하며, 확정된 불일치와 **부분 검증 모두 저장을 막습니다**. 여전히 Excel에서 원본을 재계산하지 않고 저장 파일을 읽으며 모든 문장·배치를 보증하지는 않습니다. [정확한 계약과 남은 경계](doc/reliability-hardening.ko.md)를 참고하세요. 이 변경은 아직 릴리스하지 않았고 v0.3.0에는 릴리스 노트의 기존 표·차트 검사가 적용됩니다.
 
-[기능별 원리·수식·알고리즘](doc/feature-algorithms.ko.md), [자동 검사와 대응 방법](doc/verification.ko.md), [지원 배치](doc/limits.ko.md), [코드 구조·증명 범위](doc/verification-design.ko.md)를 참고하세요. 이 안내는 소스 트리를 설명합니다. 내려받은 실행 파일에 포함된 기능은 해당 릴리스 노트에서 확인하세요.
+[기능별 원리·수식·알고리즘](doc/feature-algorithms.ko.md), [자동 검사와 대응 방법](doc/verification.ko.md), [연구 방법과 한계](doc/research-methods.ko.md), [지원 배치](doc/limits.ko.md), [코드 구조·증명 범위](doc/verification-design.ko.md)를 참고하세요. 이 안내는 소스 트리를 설명합니다. 내려받은 실행 파일에 포함된 기능은 해당 릴리스 노트에서 확인하세요.
 
 ## 설치
 

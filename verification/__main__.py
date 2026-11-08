@@ -17,7 +17,10 @@ def main():
     if args.command=='selftest':
         import unittest
         from . import test_verification,test_automatic,test_coverage,test_binary,test_remaining,test_legacy_html,test_formulas,test_reliability,test_standalone_formulas
+        from . import test_insight_numbers, test_exact_cross_file, test_contents_chart, test_chosen_numbers
         suite=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromModule(module) for module in (test_verification,test_automatic,test_coverage,test_binary,test_remaining,test_legacy_html,test_formulas,test_reliability,test_standalone_formulas))
+        for module in (test_insight_numbers, test_exact_cross_file, test_contents_chart, test_chosen_numbers):
+            suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(module))
         result=unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
     try:

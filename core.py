@@ -48,6 +48,7 @@ class _NoPivotCaches(dict):
 # and nothing here ever saves a workbook it has read, so the caches are left unread.
 openpyxl.reader.workbook.WorkbookParser.pivot_caches = property(lambda self: _NoPivotCaches())
 from numfmt import format_color, format_value
+from numeric_text import unbacked_numbers
 
 warnings.filterwarnings("ignore", module="openpyxl")
 
@@ -3311,6 +3312,9 @@ class _Run:
         chosen = self.insights.get(key.casefold())
         if chosen and chosen.get("fingerprint") == request.fingerprint and chosen.get("text"):
             text = chosen["text"]
+            if not isinstance(text, str) or unbacked_numbers(text, (n for fact in request.facts for n in fact.numbers)):
+                text = request.fallback
+                issues = [Issue("insight_numbers", {})] + issues
         else:
             text = request.fallback
             issues = [Issue("insight_stale" if chosen else "insight_not_chosen", {})] + issues
@@ -3758,12 +3762,17 @@ def _lead_figure(request):
 
 
 def _lead_change(request, lang):
-    """(percent change, period, basis) of a figure, from the facts already calculated for it. A change in points, or no change to give, is None: it cannot stand beside percentages."""
+    """(exact percent change, period, basis), from typed results rather than rendered prose.
+
+    A points change or a legacy prose-only fact has no relative-change payload and cannot
+    stand beside relative percentages. A year comparison stays preferred over the previous period.
+    """
     found = {fact.id: fact for fact in request.facts}
     fact, basis = (found["year"], "year") if "year" in found else (found.get("prev"), "prev")
-    match = re.search(r"([+-]?\d[\d,.]*)%", fact.text) if fact else None  # 0.0% has no sign, and no change is still a change to give
+    change = fact.relative_change if fact is not None else None
+    percent_change = change * 100 if isinstance(change, Fraction) else None
     period = next((fact.period for fact in request.facts if fact.period), "")  # as the figure's own sentence says it: yearly data has no month
-    return (float(match.group(1).replace(",", "")) if match else None), _period_in(period, lang), basis
+    return percent_change, _period_in(period, lang), basis
 
 
 def _period_in(period, lang):

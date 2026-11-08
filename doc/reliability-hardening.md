@@ -41,6 +41,18 @@ An equal-row mean of rates is different from a rate computed as total numerator 
 
 Word-linked comparisons independently reconstruct the source periods, the before/after window size, arithmetic means and change text. The event period is excluded. Mixed window sizes are stated per row instead of being mislabeled by one common header. The source quotation is checked against the DOCX text, and a changed DOCX blocks publication. This proves the supported calculation/quotation consistency, not that the event caused the numeric change.
 
+## Preserving information between calculations and wording
+
+Optional insight number matching uses bounded exact decimal identities instead of rounded float strings. Valid equivalent decimal/grouped/scientific spellings can match; adjacent large integers and differing long decimals stay distinct. Malformed or excessive tokens are rejected. This checks numeric magnitudes, with separate date/quarter exclusions; it does not certify signs, units, subjects or meaning. Some fact producers may not retain a whole scientific literal, causing a conservative rejection despite the checker's literal support.
+
+The insight editor applies this narrow check before saving a choice. On rejection the previous choice remains and the editor stays open: use a number from the displayed facts, or clear the field to restore the calculated sentence. Core repeats the check when reusing a stored choice, so a changed invalid saved sentence produces a numeric warning and the calculated fallback. These paths do not apply every model-candidate semantic rule to arbitrary user prose.
+
+Calculated `year`/`prev` facts carry exact relative-change ratios, and cross-file direction reads that typed value rather than parsing rounded prose. Points-only/prose-only facts do not become relative percentages. A nonzero move that would display as `0.0%` is described as an increase/decrease of less than `0.05%`, with the declared half-away rounding at the threshold. The choice fingerprint includes these exact changes. Matching period/basis labels still do not establish business comparability; there is no correlation or causal inference.
+
+The **Change contents (Ctrl+R)** sketch accepts finite integer/float/Fraction data, excludes Boolean/nonfinite values, keeps gaps, and draws positive/negative bars from zero. Exact normalization precedes float screen-coordinate conversion. This schematic does not replace the saved-chart guard or native Office inspection.
+
+Synthetic regressions cover previously accepted wrong low digits, equivalent spellings, invalid saved/editor choices, tiny opposite directions and scaling, gaps/zero baselines, and huge rational chart geometry. The [research methods](research-methods.md) explain which literature supports the methods and which application choices are our inference. Tests of these boundaries are not new proofs of the complete app. Manual content selections still lack a complete schema-drift contract.
+
 ## What a passed result supports
 
 A passed result supports this statement: **the declared supported input values, calculations and saved representations passed the implemented checks for this report.** It does not certify source accuracy, intended scope, freshness, units, all prose or all visual layouts. Confirm those decisions and inspect the final client deck before sharing. No model is used to calculate these figures; optional AI wording remains a separate review decision.

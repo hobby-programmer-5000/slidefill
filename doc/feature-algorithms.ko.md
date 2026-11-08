@@ -2,7 +2,7 @@
 
 # 기능별 동작 원리·수식·알고리즘
 
-개발 소스 `d58471b`를 기준으로 기능마다 입력, 처리 규칙, 수식과 한계를 정리한 문서입니다. 여기서 설명하는 수치 신뢰성 개선은 **미출시 상태**이며 공개한 v0.3.0 EXE에는 포함되지 않습니다. 구현을 설명하는 문서이며 새 동작이나 새로운 정확도 측정 결과를 추가하지 않습니다.
+현재 개발 소스의 기능마다 입력, 처리 규칙, 수식과 한계를 정리한 문서입니다. 여기서 설명하는 수치 신뢰성 개선은 **미출시 상태**이며 공개한 v0.3.0 EXE에는 포함되지 않습니다. 구현을 설명하는 문서이며 새로운 정확도 측정은 아닙니다. [연구 방법 안내](research-methods.ko.md)는 논문 근거와 구현 선택·한계를 구분합니다.
 
 산술 계산, 원본 선택, 해석 규칙, 선택적 모델 문장은 보장 범위가 다릅니다. 정확한 산술은 지정한 계산의 답을 구합니다. 선택한 지표·원본·업무 정의가 적절했는지까지 결정하지는 못합니다.
 
@@ -24,9 +24,9 @@ A도 구현에 버그가 절대 없다는 뜻은 아닙니다. 수학적 답이 
 | 기술통계·이상 징후 | 지정한 중앙값·MAD·산포·증감·임계값 충족 여부를 계산합니다. | “산포 3배·7%”가 이 업무에서 중요한 이상을 뜻하는지는 별도입니다. 조건 충족이 원인이나 통계적 유의성의 근거는 아닙니다. |
 | Word 전후 비교 | 명시한 원본 양쪽 구간의 평균·차이를 정확히 계산합니다. | 이름·사건 대응, 사건 날짜 인덱스, 창 크기, 빠진 기간, 인과 해석입니다. 문서 숫자 겹침도 힌트에 그칩니다. |
 | 저장 수식 검산 | 지원하는 식의 유리수 기대값을 독립 계산합니다. | 파서·문법 범위, 피연산자 디코딩, 정수가 아닌 캐시의 2ULP 비교 정책입니다. 모든 비트의 동일성이나 전체 Excel 엔진은 아닙니다. |
-| 파일 간 방향 | 주어진 변화율의 부호를 명시한 규칙으로 비교합니다. | 기간·비교 기준의 호환성, 표시 문장에서 부동소수점 값으로 읽은 백분율입니다. 표시 반올림으로 작은 변화의 분류가 달라질 수 있으며 상관을 계산하지 않습니다. |
-| 숫자 표시·PPTX | 명시한 반올림 규칙을 적용하고 지원하는 저장 문자열·정수·크기·순서·자료 연결을 대조합니다. | General 자릿수 제한, 차트 부동소수점 변환·서식 정책, 축·레이블·넘침·잘림·실제 Office 배치입니다. 내용 창의 간략 그림은 유리수 계열을 빠뜨릴 수 있습니다. |
-| 선택적 통찰 문장 | 근거 ID를 대조하고 명시한 규칙의 충족 여부를 계산합니다. | 확률적 문장 생성, 놓친 의미 오류, 유효 숫자 6자리 정규화, 재검사하지 않는 사용자 편집입니다. 정확 산술의 인증과 다릅니다. |
+| 파일 간 방향 | 정확한 상대 변화 타입 정보의 부호를 비교하며 아주 작은 비영 변화도 방향을 유지합니다. | 기간·비교 기준·업무 지표의 호환성은 확인해야 합니다. 문장만 있는 근거에는 정확한 변화 정보가 없습니다. 상관을 계산하지 않습니다. |
+| 숫자 표시·PPTX | 명시한 반올림 규칙을 적용하고 지원하는 저장 문자열·정수·크기·순서·자료 연결을 대조합니다. 내용 창 약도는 유한 유리수 계열·누락 구간·영 기준선을 유지합니다. | General 자릿수 제한, 차트 부동소수점 변환·서식 정책, 축·레이블·넘침·잘림·실제 Office 배치입니다. 약도는 실제 Office 렌더링이 아닙니다. |
+| 선택적 통찰 문장 | 제한된 정확한 십진 동일성으로 지원 숫자를 대조하고 근거 ID·명시한 조건을 검사하며 편집·핵심 재사용에서 선택 문장의 숫자 크기를 재검사합니다. | 확률적 문장 생성, 확인하지 못한 부호·단위·의미, 제외하는 날짜·분기와 놓친 의미 오류입니다. 숫자 일치가 문장의 인증은 아닙니다. |
 | 최종 검증·저장 | 명시한 수치 근거를 재구성하고 지원하는 저장 표현·지문을 대조한 뒤 새 이름으로 저장합니다. | 명시한 계산 근거·업무 범위 자체의 오류, 공유 디코더·서식기 오류, 미검증 문장·배치, 실행 환경·파일시스템 전제입니다. 독립 경로도 잘못된 연결 코드를 공유할 수 있습니다. |
 
 예를 들어 `100/100`, `0/900`의 비율 평균은 정확히 **50%**, 전체 비율은 정확히 **10%**입니다. 정의가 다르므로 두 산술 답은 모두 맞습니다. 보고서에 어느 정의를 넣을지 고르는 일은 B입니다. 마찬가지로 Word 평균이 정확해도 날짜 문단이 그 시계열을 가리킨다는 뜻은 아니고, MAD가 정확해도 해당 점이 업무 오류라는 뜻은 아닙니다.
@@ -109,7 +109,7 @@ q = floor(a / d)
 
 `General`은 `10^15` 미만의 정수를 그대로 표시하고, 그 이상이나 `0 < abs(x) < 10^-4`에서는 과학 표기를 사용합니다. 나머지는 제한된 유효 자릿수(절댓값 1 미만 9자리, 그 외 10자리)를 씁니다. 미지원 서식은 기본 표기로 돌아가며 경고합니다. 지역별 날짜 구분자·기본 서식과 지원하는 숫자 색은 별도로 처리합니다. 숫자의 천 단위 구분자는 쉼표, 소수점은 마침표입니다. 완전한 Excel 렌더러는 아닙니다.
 
-코드: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L423), [figure_number](../core.py#L497), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). 테스트: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
+코드: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L424), [figure_number](../core.py#L498), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). 테스트: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
 
 ## 2. 엑셀만으로 보고서 만들기와 내용 바꾸기
 
@@ -127,7 +127,7 @@ q = floor(a / d)
 
 회사 템플릿 모드의 Ctrl+R은 첫 통합 문서에 대한 **참조 추천**입니다. 임의 템플릿의 모든 자리표시자를 자동으로 다시 연결하는 기능은 아닙니다. GUI의 회사 템플릿 경로는 첫 통합 문서를 사용하며, 여러 파일 자동 보고서와는 경로가 다릅니다.
 
-코드: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L818). 테스트: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
+코드: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L823). 테스트: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
 ## 3. 셀·정의 이름과 기존 템플릿 참조
 
@@ -137,7 +137,7 @@ q = floor(a / d)
 
 동적 이름 영역에는 별도의 제한된 해석기가 있습니다. `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS`, `COLUMNS`, 정수 `+/-`, 셀 영역만 지원합니다. 예를 들어 `OFFSET(Sheet!$B$1,COUNTA(Sheet!$B:$B)-1,0)`로 마지막 채워진 행을 선택할 수 있습니다. 14절의 독립 저장 수식 검사기와는 문법이 다릅니다. 지원하는 셀 영역으로 정할 수 없는 이름 수식은 임의 Excel 코드로 실행하지 않고 문제로 표시합니다. 최종 동적 영역은 200열·1,048,576행 이내입니다. 전체 셀 수가 백만 개 이하라는 뜻은 아닙니다.
 
-코드: [ExcelSource.locate](../core.py#L1451), [_dynamic_area](../core.py#L762), [_Run.fill_marked_shape](../core.py#L3392). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
+코드: [ExcelSource.locate](../core.py#L1452), [_dynamic_area](../core.py#L763), [_Run.fill_marked_shape](../core.py#L3396). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
 
 ## 4. 최신값과 날짜 선택
 
@@ -151,7 +151,7 @@ q = floor(a / d)
 
 완료 여부는 통합 문서의 저장 수정일과 오늘 중 이른 날을 기준으로 하고, 저장일을 구할 수 없으면 오늘을 씁니다. 주기와 회계연도 근거에 따라 기간 끝을 판단합니다. 기준일 당일의 일별 값은 해당 요일의 과거 수준보다 15% 이상 낮을 때에만 미완료 경고를 냅니다. 원본 최신성·완전성을 증명하는 검사는 아닙니다.
 
-코드: [ExcelSource._parse_ref](../core.py#L1576), [ExcelSource._latest_rows](../core.py#L1750), [ExcelSource._plain_series](../core.py#L2040), [ExcelSource._as_of](../core.py#L1816), [ExcelSource._period_issues](../core.py#L1821), [_usual_gap](../facts.py#L236), [unfinished](../facts.py#L355). 테스트: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
+코드: [ExcelSource._parse_ref](../core.py#L1577), [ExcelSource._latest_rows](../core.py#L1751), [ExcelSource._plain_series](../core.py#L2041), [ExcelSource._as_of](../core.py#L1817), [ExcelSource._period_issues](../core.py#L1822), [_usual_gap](../facts.py#L239), [unfinished](../facts.py#L358). 테스트: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
 
 ## 5. 조건·합계·곱·건수·평균
 
@@ -173,7 +173,7 @@ q = floor(a / d)
 
 **비율 정의가 중요합니다.** `100/100`, `0/900` 두 행의 동일 가중 평균은 `(1+0)/2=50%`지만 전체 비율은 `(100+0)/(100+900)=10%`입니다. `mean`이나 기록 비중 `rate`가 가중치를 만들어내지는 않습니다. 전체 비율이 필요하면 분자·분모를 명시하세요. 예를 들어 지원하는 원본 수식 `SUM(C2:C3)/SUM(D2:D3)`를 사용할 수 있습니다. 자동 선택한 비율 평균에는 범위 확인 의심 신호가 붙습니다.
 
-코드: [_matches](../core.py#L1242), [_aggregate_value](../core.py#L1254), [ExcelSource._summed_series](../core.py#L2112), [value_spec](../suggest.py#L1140). 테스트: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
+코드: [_matches](../core.py#L1243), [_aggregate_value](../core.py#L1255), [ExcelSource._summed_series](../core.py#L2113), [value_spec](../suggest.py#L1140). 테스트: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
 ## 6. 증감·평균 대비·최고/최저일
 
@@ -190,7 +190,7 @@ q = floor(a / d)
 
 N에는 양수를 사용합니다. 직전 값이 100·110·120이면 평균 기준은 110이고, 최신값 130은 그 기준 대비 `+18.2%`입니다. 창은 유효 관측값 개수이며 연속된 N일이라는 뜻이 아닙니다. 비교 기준이 없으면 자리표시자와 문제 표시가 남습니다. 작은 변화의 “변동 없음”은 실제 소수 한 자리 백분율 표시를 따릅니다. 절반 경계가 `0.1%`로 표시되면 변동 없다고 부르지 않습니다.
 
-코드: [ratio](../facts.py#L120), [points_text](../facts.py#L152), [previous](../facts.py#L173), [week_ago](../facts.py#L177), [mean_before](../facts.py#L183), [extreme](../facts.py#L189), [ExcelSource._calc_text](../core.py#L2291). 테스트: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
+코드: [ratio](../facts.py#L123), [points_text](../facts.py#L155), [previous](../facts.py#L176), [week_ago](../facts.py#L180), [mean_before](../facts.py#L186), [extreme](../facts.py#L192), [ExcelSource._calc_text](../core.py#L2292). 테스트: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
 
 ## 7. 항목 순위·구성비·짝지은 지표
 
@@ -202,7 +202,7 @@ N에는 양수를 사용합니다. 직전 값이 100·110·120이면 평균 기�
 
 짝지은 지표도 같은 증감 계산을 쓰지만 상대 성장 문장에는 양수 기준을 요구하고, 큰 변화를 고를 때 매우 작은 항목을 제외합니다(최대 항목의 1% 기준). 절대 기여와 최대 상대 성장률은 다른 값입니다. 음수 기준은 실제 전→후 값으로 표시합니다. 같은 기간의 실적·예산/목표는 계획 대비로 말하며 과거 대비 성장이나 자동 좋음·나쁨 판정을 하지 않습니다.
 
-코드: [rank](../facts.py#L223), [ranked_items](../facts.py#L721), [is_additive](../facts.py#L736), [without_parts](../facts.py#L804), [item_readings](../facts.py#L867), [ExcelSource._read_comparison](../core.py#L2354), [ExcelSource._rank_text](../core.py#L2557), [ExcelSource._rank_range](../core.py#L2580). 테스트: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
+코드: [rank](../facts.py#L226), [ranked_items](../facts.py#L735), [is_additive](../facts.py#L750), [without_parts](../facts.py#L819), [item_readings](../facts.py#L882), [ExcelSource._read_comparison](../core.py#L2355), [ExcelSource._rank_text](../core.py#L2558), [ExcelSource._rank_range](../core.py#L2581). 테스트: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
 
 ## 8. 계산한 해설·읽는 법: 계절·이상 징후 규칙
 
@@ -234,7 +234,7 @@ S = max(1.4826*MAD, 0.01*abs(L))
 
 최신 7·28·30개 창은 유효 관측값 개수입니다. 연속된 달력 날짜를 보장하지 않습니다. 3개 미만이면 읽는 법이 미결정일 수 있고, 3–13개에서는 평소 수준을 아직 판단할 수 없다고 말할 수 있습니다. 진행 중인 기간이나 회계연도가 미확정인 경우에는 문장·비교 제한을 적용합니다. 예측·유의성 검정·원인 식별·업무 적절성 증명은 하지 않습니다.
 
-코드: [same_weekday](../facts.py#L208), [stands_out](../facts.py#L374), [week_total_change](../facts.py#L229), [year_ago](../facts.py#L306), [year_to_date](../facts.py#L325), [readings](../facts.py#L436), [fact_pack](../facts.py#L620), [ExcelSource._series_words_plain](../core.py#L2198). 테스트: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). 배경·과거 조정 한계는 [동작 설명](how-it-works.ko.md)의 읽는 법 규칙을 참고하세요.
+코드: [same_weekday](../facts.py#L211), [stands_out](../facts.py#L377), [week_total_change](../facts.py#L232), [year_ago](../facts.py#L309), [year_to_date](../facts.py#L328), [readings](../facts.py#L447), [fact_pack](../facts.py#L631), [ExcelSource._series_words_plain](../core.py#L2199). 테스트: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). 배경·과거 조정 한계는 [동작 설명](how-it-works.ko.md)의 읽는 법 규칙을 참고하세요.
 
 ## 9. 지원하는 구조화 원본 표
 
@@ -250,11 +250,13 @@ S = max(1.4826*MAD, 0.01*abs(L))
 
 ## 10. 여러 통합 문서의 방향 비교
 
-파일마다 먼저 자체 근거를 계산하고 파일·지표 이름을 유지합니다. 파일 간 문장에는 같은 최신 기간 이름과 비교 기준을 가진 백분율 변화가 최소 2개 필요합니다. 기존 전년 대비 근거가 있으면 그것을, 없으면 직전 대비 근거를 사용합니다. 포인트 차이를 백분율로 취급하지 않습니다.
+파일마다 먼저 자체 근거를 계산하고 파일·지표 이름을 유지합니다. 파일 간 문장에는 같은 최신 기간 이름과 비교 기준을 가진 정확한 상대 변화가 최소 2개 필요합니다. 계산한 `year`·`prev` 근거의 `Fact.relative_change`가 `(현재-기준)/abs(기준)` 비율을 전달하며 core가 비교용 정확한 백분율 단위로 바꿉니다. 기존 전년 대비 근거가 있으면 그것을, 없으면 직전 대비 근거를 사용합니다. 포인트 차이나 직접 만든 문장만 있는 근거는 상대 변화를 제공하지 않습니다.
 
-호환되는 값의 부호가 모두 양수·모두 음수·모두 0·서로 다름인지만 비교합니다. **상관·회귀·인과·유의성을 계산하지 않습니다.** 특히 방향 요약은 이미 서식화한 근거 문장에서 정규식·실수로 백분율을 꺼냅니다. 표시에서 0으로 반올림한 변화는 0으로 분류될 수 있으며 원시 값에 대한 새 정확 통계가 아닙니다. 기간이나 `year`/`prev` 기준이 다르면 방향 결론 대신 비교 불가 설명을 냅니다.
+호환되는 값의 정확한 부호가 모두 양수·모두 음수·모두 0·서로 다름인지만 비교합니다. `0.0%`로 반올림될 비영 변화는 **0.05% 미만 증가·감소**로 설명하고 소수 첫째 자리 백분율에는 절반을 0에서 멀어지는 쪽으로 반올림합니다. 표시 문장을 변화 값으로 다시 읽지 않습니다. 기간이나 `year`/`prev` 기준이 다르면 비교 불가 설명을 냅니다. 같은 이름이 업무 정의 일치를 증명하지는 않습니다. **상관·회귀·인과·유의성을 계산하지 않습니다.**
 
-코드: [Sources._gather](../core.py#L3689), [_lead_change](../core.py#L3760), [cross_file_readings](../facts.py#L755). 테스트: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
+코드: [Sources._gather](../core.py#L3693), [_lead_change](../core.py#L3764), [cross_file_readings](../facts.py#L769). 테스트: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
+
+추가 경계 코드·테스트: [Fact](../facts.py#L81), [fact_pack](../facts.py#L631), [_movement_size](../facts.py#L403), [ExactCrossFile](../verification/test_exact_cross_file.py#L14).
 
 ## 11. Word 맥락·사건·전후 평균
 
@@ -294,17 +296,24 @@ A = mean(x_(j+1), ..., x_(j+w))
 
 모델에는 계산한 근거·허용한 근거 ID와 함께 문장/뒷받침 ID/별도 가설을 구조화해 요청합니다. 기본은 연속된 시드로 3회, temperature 0.2, context 4096, prediction limit 900입니다. 잘못된 출력은 해당 회차의 후보가 되지 않으며 통과한 문장은 중복을 제거합니다. 가설은 사람이 확인할 내용으로 따로 보여주고 자동 삽입하지 않습니다.
 
-클라이언트는 지원되지 않는 숫자·기간·방향·대상·원인·평가와 관찰했던 오독을 규칙으로 거릅니다. 숫자 대응은 실수를 `g` 형식으로 정규화하는 방식(보통 유효 숫자 6자리)이며 **정확한 유리수 수치 검사와 다릅니다.** 명시한 필터가 모든 의미를 증명하지는 않습니다. 선택 문장 칸은 편집할 수 있고 저장 시 후보 필터를 다시 실행하지 않으므로 사용자 편집도 의미상 인증된 것은 아닙니다.
+클라이언트는 지원되지 않는 숫자·기간·방향·대상·원인·평가와 관찰했던 오독을 규칙으로 거릅니다. `numeric_text.number_identity`는 지원하는 십진·과학 표기 토큰을 실수 변환·반올림·지수 전개 없이 부호·끝 영을 뺀 계수·십진 지수로 정규화합니다. `11 = 11.0 = 1.1e1`과 올바른 쉼표 묶음은 같지만 인접한 큰 정수와 서로 다른 긴 소수는 구분합니다. 잘못된 형태와 과도한 길이는 거부합니다. 현재 제한은 토큰 4,096자와 표기 지수 절댓값 4,096(지수 숫자 최대 네 자리)입니다. 날짜·분기 제외는 별도 정책입니다. 검사기가 과학 표기를 지원해도 모든 근거 생성기가 과학 표기 전체를 유지한다는 뜻은 아니며, 근거 메타데이터가 불완전하면 보수적으로 거부할 수 있습니다.
+
+편집기와 핵심 재사용은 현재 근거 묶음에 대해 좁은 `unbacked_numbers` 검사를 합니다. 근거에 없거나 지원하지 않는 숫자가 있으면 기존 선택을 유지하고 편집기를 열어 둡니다. 표시한 근거의 숫자로 고치거나 칸을 비워 계산 문장으로 돌아갈 수 있습니다. 편집기 밖에서 저장 선택을 바꿨다면 core가 계산 문장으로 대체하고 수치 경고를 알립니다. 이 검사는 **크기**를 대조하므로 부호·방향 표현·단위·대상·의미는 따로 검토해야 합니다. 임의의 편집 문장에 후보의 모든 의미 필터를 다시 적용하지는 않습니다.
 
 선택은 참조별로 다음 지문과 함께 저장합니다.
 
 ```text
-H = SHA256(lang + "\n" + join("\n", fact.id + ": " + fact.text))
+payload(fact) = fact.id + ": " + fact.text
+                + ("\nrelative_change=" + str(fact.relative_change)
+                   if fact.relative_change is not None else "")
+H = SHA256(lang + "\n" + join("\n", payload(fact)))
 ```
 
-현재 표시 근거 묶음의 지문이 맞아야 재사용하며 다르면 계산한 기본 문장으로 돌아갑니다. 해시는 이 근거와 언어를 다루며 모든 원본 바이트나 가능한 업무 의미 변화를 다루지는 않습니다. 최종 검사는 저장 문장을 보존하고 명시한 입력을 대조하지만 선택한 모든 문장을 독립적으로 증명하지는 않습니다.
+현재 근거 묶음의 지문이 맞아야 재사용합니다. 가능한 정확한 상대 변화 정보도 포함하므로 반올림한 문장이 같아도 표시 정밀도 아래의 변화로 선택이 무효화될 수 있습니다. 다르면 계산한 기본 문장으로 돌아갑니다. 해시는 이 근거와 언어를 다루며 모든 원본 바이트나 가능한 업무 의미 변화를 다루지는 않습니다. 수동 내용 선택에는 아직 완전한 스키마 변경 계약이 없습니다. 최종 검사는 저장 문장을 보존하고 명시한 입력을 대조하지만 선택한 모든 문장을 독립적으로 증명하지는 않습니다.
 
-코드: [detect_language](../facts.py#L108), [fingerprint](../facts.py#L114), [make_candidates](../insight.py#L557), [check](../insight.py#L224), [_number](../insight.py#L203), [App.apply_insight](../app.py#L803). 테스트: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
+코드: [detect_language](../facts.py#L109), [fingerprint](../facts.py#L115), [make_candidates](../insight.py#L556), [check](../insight.py#L224), [_number](../insight.py#L202), [App.apply_insight](../app.py#L804). 테스트: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
+
+추가 경계 코드·테스트: [number_identity](../numeric_text.py#L19), [unbacked_numbers](../numeric_text.py#L64), [_Run.resolve_insight](../core.py#L3300), [InsightWindow.apply](../app.py#L1082), [ExactInsightNumbers](../verification/test_insight_numbers.py#L13), [ChosenNumberTests](../verification/test_chosen_numbers.py#L19).
 
 ## 13. 텍스트·표·차트 기록
 
@@ -316,9 +325,11 @@ H = SHA256(lang + "\n" + join("\n", fact.id + ": " + fact.text))
 
 검사기는 정수의 정확한 보존을 요구하고 명시한 지원 서식의 정밀도를 실제 캐시·내장 자료와 비교합니다. 따라서 표에 정확히 저장할 수 있는 `1000000000000000.05`가 차트에서는 거부될 수 있습니다. General 차트는 원본 소수의 모든 자릿수를 약속하지 않습니다.
 
-**내용 창의 간략 그림:** Ctrl+R의 캔버스는 실제 PowerPoint 렌더링이 아닙니다. 긴 표 문자열을 줄여 보여줄 수 있습니다. 현재 차트 숫자 필터는 int/float만 받으므로 Fraction으로 계산한 계열은 이 그림에서 빠질 수 있습니다. 실제 저장 차트 작성기는 유리수를 지원합니다. 간략 그림을 완전한 차트·수치 검증 결과로 사용하면 안 됩니다.
+**내용 창의 간략 그림:** Ctrl+R의 캔버스는 실제 PowerPoint 렌더링이 아닙니다. 긴 표 문자열을 줄여 보여줄 수 있습니다. 차트 필터는 Boolean·유한하지 않은 값을 제외한 유한 `int`·`float`·`Fraction`을 받습니다. 정확한 유리수로 정규화한 뒤 경계 안 좌표를 실수로 바꾸므로 아주 큰 유한 값도 도형의 비율을 유지합니다. 누락 구간에서는 선이 끊어지고 고립된 유효 점도 보이며 양·음 막대는 `y(0)`에서 만납니다. 약도가 저장 차트 검사나 최종 Office 확인을 대신하지는 않습니다.
 
-코드: [replace_in_paragraph](../core.py#L2908), [_Run.walk](../core.py#L3464), [fill_table](../core.py#L3111), [fill_chart](../core.py#L3175), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L85). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
+코드: [replace_in_paragraph](../core.py#L2909), [_Run.walk](../core.py#L3468), [fill_table](../core.py#L3112), [fill_chart](../core.py#L3176), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L87). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
+
+추가 경계 코드·테스트: [ContentsChartTests](../verification/test_contents_chart.py#L50).
 
 ## 14. 미리보기·수치 검증·저장·로컬 조작
 
@@ -350,7 +361,7 @@ F5 미리보기와 Ctrl+G 생성은 `core.run`을 공유합니다. 작업 사본
 
 다른 조작은 Ctrl+E 파일 추가, Ctrl+T 템플릿 선택, Ctrl+L 언어 변경, F1 도움말입니다. 보고서·폴더 열기는 존재하는 결과·위치를 엽니다. 백그라운드 작업은 큐·작업 ID로 오래된 결과를 무시하고 창을 닫으면 소유한 타이머를 취소합니다. 경로·언어·템플릿 모드와 선택 문장은 쓰기 가능한 앱 폴더, 아니면 `%APPDATA%/SlideFill`에 로컬 저장합니다. JSON은 `.tmp`를 거치고 손상한 설정은 `.broken`으로 보관할 수 있습니다. 설정 저장 실패로 현재 세션 작업을 막지는 않습니다.
 
-코드: [run](../core.py#L3856), [Session.verify](../verification/automatic.py#L153), [Session.publish](../verification/automatic.py#L257), [Audit.cell](../verification/formulas.py#L211), [expected](../verification/text_values.py#L13), [sum_rationals](../verification/kernel.py#L33), [output_path](../core.py#L3896), [settings_path](../core.py#L3910), [App.generate](../app.py#L676), [WindowTimers](../ui_timers.py#L5). 테스트: [FormulaArithmetic](../verification/test_formulas.py#L19), [AutomaticGuard](../verification/test_automatic.py#L36), [ReportReliability](../verification/test_reliability.py#L72), [Settings](../test_core.py#L5301).
+코드: [run](../core.py#L3865), [Session.verify](../verification/automatic.py#L153), [Session.publish](../verification/automatic.py#L257), [Audit.cell](../verification/formulas.py#L211), [expected](../verification/text_values.py#L13), [sum_rationals](../verification/kernel.py#L33), [output_path](../core.py#L3905), [settings_path](../core.py#L3919), [App.generate](../app.py#L677), [WindowTimers](../ui_timers.py#L5). 테스트: [FormulaArithmetic](../verification/test_formulas.py#L19), [AutomaticGuard](../verification/test_automatic.py#L36), [ReportReliability](../verification/test_reliability.py#L72), [Settings](../test_core.py#L5301).
 
 ## 근거를 읽는 방법
 

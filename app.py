@@ -21,6 +21,7 @@ import insight
 import readers
 import suggest
 from ui_timers import WindowTimers
+from numeric_text import unbacked_numbers
 
 STATUS_ORDER = {"error": 0, "warn": 1, "ok": 2}
 STATUS_COLOR = {"error": "#B3261E", "warn": "#9A6700", "ok": "#1A7F37"}
@@ -802,6 +803,9 @@ class App:
 
     def apply_insight(self, request, text):
         """Save the person's sentence for exactly these figures. Clearing it goes back to the calculated sentence."""
+        if text and unbacked_numbers(text, (n for fact in request.facts for n in fact.numbers)):
+            messagebox.showwarning(self.t("insight_title"), self.t("insight_numbers"), parent=self.insight_window.window if self.insight_window else self.root)
+            return False
         key = request.key.casefold()
         if text:
             self.insights[key] = {"fingerprint": request.fingerprint, "text": text}
@@ -814,6 +818,7 @@ class App:
         if self.auto and not self.template_path():
             self.auto.stale = True
         self.preview()
+        return True
 
     def open_helper(self):
         """With no template it changes what the report holds; with one it helps to mark it."""
@@ -1075,8 +1080,8 @@ class InsightWindow:
         self.chosen.insert("1.0", (current + " " if current else "") + self.shown[picked[0]].statement)
 
     def apply(self):
-        self.app.apply_insight(self.request, self.chosen.get("1.0", "end").strip())
-        self.window.destroy()
+        if self.app.apply_insight(self.request, self.chosen.get("1.0", "end").strip()):
+            self.window.destroy()
 
 
 class HelperWindow:
