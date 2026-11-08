@@ -10,18 +10,18 @@ The arithmetic, source selection, descriptive rules and optional model wording h
 
 | Action or feature | Processing | Details |
 |---|---|---|
-| Add/drop files, switch language, reopen app | File routing and local settings | [1](#input), [14](#controls) |
-| Workbook-only report / Change contents | Deterministic selection, explicit references, calculated preview | [2](#selection) |
-| Existing template / Suggest references | Cell/name resolution and executable suggestions | [3](#references) |
-| Latest values, filters and aggregation | Date ordering and explicit row operations | [4](#latest), [5](#aggregates) |
-| Changes, average comparisons, extreme dates | Declared arithmetic and observation windows | [6](#changes) |
-| Ranks, shares, actuals vs budget | Item/total selection and comparison rules | [7](#items) |
-| Calculated report sentence / How to read it | Fixed descriptive rules, no model | [8](#readings) |
-| Supported structured source tables | Bounded schema recognition | [9](#structures) |
-| Several workbooks / Word context | Compatible-direction rules and dated before/after windows | [10](#cross-file), [11](#word) |
-| Suggest insights (Ctrl+I) | Calculated candidates, optional local model, user choice | [12](#insights) |
-| Text, table, chart and number appearance | Format interpretation and PPTX writing | [1](#input), [13](#writing) |
-| Preview (F5), Generate (Ctrl+G) | Shared fill path, independent numeric checks, staged publication | [14](#controls) |
+| Add/drop files, switch language, reopen app | File routing and local settings | [1](#1-file-reading-and-numeric-appearance), [14](#14-preview-numeric-verification-save-and-local-controls) |
+| Workbook-only report / Change contents | Deterministic selection, explicit references, calculated preview | [2](#2-workbook-only-report-and-change-contents) |
+| Existing template / Suggest references | Cell/name resolution and executable suggestions | [3](#3-cellname-references-and-existing-templates) |
+| Latest values, filters and aggregation | Date ordering and explicit row operations | [4](#4-latest-values-and-calendar-selection), [5](#5-filters-sums-products-counts-and-means) |
+| Changes, average comparisons, extreme dates | Declared arithmetic and observation windows | [6](#6-change-placeholders-averages-and-extreme-dates) |
+| Ranks, shares, actuals vs budget | Item/total selection and comparison rules | [7](#7-item-ranking-shares-and-paired-measures) |
+| Calculated report sentence / How to read it | Fixed descriptive rules, no model | [8](#8-calculated-notereading-seasonal-and-anomaly-rules) |
+| Supported structured source tables | Bounded schema recognition | [9](#9-supported-structured-descriptive-tables) |
+| Several workbooks / Word context | Compatible-direction rules and dated before/after windows | [10](#10-several-workbooks-and-direction-comparison), [11](#11-word-context-events-and-beforeafter-means) |
+| Suggest insights (Ctrl+I) | Calculated candidates, optional local model, user choice | [12](#12-optional-insight-candidates-and-saved-choices) |
+| Text, table, chart and number appearance | Format interpretation and PPTX writing | [1](#1-file-reading-and-numeric-appearance), [13](#13-writing-text-tables-and-charts) |
+| Preview (F5), Generate (Ctrl+G) | Shared fill path, independent numeric checks, staged publication | [14](#14-preview-numeric-verification-save-and-local-controls) |
 
 ```mermaid
 flowchart TD
@@ -46,7 +46,6 @@ The diagram's check is the supported numeric contract. It does not prove every s
 - Some selection, prose and compatibility paths still use floating values or formatted numbers. Those are tested rules, not a proof that every application branch uses exact arithmetic.
 - Formatting is a distinct operation. `General` deliberately limits displayed digits; a correct internal value need not be displayed with all its original digits.
 
-<a id="input"></a>
 ## 1. File reading and numeric appearance
 
 **Input:** XLSX/XLSM/XLTX/XLTM, XLS/XLSB/ODS, CSV/TSV/TXT; optional DOCX context. PPTX is the template/output format. There is no PDF/OCR input feature. Macros and CSV strings beginning with `=` are not executed.
@@ -76,7 +75,6 @@ Ties move away from zero: `2.675 → 2.68`, `-2.675 → -2.68` at two places. Th
 
 Code: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L423), [figure_number](../core.py#L497), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). Tests: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
 
-<a id="selection"></a>
 ## 2. Workbook-only report and Change contents
 
 **Action:** choose files without a company template; use **Change contents (Ctrl+R)** to change the workbook-only selection.
@@ -95,7 +93,6 @@ With a company template, Ctrl+R opens **Suggest references** for the first workb
 
 Code: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L818). Tests: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
-<a id="references"></a>
 ## 3. Cell/name references and existing templates
 
 **Text examples:** `{{Sales}}`, `{{Summary!B3}}`. **Shape markers:** put `{{table:Summary!A1:C5}}` or `{{chart:Summary!A1:C5}}` in a table/chart's Alternative Text description. Marker kind must match the shape type.
@@ -106,7 +103,6 @@ Dynamic named areas have a separate bounded interpreter: `OFFSET`, `INDEX`, `COU
 
 Code: [ExcelSource.locate](../core.py#L1451), [_dynamic_area](../core.py#L762), [_Run.fill_marked_shape](../core.py#L3392). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
 
-<a id="latest"></a>
 ## 4. Latest values and calendar selection
 
 `{{latest:Daily!A,C}}` uses A as dates and C as values. `latest6` returns the newest six retained rows for a table/chart; a text placeholder normally requests one value. Row numbers describe transposed data (`Sheet!5,7`); bounded areas isolate one table; `A+B` or `A+B+C` describes split year/month[/day]; wildcard sheet names can join a declared series.
@@ -121,7 +117,6 @@ Completion uses the earlier of the workbook's saved-modified date and today, or 
 
 Code: [ExcelSource._parse_ref](../core.py#L1576), [ExcelSource._latest_rows](../core.py#L1750), [ExcelSource._plain_series](../core.py#L2040), [ExcelSource._as_of](../core.py#L1816), [ExcelSource._period_issues](../core.py#L1821), [_usual_gap](../facts.py#L236), [unfinished](../facts.py#L355). Tests: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
 
-<a id="aggregates"></a>
 ## 5. Filters, sums, products, counts and means
 
 **Example reference:** `latest:Daily!A,sum(C, B=North)`. First retain rows matching the conditions, form a per-row contribution `u_i`, then group by calendar day or item label.
@@ -144,7 +139,6 @@ In an explicitly grouped series, a date can cover subsequent blank-date rows unt
 
 Code: [_matches](../core.py#L1242), [_aggregate_value](../core.py#L1254), [ExcelSource._summed_series](../core.py#L2112), [value_spec](../suggest.py#L1140). Tests: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
-<a id="changes"></a>
 ## 6. Change placeholders, averages and extreme dates
 
 For an amount, relative change is `r=(x_n-b)/abs(b)` and percentage display is `100*r`. A zero base withholds a relative change. Example: `100→120` is `+20.0%`; under this convention `-100→-50` is `+50.0%`. Named-item prose uses additional negative-base restrictions (section 7).
@@ -162,7 +156,6 @@ Use a positive N. An average base for previous values 100,110,120 is 110; a newe
 
 Code: [ratio](../facts.py#L120), [points_text](../facts.py#L152), [previous](../facts.py#L173), [week_ago](../facts.py#L177), [mean_before](../facts.py#L183), [extreme](../facts.py#L189), [ExcelSource._calc_text](../core.py#L2291). Tests: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
 
-<a id="items"></a>
 ## 7. Item ranking, shares and paired measures
 
 Text `topN`, `topvalueN`, `shareN` selects rank N (default 1). In table/chart markers the same family requests the top N rows (default 5); `share` adds a share column. Named items sort by descending value, except catch-all Other/기타 is placed last. Equal sort keys keep source order. Separately, the newest time-series value's rank is `1 + count(values strictly greater)` in the newest 30 points, so ties share rank.
@@ -175,7 +168,6 @@ Paired measures use the same change arithmetic, but relative growth prose requir
 
 Code: [rank](../facts.py#L223), [ranked_items](../facts.py#L721), [is_additive](../facts.py#L736), [without_parts](../facts.py#L804), [item_readings](../facts.py#L867), [ExcelSource._read_comparison](../core.py#L2354), [ExcelSource._rank_text](../core.py#L2557), [ExcelSource._rank_range](../core.py#L2580). Tests: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
 
-<a id="readings"></a>
 ## 8. Calculated note/reading: seasonal and anomaly rules
 
 `note` produces a calculated report sentence; `reading` chooses observations about how to interpret it. Neither calls a model. Rules select a limited set of findings (normally up to three), not a free-form statistical analysis. Their priority matters when several findings apply.
@@ -208,7 +200,6 @@ Latest-7/28/30 windows count retained observations. The rules do not assume thos
 
 Code: [same_weekday](../facts.py#L208), [stands_out](../facts.py#L374), [week_total_change](../facts.py#L229), [year_ago](../facts.py#L306), [year_to_date](../facts.py#L325), [readings](../facts.py#L436), [fact_pack](../facts.py#L620), [ExcelSource._series_words_plain](../core.py#L2198). Tests: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). Background and historical tuning limits: [reading rules](how-it-works.md#reading-rules).
 
-<a id="structures"></a>
 ## 9. Supported structured descriptive tables
 
 Schema recognition in `layouts.py` takes a separate route from generic sums/rankings. It reconstructs declared source roles and paginates at **eight data rows per page**.
@@ -221,7 +212,6 @@ The independent oracle separately reconstructs supported roles, rows, values, co
 
 Code: [_rates](../layouts.py#L107), [_organizations](../layouts.py#L167), [_outlines](../layouts.py#L220), [page_key](../layouts.py#L244), [expected](../verification/oracle.py#L26), [Session._layout](../verification/automatic.py#L74). Tests: [SourceAndOutput](../verification/test_verification.py#L122), [BinaryCoverage](../verification/test_binary.py#L98).
 
-<a id="cross-file"></a>
 ## 10. Several workbooks and direction comparison
 
 Each file first produces its own calculated facts and retains its file/measure labels. Cross-file wording needs at least two usable percentage changes with the same latest period label and comparison basis. It prefers an existing year-over-year fact, otherwise a previous-period fact. Points-only changes are not treated as percentages.
@@ -230,7 +220,6 @@ For compatible entries it compares signs: all positive, all negative, all zero, 
 
 Code: [Sources._gather](../core.py#L3689), [_lead_change](../core.py#L3760), [cross_file_readings](../facts.py#L755). Tests: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
 
-<a id="word"></a>
 ## 11. Word context, events and before/after means
 
 DOCX is read as ZIP/XML text, not by running Word or a model. Supported dated paragraphs become events; short undated continuation paragraphs (at most 200 characters) between dated paragraphs can inherit the preceding date. A missing date day becomes day 1. Name matching is bounded text matching (Latin letter boundaries, Korean substring), not semantic entity resolution.
@@ -261,7 +250,6 @@ Without useful links, the report selects original long paragraphs with priority 
 
 Code: [read](../documents.py#L93), [mentions](../documents.py#L165), [_window](../documents.py#L175), [link](../documents.py#L190), [highlights](../documents.py#L225), [key_paragraphs](../documents.py#L250), [check_figures](../documents.py#L325), [document_items](../suggest.py#L1813), [Session._document](../verification/automatic.py#L100). Tests: [WordDocuments](../test_core.py#L3956), [ReportReliability.test_document_mean_corruption_is_independently_detected](../verification/test_reliability.py#L229).
 
-<a id="insights"></a>
 ## 12. Optional insight candidates and saved choices
 
 **Action:** select a figure and press Ctrl+I. The window first offers up to eight calculated candidates, then can request optional model wording. Core arithmetic does not invoke a model.
@@ -282,7 +270,6 @@ Reuse requires the current displayed fact pack's fingerprint to match. Otherwise
 
 Code: [detect_language](../facts.py#L108), [fingerprint](../facts.py#L114), [make_candidates](../insight.py#L557), [check](../insight.py#L224), [_number](../insight.py#L203), [App.apply_insight](../app.py#L803). Tests: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
 
-<a id="writing"></a>
 ## 13. Writing text, tables and charts
 
 **Text:** adjacent runs are joined for placeholder matching; replacements proceed right-to-left and inherit the placeholder-start run's style. Text in slides/groups, tables, chart parts/titles, notes, masters/layouts and supported SmartArt is visited. SmartArt can discard a matched stale drawing copy so PowerPoint regenerates it from filled data. Unsupported values remain visible placeholders with problems.
@@ -297,7 +284,6 @@ The guard requires exact integer survival and checks declared explicit-format pr
 
 Code: [replace_in_paragraph](../core.py#L2908), [_Run.walk](../core.py#L3464), [fill_table](../core.py#L3111), [fill_chart](../core.py#L3175), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L85). Tests: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
 
-<a id="controls"></a>
 ## 14. Preview, numeric verification, save and local controls
 
 F5 preview and Ctrl+G generation share `core.run`: fill a working copy, serialize a real PPTX, then audit it. Preview does not publish. Generation first previews and uses its source snapshot. Automatic reporting creates a temporary working template; source workbooks/documents/templates are read-only.

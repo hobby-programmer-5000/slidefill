@@ -1,5 +1,3 @@
-<a id="libffi"></a>
-
 ## libffi
 
 ```text
@@ -25,8 +23,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
-
-<a id="libtommath"></a>
 
 ## LibTomMath
 
@@ -59,8 +55,6 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-<a id="zlib"></a>
-
 ## zlib
 
 zlib-ng is distributed under the same license, Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler, Copyright (C) 2020-2024 Hans Kristian Rosbach and contributors.
@@ -87,8 +81,6 @@ zlib-ng is distributed under the same license, Copyright (C) 1995-2024 Jean-loup
   Jean-loup Gailly        Mark Adler
   jloup@gzip.org          madler@alumni.caltech.edu
 ```
-
-<a id="unicode"></a>
 
 ## Unicode Character Database
 

@@ -10,18 +10,18 @@
 
 | 동작·기능 | 처리 방식 | 설명 |
 |---|---|---|
-| 파일 추가·드롭, 언어 변경, 다시 실행 | 파일 구분과 로컬 설정 | [1](#input), [14](#controls) |
-| 엑셀만으로 보고서 / 내용 바꾸기 | 규칙에 따른 선택, 명시적 참조, 계산한 미리보기 | [2](#selection) |
-| 기존 템플릿 / 참조 추천 | 셀·이름 해석과 실제 계산한 제안 | [3](#references) |
-| 최신값·조건·집계 | 날짜 정렬과 명시한 행 연산 | [4](#latest), [5](#aggregates) |
-| 증감·평균 대비·최고/최저일 | 정해진 산술과 관측값 창 | [6](#changes) |
-| 순위·구성비·예산 대비 | 항목·합계 선택과 비교 규칙 | [7](#items) |
-| 계산한 보고 문장 / 읽는 법 | 모델을 쓰지 않는 고정 해석 규칙 | [8](#readings) |
-| 지원하는 구조화 표 | 제한된 표 문법 인식 | [9](#structures) |
-| 여러 통합 문서 / Word 맥락 | 비교 가능한 방향 판단, 날짜 전후 구간 | [10](#cross-file), [11](#word) |
-| 통찰 문장 제안(Ctrl+I) | 계산한 후보, 선택적 로컬 모델, 사용자 선택 | [12](#insights) |
-| 텍스트·표·차트·숫자 모양 | 서식 해석과 PPTX 기록 | [1](#input), [13](#writing) |
-| 미리보기(F5)·생성(Ctrl+G) | 같은 채우기 경로, 독립 수치 검사, 임시 파일 재검사 | [14](#controls) |
+| 파일 추가·드롭, 언어 변경, 다시 실행 | 파일 구분과 로컬 설정 | [1](#1-파일-읽기와-숫자-표시), [14](#14-미리보기수치-검증저장로컬-조작) |
+| 엑셀만으로 보고서 / 내용 바꾸기 | 규칙에 따른 선택, 명시적 참조, 계산한 미리보기 | [2](#2-엑셀만으로-보고서-만들기와-내용-바꾸기) |
+| 기존 템플릿 / 참조 추천 | 셀·이름 해석과 실제 계산한 제안 | [3](#3-셀정의-이름과-기존-템플릿-참조) |
+| 최신값·조건·집계 | 날짜 정렬과 명시한 행 연산 | [4](#4-최신값과-날짜-선택), [5](#5-조건합계곱건수평균) |
+| 증감·평균 대비·최고/최저일 | 정해진 산술과 관측값 창 | [6](#6-증감평균-대비최고최저일) |
+| 순위·구성비·예산 대비 | 항목·합계 선택과 비교 규칙 | [7](#7-항목-순위구성비짝지은-지표) |
+| 계산한 보고 문장 / 읽는 법 | 모델을 쓰지 않는 고정 해석 규칙 | [8](#8-계산한-해설읽는-법-계절이상-징후-규칙) |
+| 지원하는 구조화 표 | 제한된 표 문법 인식 | [9](#9-지원하는-구조화-원본-표) |
+| 여러 통합 문서 / Word 맥락 | 비교 가능한 방향 판단, 날짜 전후 구간 | [10](#10-여러-통합-문서의-방향-비교), [11](#11-word-맥락사건전후-평균) |
+| 통찰 문장 제안(Ctrl+I) | 계산한 후보, 선택적 로컬 모델, 사용자 선택 | [12](#12-선택적-통찰-문장-후보와-저장한-선택) |
+| 텍스트·표·차트·숫자 모양 | 서식 해석과 PPTX 기록 | [1](#1-파일-읽기와-숫자-표시), [13](#13-텍스트표차트-기록) |
+| 미리보기(F5)·생성(Ctrl+G) | 같은 채우기 경로, 독립 수치 검사, 임시 파일 재검사 | [14](#14-미리보기수치-검증저장로컬-조작) |
 
 ```mermaid
 flowchart TD
@@ -46,7 +46,6 @@ flowchart TD
 - 일부 선택·문장·비교 가능성 경로에는 실수나 이미 표시한 숫자도 쓰입니다. 이들은 테스트한 규칙이며 앱의 모든 분기가 정확한 유리수 연산이라는 증명은 아닙니다.
 - 서식은 계산과 별도 연산입니다. `General`은 표시 자릿수를 제한하므로 내부 값이 맞더라도 원본의 모든 자릿수가 화면에 나오지는 않을 수 있습니다.
 
-<a id="input"></a>
 ## 1. 파일 읽기와 숫자 표시
 
 **입력:** XLSX/XLSM/XLTX/XLTM, XLS/XLSB/ODS, CSV/TSV/TXT이며 DOCX는 선택적 맥락 자료입니다. 템플릿·출력은 PPTX입니다. PDF/OCR 입력 기능은 없습니다. 매크로나 `=`로 시작하는 CSV 문자열을 실행하지 않습니다.
@@ -76,7 +75,6 @@ q = floor(a / d)
 
 코드: [load](../readers.py#L609), [_text_cell](../readers.py#L61), [as_number](../core.py#L423), [figure_number](../core.py#L497), [format_value](../numfmt.py#L81), [_general](../numfmt.py#L501), [round_rational](../verification/kernel.py#L58). 테스트: [Formats](../test_core.py#L44), [ExactReadings](../verification/test_reliability.py#L20).
 
-<a id="selection"></a>
 ## 2. 엑셀만으로 보고서 만들기와 내용 바꾸기
 
 **동작:** 회사 템플릿 없이 파일을 고르고, **내용 바꾸기(Ctrl+R)**에서 통합 문서용 선택을 바꿉니다.
@@ -95,7 +93,6 @@ q = floor(a / d)
 
 코드: [data_sheets](../suggest.py#L270), [read_shape](../suggest.py#L875), [default_value](../suggest.py#L935), [default_how](../suggest.py#L962), [default_conditions](../suggest.py#L1089), [find_doubts](../suggest.py#L1292), [plan_report](../suggest.py#L1701), [App.open_helper](../app.py#L818). 테스트: [Suggestions](../test_core.py#L1531), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
-<a id="references"></a>
 ## 3. 셀·정의 이름과 기존 템플릿 참조
 
 **텍스트 예:** `{{Sales}}`, `{{Summary!B3}}`. **도형 표시:** 표·차트의 대체 텍스트 설명에 `{{table:Summary!A1:C5}}`, `{{chart:Summary!A1:C5}}`를 넣습니다. 표시 종류와 실제 도형 종류가 같아야 합니다.
@@ -106,7 +103,6 @@ q = floor(a / d)
 
 코드: [ExcelSource.locate](../core.py#L1451), [_dynamic_area](../core.py#L762), [_Run.fill_marked_shape](../core.py#L3392). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460).
 
-<a id="latest"></a>
 ## 4. 최신값과 날짜 선택
 
 `{{latest:Daily!A,C}}`는 A를 날짜, C를 값으로 사용합니다. `latest6`은 표·차트용 최신 유효 행 6개를 돌려주며, 텍스트에서는 보통 값 하나를 요청합니다. 행 번호는 가로 방향 자료(`Sheet!5,7`), 제한 영역은 한 표, `A+B` 또는 `A+B+C`는 분리된 연·월[/일]을 나타냅니다. 시트 이름 와일드카드로 명시한 시계열을 연결할 수도 있습니다.
@@ -121,7 +117,6 @@ q = floor(a / d)
 
 코드: [ExcelSource._parse_ref](../core.py#L1576), [ExcelSource._latest_rows](../core.py#L1750), [ExcelSource._plain_series](../core.py#L2040), [ExcelSource._as_of](../core.py#L1816), [ExcelSource._period_issues](../core.py#L1821), [_usual_gap](../facts.py#L236), [unfinished](../facts.py#L355). 테스트: [Latest](../test_core.py#L543), [DataShapes](../test_core.py#L1051), [ReportReliability.test_stale_unselected_date_cannot_hide_the_actual_latest_period](../verification/test_reliability.py#L171).
 
-<a id="aggregates"></a>
 ## 5. 조건·합계·곱·건수·평균
 
 **참조 예:** `latest:Daily!A,sum(C, B=North)`. 먼저 조건에 맞는 행을 남기고 행별 기여값 `u_i`를 만든 다음, 날짜의 일 단위 또는 항목명으로 묶습니다.
@@ -144,7 +139,6 @@ q = floor(a / d)
 
 코드: [_matches](../core.py#L1242), [_aggregate_value](../core.py#L1254), [ExcelSource._summed_series](../core.py#L2112), [value_spec](../suggest.py#L1140). 테스트: [DataShapes](../test_core.py#L1051), [Remaining.test_randomized_group_sums_products_means_and_filtered_values](../verification/test_remaining.py#L166), [ReportReliability.test_rate_mean_requires_explicit_scope_review](../verification/test_reliability.py#L201).
 
-<a id="changes"></a>
 ## 6. 증감·평균 대비·최고/최저일
 
 양적 수치의 상대 변화는 `r=(x_n-b)/abs(b)`이고 백분율 표시는 `100*r`입니다. 기준값이 0이면 상대 변화를 유보합니다. `100→120`은 `+20.0%`이고 이 규칙에서 `-100→-50`은 `+50.0%`입니다. 항목별 문장에는 음수 기준에 대한 추가 제한이 있습니다(7절).
@@ -162,7 +156,6 @@ N에는 양수를 사용합니다. 직전 값이 100·110·120이면 평균 기�
 
 코드: [ratio](../facts.py#L120), [points_text](../facts.py#L152), [previous](../facts.py#L173), [week_ago](../facts.py#L177), [mean_before](../facts.py#L183), [extreme](../facts.py#L189), [ExcelSource._calc_text](../core.py#L2291). 테스트: [Figures](../test_core.py#L746), [Calculations](../test_core.py#L865), [ReportReliability.test_numeric_calculation_text_is_independently_recomputed](../verification/test_reliability.py#L92).
 
-<a id="items"></a>
 ## 7. 항목 순위·구성비·짝지은 지표
 
 텍스트의 `topN`, `topvalueN`, `shareN`은 N위(기본 1위)를 고릅니다. 표·차트 표시에서는 상위 N개 행(기본 5개)을 요청하고 `share`는 구성비 열을 추가합니다. 이름 있는 항목은 값 내림차순이지만 Other/기타는 마지막에 둡니다. 정렬 키가 같으면 원본 순서를 유지합니다. 이와 별도로 최신 시계열 값의 순위는 최신 30개에서 `1 + 현재보다 큰 값의 개수`이므로 동률은 같은 순위입니다.
@@ -175,7 +168,6 @@ N에는 양수를 사용합니다. 직전 값이 100·110·120이면 평균 기�
 
 코드: [rank](../facts.py#L223), [ranked_items](../facts.py#L721), [is_additive](../facts.py#L736), [without_parts](../facts.py#L804), [item_readings](../facts.py#L867), [ExcelSource._read_comparison](../core.py#L2354), [ExcelSource._rank_text](../core.py#L2557), [ExcelSource._rank_range](../core.py#L2580). 테스트: [DataShapes](../test_core.py#L1051), [AutomaticGuard.test_split_dates_and_share_denominators_are_source_checked](../verification/test_automatic.py#L208).
 
-<a id="readings"></a>
 ## 8. 계산한 해설·읽는 법: 계절·이상 징후 규칙
 
 `note`는 계산한 보고 문장, `reading`은 읽을 때 참고할 관찰을 만듭니다. 둘 다 모델을 호출하지 않습니다. 규칙에 따라 제한된 관찰(보통 최대 3개)을 고르며 자유로운 통계 분석은 아닙니다. 여러 조건이 맞으면 규칙 우선순위도 결과에 영향을 줍니다.
@@ -208,7 +200,6 @@ S = max(1.4826*MAD, 0.01*abs(L))
 
 코드: [same_weekday](../facts.py#L208), [stands_out](../facts.py#L374), [week_total_change](../facts.py#L229), [year_ago](../facts.py#L306), [year_to_date](../facts.py#L325), [readings](../facts.py#L436), [fact_pack](../facts.py#L620), [ExcelSource._series_words_plain](../core.py#L2198). 테스트: [Readings](../test_core.py#L4536), [SentenceAccuracy](../test_core.py#L4164). 배경·과거 조정 한계는 [동작 설명](how-it-works.ko.md)의 읽는 법 규칙을 참고하세요.
 
-<a id="structures"></a>
 ## 9. 지원하는 구조화 원본 표
 
 `layouts.py`의 표 문법 인식은 일반 합계·순위와 별도 경로입니다. 명시한 원본 역할을 재구성하고 **페이지당 데이터 8행**으로 나눕니다.
@@ -221,7 +212,6 @@ S = max(1.4826*MAD, 0.01*abs(L))
 
 코드: [_rates](../layouts.py#L107), [_organizations](../layouts.py#L167), [_outlines](../layouts.py#L220), [page_key](../layouts.py#L244), [expected](../verification/oracle.py#L26), [Session._layout](../verification/automatic.py#L74). 테스트: [SourceAndOutput](../verification/test_verification.py#L122), [BinaryCoverage](../verification/test_binary.py#L98).
 
-<a id="cross-file"></a>
 ## 10. 여러 통합 문서의 방향 비교
 
 파일마다 먼저 자체 근거를 계산하고 파일·지표 이름을 유지합니다. 파일 간 문장에는 같은 최신 기간 이름과 비교 기준을 가진 백분율 변화가 최소 2개 필요합니다. 기존 전년 대비 근거가 있으면 그것을, 없으면 직전 대비 근거를 사용합니다. 포인트 차이를 백분율로 취급하지 않습니다.
@@ -230,7 +220,6 @@ S = max(1.4826*MAD, 0.01*abs(L))
 
 코드: [Sources._gather](../core.py#L3689), [_lead_change](../core.py#L3760), [cross_file_readings](../facts.py#L755). 테스트: [CrossFileReadings](../test_core.py#L4123), [SeveralFiles](../test_core.py#L2642).
 
-<a id="word"></a>
 ## 11. Word 맥락·사건·전후 평균
 
 DOCX는 Word나 모델을 실행하지 않고 ZIP/XML 텍스트로 읽습니다. 지원하는 날짜로 시작하는 문단을 사건으로 삼고, 날짜 문단 사이의 짧은 미지정 문단(최대 200자)은 앞 사건의 날짜를 이어받을 수 있습니다. 일자가 없으면 1일입니다. 이름 대응은 제한된 텍스트 비교(라틴 문자 경계, 한국어 부분 문자열)이며 의미 기반 개체 식별은 아닙니다.
@@ -261,7 +250,6 @@ A = mean(x_(j+1), ..., x_(j+w))
 
 코드: [read](../documents.py#L93), [mentions](../documents.py#L165), [_window](../documents.py#L175), [link](../documents.py#L190), [highlights](../documents.py#L225), [key_paragraphs](../documents.py#L250), [check_figures](../documents.py#L325), [document_items](../suggest.py#L1813), [Session._document](../verification/automatic.py#L100). 테스트: [WordDocuments](../test_core.py#L3956), [ReportReliability.test_document_mean_corruption_is_independently_detected](../verification/test_reliability.py#L229).
 
-<a id="insights"></a>
 ## 12. 선택적 통찰 문장 후보와 저장한 선택
 
 **동작:** 수치를 고르고 Ctrl+I를 누릅니다. 먼저 계산한 후보를 최대 8개 보여주며 선택적으로 모델 문장을 요청합니다. 핵심 산술은 모델을 호출하지 않습니다.
@@ -282,7 +270,6 @@ H = SHA256(lang + "\n" + join("\n", fact.id + ": " + fact.text))
 
 코드: [detect_language](../facts.py#L108), [fingerprint](../facts.py#L114), [make_candidates](../insight.py#L557), [check](../insight.py#L224), [_number](../insight.py#L203), [App.apply_insight](../app.py#L803). 테스트: [Router](../test_core.py#L4840), [Candidates](../test_core.py#L4905), [InsightPlaceholder](../test_core.py#L4981), [SentenceAccuracy](../test_core.py#L4164).
 
-<a id="writing"></a>
 ## 13. 텍스트·표·차트 기록
 
 **텍스트:** 인접 실행 조각(run)을 합쳐 자리표시자를 찾고 오른쪽부터 바꿉니다. 삽입값은 자리표시자가 시작한 조각의 스타일을 이어받습니다. 슬라이드·그룹·표·차트 부분/제목·노트·마스터/레이아웃·지원하는 SmartArt를 순회합니다. SmartArt는 대응하는 오래된 그리기 사본을 버려 PowerPoint가 채운 자료로 다시 배치하게 할 수 있습니다. 미지원 값은 문제와 함께 보이는 자리표시자로 남습니다.
@@ -297,7 +284,6 @@ H = SHA256(lang + "\n" + join("\n", fact.id + ": " + fact.text))
 
 코드: [replace_in_paragraph](../core.py#L2908), [_Run.walk](../core.py#L3464), [fill_table](../core.py#L3111), [fill_chart](../core.py#L3175), [check](../verification/charts.py#L38), [draw_chart](../contents.py#L85). 테스트: [TextFill](../test_core.py#L260), [TableFill](../test_core.py#L329), [ChartFill](../test_core.py#L460), [ReportReliability.test_aggregate_table_preserves_small_amount_next_to_large_amount](../verification/test_reliability.py#L109).
 
-<a id="controls"></a>
 ## 14. 미리보기·수치 검증·저장·로컬 조작
 
 F5 미리보기와 Ctrl+G 생성은 `core.run`을 공유합니다. 작업 사본을 채워 실제 PPTX로 직렬화한 뒤 검사하고, 미리보기에서는 파일을 공개 저장하지 않습니다. 생성은 먼저 미리보기를 하고 그 원본 스냅샷을 사용합니다. 자동 보고서는 임시 작업 템플릿을 만들며 원본 통합 문서·문서·템플릿은 읽기만 합니다.
