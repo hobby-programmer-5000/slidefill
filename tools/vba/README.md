@@ -19,7 +19,7 @@ Use Windows desktop Excel with VBA installed and an interactive user session. Th
 Programmatic access to the VBA project was unavailable in the tested environment. The executable preparation/comparison tooling can be reviewed before this one manual step:
 
 1. Open the generated **test scaffold** in Excel; preserve the original input workbook.
-2. Press **Alt+F11** to open Visual Basic Editor. Choose **File → Import File…**, select this folder's `SlideFillOracle.bas`, and return to Excel.
+2. Press **Alt+F11** to open Visual Basic Editor. In Project Explorer, select **VBAProject (your test scaffold's filename)**. Choose **File → Import File…** and select this folder's `SlideFillOracle.bas`. Confirm that **Modules → SlideFillOracle** appears under that same project, then return to Excel. `Sheet1`, `Sheet2` and `ThisWorkbook` alone are the default objects, not the imported module.
 3. Save the scaffold as its existing macro-enabled `.xlsm` format. Do not paste the module's `Attribute` line into an ordinary code window; File Import handles it.
 4. If Office policy blocks this original test macro, record the refusal. Do not enable all macros or change project-access settings to force the test.
 5. Run the supplied comparison workflow against the reviewed artifact. Until import and actual execution occur, both VBA routes are **NOT RUN**. Static source checks, workbook formulas showing `#NAME?`, or Excel worksheet-function calls are not a VBA execution pass.
@@ -44,6 +44,14 @@ powershell -NoProfile -File tools/vba/host.ps1 -Mode Run -EngineWorkbook "$spike
 ```
 
 The prepared manifest has21 cases. Inspect `native-results.json` and `comparison.json`; count the actually executed cases and distinguish MATCH, DIFFERENT, blocked/unavailable and errors. Expected binary/rounding differences must be retained as differences under the stated comparison contract. Keep source, module, workbook and input hashes with the result. If the macro was never imported/allowed/executed, preserve **NOT RUN** rather than inferring success from the workbook opening.
+
+Run checks the original literal workbook against the actual engine cells by type and Double bits before calling VBA; declared metadata hashes alone are insufficient. Build preserves numeric-looking text and format strings explicitly. An earlier scaffold copied through Excel `Value2` could coerce these strings into numbers. After importing/saving its module, use `repair_fixture.py` to create a new typed-data copy without touching the original or changing its embedded VBA binary:
+
+```powershell
+.venv/Scripts/python.exe tools/vba/repair_fixture.py "$spikeRun/inputs.xlsx" "$spikeRun/engine-final.xlsm" "$spikeRun/engine-typed.xlsm"
+```
+
+Then use that new copy as `-EngineWorkbook`. The repair refuses a missing VBA project or existing output. Its package tests use non-executable sentinel bytes and do not establish VBA compilation or execution.
 
 ## Fixed operation contract
 

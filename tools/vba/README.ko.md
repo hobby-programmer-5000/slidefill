@@ -19,7 +19,7 @@ VBA가 설치된 Windows 데스크톱 Excel과 사용자의 대화형 세션이 
 시험한 환경에서는 VBA 프로젝트에 대한 프로그램 접근이 불가능했습니다. 실행 가능한 준비·비교 도구를 확인한 뒤 아래 수동 단계 한 번을 진행할 수 있습니다.
 
 1. 생성한 **시험용 통합 문서**를 Excel에서 엽니다. 원본 입력 파일은 보존합니다.
-2. **Alt+F11**로 Visual Basic 편집기를 엽니다. **파일 → 파일 가져오기…**에서 이 폴더의 `SlideFillOracle.bas`를 선택하고 Excel로 돌아옵니다.
+2. **Alt+F11**로 Visual Basic 편집기를 엽니다. 왼쪽 프로젝트 탐색기에서 **VBAProject (시험 파일 이름)**을 먼저 선택합니다. **File → Import File…(파일 → 파일 가져오기…)**에서 이 폴더의 `SlideFillOracle.bas`를 선택합니다. 같은 프로젝트 아래 **Modules → SlideFillOracle**이 생긴 것을 확인한 뒤 Excel로 돌아옵니다. `Sheet1`, `Sheet2`, `ThisWorkbook`만 보이면 아직 기본 객체만 있는 상태입니다.
 3. 시험 문서를 기존 매크로 사용 통합 문서인 `.xlsm` 형식으로 저장합니다. 모듈의 `Attribute` 줄을 일반 코드 창에 붙여 넣지 마세요. 파일 가져오기가 이 줄을 처리합니다.
 4. Office 정책이 자체 시험 매크로를 막으면 거부 결과를 기록합니다. 강제로 시험하려고 모든 매크로를 허용하거나 프로젝트 접근 설정을 바꾸지 않습니다.
 5. 검토한 파일로 제공된 비교 절차를 실행합니다. 가져오기와 실제 실행 전에는 두 VBA 경로 모두 **미실행(NOT RUN)**입니다. 정적 소스 검사, `#NAME?`가 보이는 수식, Excel 워크시트 함수 호출을 VBA 실행 통과로 기록하지 않습니다.
@@ -44,6 +44,14 @@ powershell -NoProfile -File tools/vba/host.ps1 -Mode Run -EngineWorkbook "$spike
 ```
 
 준비한 manifest에는21개 사례가 있습니다. `native-results.json`과 `comparison.json`에서 실제 실행 건수를 확인하고 MATCH, DIFFERENT, 차단/계산 불가, 오류를 구분합니다. 선언한 비교 계약상 이진수·반올림 차이가 예상되더라도 차이를 일치로 바꾸지 않습니다. 원본·모듈·실행 통합 문서·입력 해시를 결과와 함께 보존합니다. 매크로를 가져오거나 허용하거나 실제 실행하지 못했다면 파일을 열었다는 이유로 성공을 추정하지 말고 **미실행(NOT RUN)**으로 기록합니다.
+
+Run은 VBA 호출 전에 원본 파일과 실제 엔진 셀의 형식·Double 비트를 대조합니다. 선언한 해시만으로 입력이 같다고 판단하지 않습니다. Build는 숫자처럼 보이는 텍스트와 표시 형식 문자열을 명시적으로 보존합니다. 예전 시험 파일은 Excel `Value2` 복사 중 이러한 문자열이 숫자로 바뀔 수 있었습니다. 모듈을 가져와 저장한 뒤 `repair_fixture.py`로 새 사본을 만들면 원본 파일과 내장 VBA 바이너리를 그대로 보존하면서 시험 데이터 형식만 복구할 수 있습니다.
+
+```powershell
+.venv/Scripts/python.exe tools/vba/repair_fixture.py "$spikeRun/inputs.xlsx" "$spikeRun/engine-final.xlsm" "$spikeRun/engine-typed.xlsm"
+```
+
+이후 새 사본을 `-EngineWorkbook`으로 사용합니다. VBA 프로젝트가 없거나 출력 파일이 이미 있으면 거부합니다. 복구 도구의 패키지 검사는 실행 불가능한 표식 바이트를 사용하며 VBA 컴파일·실행을 입증하지 않습니다.
 
 ## 고정한 연산 계약
 

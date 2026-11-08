@@ -8,9 +8,9 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 if ($errors.Count) { throw 'host.ps1 has PowerShell syntax errors.' }
 $functions = @($ast.FindAll({param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -in @('Get-NativeResult','New-OperandMatrix')
+    $node.Name -in @('Get-NativeResult','New-OperandMatrix','Get-InputSnapshot','Test-InputIdentity')
 },$true))
-if ($functions.Count -ne 2) { throw 'The expected protocol functions were not found.' }
+if ($functions.Count -ne 4) { throw 'The expected protocol functions were not found.' }
 foreach ($function in $functions) {
     . ([ScriptBlock]::Create($function.Extent.Text))
 }
@@ -42,6 +42,30 @@ foreach ($operands in @(
     $refused = $false
     try { New-OperandMatrix $operands | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'An invalid typed operand payload was silently accepted.' }
+    $checked++
+}
+foreach ($pair in @(
+    @($null,[double]0),
+    @($true,[double]1),
+    @('2',[double]2),
+    @([double]1,[double]1.0000000000000002),
+    @('Sales','sales')
+)) {
+    $first = Get-InputSnapshot $pair[0]
+    $second = Get-InputSnapshot $pair[1]
+    if (Test-InputIdentity $first $second) { throw 'An original native input mutation was accepted as identical.' }
+    $checked++
+}
+foreach ($pair in @(@([int]2,[double]2),@('Sales','Sales'))) {
+    if (-not (Test-InputIdentity (Get-InputSnapshot $pair[0]) (Get-InputSnapshot $pair[1]))) {
+        throw 'Equivalent native values lost identity at the declared Double boundary.'
+    }
+    $checked++
+}
+foreach ($invalid in @([double]::PositiveInfinity,[int]-2146826273,[datetime]'2026-01-01')) {
+    $refused = $false
+    try { Get-InputSnapshot $invalid | Out-Null } catch { $refused = $true }
+    if (-not $refused) { throw 'An unsupported or nonfinite source value was accepted.' }
     $checked++
 }
 Write-Output "PASS: $checked host protocol checks; no Excel/VBA execution is implied."

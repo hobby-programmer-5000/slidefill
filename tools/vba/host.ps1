@@ -98,6 +98,34 @@ function New-OperandMatrix([object[]]$Operands) {
     return ,$matrix
 }
 
+function Get-InputSnapshot([object]$Value) {
+    if ($null -eq $Value) { return @{type='blank'} }
+    if ($Value -is [bool]) { return @{type='bool'; value=$Value} }
+    if ($Value -is [string]) { return @{type='text'; value=$Value} }
+    if ($Value -is [Runtime.InteropServices.ErrorWrapper]) { throw 'Native error cells are not literal bridge operands.' }
+    if ($Value -is [int] -and $Value -lt 0 -and
+        ($Value -band -65536) -eq -2146828288) { throw 'Native CVErr cells are not literal bridge operands.' }
+    if ($Value.GetType().FullName -notin @('System.Byte','System.SByte','System.Int16',
+        'System.UInt16','System.Int32','System.UInt32','System.Int64','System.UInt64',
+        'System.Single','System.Double','System.Decimal')) { throw 'Unsupported native input type.' }
+    $number = [double]$Value
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { throw 'Nonfinite native input.' }
+    return @{type='number'; decimal=$number.ToString('R',$invariant);
+        double_hex=([BitConverter]::ToString([BitConverter]::GetBytes($number))).Replace('-','')}
+}
+
+function Test-InputIdentity([object]$First, [object]$Second) {
+    if ($First.type -cne $Second.type) { return $false }
+    switch ($First.type) {
+        'blank' { return $true }
+        'number' { return $First.double_hex -ceq $Second.double_hex }
+        'bool' { return $First.value -is [bool] -and $Second.value -is [bool] -and
+                       $First.value -eq $Second.value }
+        'text' { return [string]::Equals($First.value,$Second.value,[StringComparison]::Ordinal) }
+        default { return $false }
+    }
+}
+
 try {
     $outputFull = New-OutputPath $OutputJson
     if ($Mode -eq 'Build') {
@@ -155,6 +183,18 @@ try {
         $engineSheet = $engineBook.Worksheets.Item(1)
         $engineSheet.Name = 'Cases'
         $engineSheet.Range("A1:G$rows").Value2 = $used.Value2
+        # Value2 assignment into General cells can turn text such as "2" or
+        # a format spelling "0.000" into a number. Preserve each native string
+        # explicitly in the new task-owned engine, before it is ever saved.
+        for ($row=1; $row -le $rows; $row++) {
+            for ($column=1; $column -le 7; $column++) {
+                $literal = $sourceSheet.Cells.Item($row,$column).Value2
+                if ($literal -is [string]) {
+                    $engineSheet.Cells.Item($row,$column).NumberFormat = '@'
+                    $engineSheet.Cells.Item($row,$column).Value2 = $literal
+                }
+            }
+        }
         $engineSheet.Cells.Item(1,8).Value2 = 'direct_vba'
         $engineSheet.Cells.Item(1,9).Value2 = 'app_vba'
         # Visible metadata binds the declared source/version, not an audit of VBA bytes.
@@ -213,6 +253,24 @@ try {
                         else{'Import SlideFillOracle.bas into this starter XLSM with the normal VBA editor, save it, then run comparison. No Trust Center change is required by this tool.'})}
         $exitCode = $(if($imported){0}else{3})
     } else {
+        # Read the original source under ForceDisable, rather than trusting metadata
+        # copied into an engine that may have been edited during module import.
+        if ([IO.Path]::GetExtension($sourcePath) -ne '.xlsx') { throw 'Run needs the original literal XLSX source.' }
+        $sourceBook = $excel.Workbooks.Open($sourcePath,0,$true)
+        $sourceSheet = $sourceBook.Worksheets.Item('Cases')
+        $used = $sourceSheet.UsedRange
+        $sourceRows = [int]$used.Rows.Count
+        if ($sourceRows -lt 2 -or $sourceRows -gt 1001 -or $used.Columns.Count -ne 7 -or
+            $used.Row -ne 1 -or $used.Column -ne 1 -or $used.HasFormula -ne $false) {
+            throw 'Run needs the bounded original literal Cases fixture.'
+        }
+        $headers = @('id','operation','v1','v2','v3','digits','format')
+        for ($column=1; $column -le 7; $column++) {
+            if ([string]$sourceSheet.Cells.Item(1,$column).Value2 -cne $headers[$column-1]) {
+                throw 'Unexpected original fixture header.'
+            }
+        }
+        if ($cases.Count -ne $sourceRows-1) { throw 'The app manifest omits or adds original cases.' }
         $excel.AutomationSecurity = 2 # ByUI: honor the user's existing macro policy.
         $engineBook = $excel.Workbooks.Open($engineFull,0,$true)
         $metadata = $engineBook.Worksheets.Item('_SlideFillMeta')
@@ -225,6 +283,76 @@ try {
             throw 'ModuleHashMismatch: native and app module versions differ.'
         }
         $engineSheet = $engineBook.Worksheets.Item('Cases')
+        if ($engineSheet.UsedRange.Rows.Count -ne $sourceRows) { throw 'The engine case row count changed.' }
+        for ($column=1; $column -le 7; $column++) {
+            $sourceHeader = Get-InputSnapshot $sourceSheet.Cells.Item(1,$column).Value2
+            $engineHeader = Get-InputSnapshot $engineSheet.Cells.Item(1,$column).Value2
+            if (-not (Test-InputIdentity $sourceHeader $engineHeader)) { throw 'Engine source headers changed.' }
+        }
+        $appCases = @{}
+        foreach ($case in $cases) {
+            if ($case.id -isnot [string] -or -not $case.id -or $appCases.ContainsKey($case.id)) {
+                throw 'App case identifiers must be nonempty unique strings.'
+            }
+            $appCases[$case.id] = $case
+        }
+        $seen = @{}
+        $verifiedCases = @()
+        $inputSnapshots = @()
+        for ($row=2; $row -le $sourceRows; $row++) {
+            $original = @()
+            $engineInputs = @()
+            for ($column=1; $column -le 7; $column++) {
+                $sourceCell = $sourceSheet.Cells.Item($row,$column)
+                $engineCell = $engineSheet.Cells.Item($row,$column)
+                if ($engineCell.HasFormula -ne $false) { throw 'Engine input cells must remain literals.' }
+                $sourceValue = Get-InputSnapshot $sourceCell.Value2
+                $engineValue = Get-InputSnapshot $engineCell.Value2
+                if (-not (Test-InputIdentity $sourceValue $engineValue)) {
+                    throw "EngineInputMismatch: Cases row $row column $column differs from the original native source."
+                }
+                $original += $sourceValue
+                $engineInputs += $engineValue
+            }
+            if ($original[0].type -ne 'text' -or -not $original[0].value -or
+                $seen.ContainsKey($original[0].value) -or -not $appCases.ContainsKey($original[0].value)) {
+                throw 'Original case identifiers must be unique and exactly covered by the app manifest.'
+            }
+            $id = $original[0].value
+            $seen[$id] = $true
+            $case = $appCases[$id]
+            if ($case.id -cne $id -or $case.operation -isnot [string] -or $case.format -isnot [string] -or
+                $original[1].type -ne 'text' -or
+                $original[1].value -cne [string]$case.operation -or
+                $original[5].type -ne 'number' -or $original[6].type -ne 'text' -or
+                $original[6].value -cne [string]$case.format) {
+                throw 'The original native and app operation contracts differ.'
+            }
+            $nativeDigits = [double]$sourceSheet.Cells.Item($row,6).Value2
+            $appDigits = Get-InputSnapshot $case.digits
+            if ($nativeDigits -ne [Math]::Truncate($nativeDigits) -or
+                $nativeDigits -lt [int]::MinValue -or $nativeDigits -gt [int]::MaxValue -or
+                -not (Test-InputIdentity $original[5] $appDigits)) {
+                throw 'Native/app digits must be the same exact integer.'
+            }
+            $matrix = New-OperandMatrix @($case.operands)
+            $operands = @()
+            for ($index=0; $index -lt 3; $index++) {
+                $appValue = Get-InputSnapshot $matrix[0,$index]
+                if (-not (Test-InputIdentity $original[$index+2] $appValue)) {
+                    throw "AppInputMismatch: $id operand $index differs from the original native source."
+                }
+                $letter = @('C','D','E')[$index]
+                $operands += @{source_cell="Cases!$letter$row"; engine_cell="Cases!$letter$row";
+                    original=$original[$index+2]; engine=$engineInputs[$index+2]; app=$appValue}
+            }
+            $snapshot = @{id=$id; source_row=$row; source_cells="Cases!C${row}:E$row";
+                operation=$case.operation; digits=[int]$nativeDigits; format=$case.format; operands=$operands}
+            $inputSnapshots += $snapshot
+            $verifiedCases += @{case=$case; row=$row; matrix=$matrix; snapshot=$snapshot}
+        }
+        $inputVerification = @{source_sha256=$sourceHash; source_file=[IO.Path]::GetFileName($sourcePath);
+            case_count=$inputSnapshots.Count; cases=$inputSnapshots}
         $macro = "'" + $engineBook.Name.Replace("'","''") + "'!SlideFillOracle.SFCalc"
         $probe = New-Object 'object[,]' 1,1
         $probe[0,0] = [double]1
@@ -234,35 +362,20 @@ try {
         } catch {
             $result = @{status='execution_blocked'; environment=$environment;
                 reason=$_.Exception.Message; engine_sha256=$engineBefore;
+                source_sha256=$sourceHash; input_verification=$inputVerification;
                 host_settings_changed=$false; macros_executed=$false; cases=@()}
             $exitCode = 3
         }
         if ($null -eq $result) {
             $excel.CalculateFullRebuild()
-            $seen = @{}
-            $nativeRows = @{}
-            $lastRow = [int]$engineSheet.UsedRange.Rows.Count
-            for ($row=2; $row -le $lastRow; $row++) {
-                $id = [string]$engineSheet.Cells.Item($row,1).Value2
-                if (-not $id -or $nativeRows.ContainsKey($id)) { throw 'Empty or duplicate native case identifier.' }
-                $nativeRows[$id] = $row
-            }
             $caseResults = @()
-            foreach ($case in $cases) {
+            foreach ($verifiedCase in $verifiedCases) {
+                $case = $verifiedCase.case
                 $id = [string]$case.id
-                if (-not $id -or $seen.ContainsKey($id) -or -not $nativeRows.ContainsKey($id)) {
-                    throw 'App case identifiers must be unique and present in the engine.'
-                }
-                $seen[$id] = $true
-                $row = $nativeRows[$id]
-                if ([string]$engineSheet.Cells.Item($row,2).Value2 -ne [string]$case.operation -or
-                    [int]$engineSheet.Cells.Item($row,6).Value2 -ne [int]$case.digits -or
-                    [string]$engineSheet.Cells.Item($row,7).Value2 -ne [string]$case.format) {
-                    throw 'The native and app operation contracts differ.'
-                }
+                $row = $verifiedCase.row
                 $directCell = $engineSheet.Cells.Item($row,8)
                 $direct = Get-NativeResult $directCell.Value2 ([string]$directCell.Text)
-                $matrix = New-OperandMatrix @($case.operands)
+                $matrix = $verifiedCase.matrix
                 $raw = $excel.Run($macro,[string]$case.operation,$matrix,[int]$case.digits)
                 $appResult = Get-NativeResult $raw ''
                 if ($appResult.kind -eq 'number') {
@@ -275,10 +388,12 @@ try {
                     (($direct.kind -eq 'number' -and $direct.double_hex -eq $appResult.double_hex) -or
                      ($direct.kind -eq 'error' -and $direct.error_code -eq $appResult.error_code))
                 $caseResults += @{id=$id; source_cells="Cases!C${row}:E$row";
+                                  direct_formula=[string]$directCell.Formula;
+                                  native_inputs=$verifiedCase.snapshot;
                                   direct=$direct; app=$appResult; bridge_equal=[bool]$equal}
             }
-            if ($seen.Count -ne $nativeRows.Count) { throw 'The app case manifest omits native cases.' }
             $result = @{status='executed'; environment=$environment; engine_sha256=$engineBefore;
+                source_sha256=$sourceHash; input_verification=$inputVerification;
                 app_input_sha256=(Get-Hash $appInputFull); host_settings_changed=$false;
                 macros_executed=$true; cases=$caseResults;
                 scope='Worksheet UDF vs Application.Run bridge consistency; Python mathematics is a separate comparison.'}
@@ -287,6 +402,9 @@ try {
         $engineBook.Close($false)
         $engineBook = $null
         if ((Get-Hash $engineFull) -ne $engineBefore) { throw 'The read-only engine artifact changed.' }
+        $sourceBook.Close($false)
+        $sourceBook = $null
+        if ((Get-Hash $sourcePath) -ne $sourceHash) { throw 'The original source artifact changed.' }
     }
     Write-NewJson $outputFull $result
     Write-Output ($result.status + '; evidence: ' + $outputFull)
