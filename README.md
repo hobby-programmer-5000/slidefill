@@ -41,7 +41,7 @@ SlideFill checks supported values and saved representations automatically, but d
 
 The development source retains exact rational calculation intermediates, independently checks a bounded set of saved formulas and numeric text placeholders, and blocks known mismatches **and partial coverage**. It still reads saved workbooks rather than recalculating them in Excel, and does not certify all prose or layouts. See [the exact contract and remaining limits](doc/reliability-hardening.md). These changes are unreleased; v0.3.0 has the earlier table/chart checks described in its release notes.
 
-See [automatic checks and what to do](doc/verification.md), [supported layouts](doc/limits.md), and [algorithms, code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
+See [feature-by-feature principles and formulas](doc/feature-algorithms.md), [automatic checks and what to do](doc/verification.md), [supported layouts](doc/limits.md), and [code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
 
 ## Install
 

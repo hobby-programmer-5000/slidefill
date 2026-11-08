@@ -2,6 +2,8 @@
 
 # How SlideFill works
 
+For a feature-by-feature reference with inputs, formulas, defaults, failure behavior and source/test links, see [Feature principles, formulas and algorithms](feature-algorithms.md). This page provides the narrative background.
+
 ## One path for preview and report
 
 Preview and Generate both call `core.run`. Preview fills a copy in memory and throws it away. So the list you check is what the report will hold, not an estimate.
