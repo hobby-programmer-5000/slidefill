@@ -63,6 +63,8 @@ build.bat
 
 `build.bat`은 단위 테스트를 돌리고, `dist\SlideFill.exe`를 만든 뒤, 그 exe로 샘플 파일을 실제로 채워 봅니다. 하나라도 실패하면 멈춥니다.
 
+별도 [네이티브 VBA 비교 실험](tools/vba/README.ko.md)은 앱의 Python 계산을 유지하고 설치된 데스크톱 Excel을 사용합니다. 일반 보고서 생성에 포함되지 않은 개발 도구입니다.
+
 ## 사용법
 
 ### 엑셀만으로

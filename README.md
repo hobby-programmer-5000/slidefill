@@ -63,6 +63,8 @@ build.bat
 
 `build.bat` runs the unit tests, builds `dist\SlideFill.exe`, then runs that exe on the sample files. Any failure stops it.
 
+The separate [native VBA comparison experiment](tools/vba/README.md) keeps the app's Python engine and requires installed desktop Excel; it is a developer tool, not part of normal report generation.
+
 ## Usage
 
 ### With a workbook alone
