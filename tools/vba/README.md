@@ -24,6 +24,8 @@ Programmatic access to the VBA project was unavailable in the tested environment
 4. If Office policy blocks this original test macro, record the refusal. Do not enable all macros or change project-access settings to force the test.
 5. Run the supplied comparison workflow against the reviewed artifact. Until import and actual execution occur, both VBA routes are **NOT RUN**. Static source checks, workbook formulas showing `#NAME?`, or Excel worksheet-function calls are not a VBA execution pass.
 
+Import `SlideFillOracle` once per test workbook. If a second import creates `SlideFillOracle1`, remove the duplicate from the test workbook. Removing it resolved the ambiguous `SFCalc` reference in this run.
+
 For example, a normal English Excel formula `=SFCalc("mean",B2:B4)` calls the module on three cells. Regional Excel interfaces may use a different formula separator. A runner can call the verified artifact using a fully qualified name such as `'Engine.xlsm'!SlideFillOracle.SFCalc`; it must bind the actual artifact and input identities rather than relying on whichever workbook is active.
 
 ## Commands
@@ -52,6 +54,21 @@ Run checks the original literal workbook against the actual engine cells by type
 ```
 
 Then use that new copy as `-EngineWorkbook`. The repair refuses a missing VBA project or existing output. Its package tests use non-executable sentinel bytes and do not establish VBA compilation or execution.
+
+## Observed results
+
+Excel 16.0 (build 20326) verified the operand types and numeric Double bits across the original workbook, engine copy and app input for all 21 cases. The worksheet UDF and `Application.Run` matched in **21 of 21 cases**, with identical Double bits in 16 cases and matching error codes in five. Against Python's nearest Double or expected error code, VBA matched **17 of 21**.
+
+| Case | Both VBA routes | Python exact |
+|---|---:|---:|
+| `decimal_sum` — Double sum of `0.1 + 0.2` | `0.30000000000000004` | `3/10` |
+| `cancellation` — `10^16 + 1 − 10^16` | `0` | `1` |
+| `tiny_growth` — growth from `100` to `100.00000001` | `9.9999937219763522e-11` | `1/10000000000` |
+| `banker_tie_probe` — round `2.5` to an integer | `2` | `3` (half away from zero) |
+
+In `decimal_variant`, the bounded `CDec` sum of `0.1 + 0.2` returned the nearest Double to `3/10`. In `large_literal`, both VBA routes returned `9007199254740992`, one less than the exact input `9007199254740993`. That case matched at the Double boundary. Excel's `Range.Text` reported `9007199254740990` for the declared display format.
+
+The 21 synthetic cases exercise the developer comparison runner. SlideFill uses Python/Fraction for report generation. Local evidence is in `native-results-after-dedup.json` and `comparison-after-dedup.json` under `.cache/agent-work/vba-spike/run-02/`.
 
 ## Fixed operation contract
 
