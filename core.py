@@ -204,7 +204,7 @@ ERRORS = {"missing_name", "missing_sheet", "bad_ref", "range_for_text", "name_no
           "formula_no_cache", "error_value", "marker_in_text", "marker_wrong_shape", "column_mismatch",
           "merged_resize", "chart_too_small", "chart_unsupported", "latest_bad", "latest_no_dates", "latest_ambiguous",
           "latest_duplicates", "latest_sheets_overlap", "latest_sheets_differ", "cross_no_items", "cross_not_additive", "calc_columns", "calc_no_base"}
-ERRORS.update({"verification_failed", "chart_bubble_columns", "chart_bubble_size", "chart_bubble_empty"})
+ERRORS.update({"verification_failed", "nonfinite_value", "chart_bubble_columns", "chart_bubble_size", "chart_bubble_empty"})
 
 
 class Shown(str):
@@ -283,6 +283,10 @@ class Report:
     @property
     def blocked(self):
         return self.verification.get("state") == "blocked"
+
+    @property
+    def incomplete(self):
+        return self.verification.get("state") == "partial"
 
     def count(self, status):
         return sum(1 for item in self.items if item.status == status)
@@ -420,13 +424,18 @@ def as_number(raw):
     """A number, or the figure leading a text cell such as 1,234 or 362(37%) or 15건. None for anything else, including - and 78.5%."""
     if isinstance(raw, bool):
         return None
+    if isinstance(raw,Fraction):
+        return raw.numerator if raw.denominator==1 else raw
     if isinstance(raw, (int, float)):
-        return raw
+        return raw if not isinstance(raw,float) or math.isfinite(raw) else None
     match = NUMBER_TEXT.fullmatch(raw) if isinstance(raw, str) else None
     if not match:
         return None
-    number = float(GROUPING.sub("", match.group(1)))
-    return int(number) if number.is_integer() else number
+    exact = Fraction(GROUPING.sub("", match.group(1)))
+    if exact.denominator==1:return exact.numerator
+    try:number=float(exact)
+    except OverflowError:return None
+    return number if math.isfinite(number) else None
 
 
 def _sheet_words(ws, rows=SHEET_WORD_ROWS, columns=SHEET_WORD_COLUMNS):
@@ -495,8 +504,11 @@ def figure_number(raw):
         return None
     if match.group(2) and len(re.sub(r"\D", "", match.group(2))) < BRACKETED_LOSS_DIGITS and not re.search(r"[,. \u00a0\u202f]", match.group(2)):
         return None  # (1) (2) (3) under the headings number the columns; a loss kept as text is (300) or (1,234)
-    number = -float(GROUPING.sub("", match.group(1) or match.group(2)))
-    return int(number) if number.is_integer() else number
+    exact = -Fraction(GROUPING.sub("", match.group(1) or match.group(2)))
+    if exact.denominator==1:return exact.numerator
+    try:number=float(exact)
+    except OverflowError:return None
+    return number if math.isfinite(number) else None
 
 
 def _holds_quarters(ws, ref, line):
@@ -649,6 +661,7 @@ class Comparison:
     basis: str = ""  # budget when the older of two columns is what was planned, not an earlier period
     wholes: list = field(default_factory=list)  # total lines of unlike things, as Total income and Total expenses: facts.Item each
     origin_rows: dict = field(default_factory=dict)
+    number_format: str = 'General'
 
     @property
     def label(self):
@@ -1238,12 +1251,6 @@ def _matches(ws, ref, position, line, wanted):
     return wanted.casefold() in str(value).casefold()
 
 
-def _aggregate_output(value):
-    """Round an exact aggregate once, at its public numeric boundary."""
-    if value is None or not isinstance(value,Fraction):return value
-    return value.numerator if value.denominator==1 else float(value)
-
-
 def _aggregate_value(ws, ref, position, spec, from_text=None):
     """What one row adds to an Aggregate, or None when it adds nothing."""
     for line, wanted in spec.filters:
@@ -1532,6 +1539,8 @@ class ExcelSource:
         cell = ws.cell(row, col)
         address = f"{ws.title}!{get_column_letter(col)}{row}"
         raw = cell.value
+        if isinstance(raw,float) and not math.isfinite(raw):
+            return raw,None,"General",[Issue("nonfinite_value",{"cell":address})]
         if cell.data_type == "e":
             return raw, str(raw), "General", [Issue("error_value", {"cell": address, "error": str(raw)})]
         if raw is None:
@@ -1999,7 +2008,10 @@ class ExcelSource:
         table = [[(text, text, "General") for text in names]]
         show = found.show(self)
         for point in picked:
-            table.append([self._date_cell(ref, point.sheet, point.row), (point.value, show(point.value), "General")])
+            fmt='0.0%' if found.percent else self._cell_format(ref.sheets[found.points[-1].sheet].cell(*ref.at(found.points[-1].row,found.line))) if found.line is not None else 'General'
+            if fmt in ('General','@','0'):fmt='General'
+            if found.per_cent_unit and '%' not in fmt:fmt+='"%"'
+            table.append([self._date_cell(ref, point.sheet, point.row), (point.value, show(point.value), fmt)])
         first, last = _when(picked[0]), _when(picked[-1])
         dates = last if first == last else f"{first} ~ {last}"
         return table, f"{dates} · {_sheet_names(ref)}!{_line_name(ref, ref.date)},{ref.values[0].word}", issues
@@ -2037,7 +2049,7 @@ class ExcelSource:
             cell = ref.sheets[i].cell(*ref.at(position, line))
             number = figure_number(cell.value)
             if number is not None:
-                points.append(facts.Point(date, number, position, i))
+                points.append(facts.Point(date, Fraction(str(number)), position, i))
                 if isinstance(cell.value, str):
                     from_text.append(cell)
         # Anywhere in the series, not only at the newest: two tables on one sheet would otherwise be compared with each other.
@@ -2138,7 +2150,8 @@ class ExcelSource:
         name = _aggregate_name(spec, names)
         if spec.kind in ("mean", "rate"):
             points = [facts.Point(p.date, Fraction(p.value) / groups[p.date][1], p.row, p.sheet) for p in points]
-        points = [facts.Point(p.date, _aggregate_output(p.value), p.row, p.sheet) for p in points]
+        # Keep the exact aggregate through further analysis and text/table formatting.
+        # Numeric chart data is converted only at the container boundary and checked there.
         points = self._with_period_names(points, ref)
         newest = points[-1]
         found = Series(ref, points, (newest.sheet, newest.row), None if spec.kind in ("count", "rate") or spec.product else spec.lines[0], name, [])
@@ -2321,7 +2334,7 @@ class ExcelSource:
             against = _when(before) if before else ""
         if found.rate and base is not None:
             lang = "ko" if HANGUL.search(word) else "en"
-            return facts.points_text(newest.value - base, lang, found.scale), f"{when} ↔ {against} · {cell}", issues
+            return facts.points_text(facts.difference(newest.value,base), lang, found.scale), f"{when} ↔ {against} · {cell}", issues
         change = facts.ratio(newest.value, base) if base is not None else None
         if change is None:
             return None, f"{when} · {cell}", issues + [Issue("calc_no_base", {"date": when})]
@@ -2356,8 +2369,7 @@ class ExcelSource:
                 continue
             texts_so_far = len(from_text)
             numbers = [_aggregate_value(ws, ref, position, spec, from_text) if isinstance(spec, Aggregate) else _plain_value(ws, ref, position, spec, from_text) for spec in specs]
-            if any(isinstance(spec,Aggregate) for spec in specs):
-                numbers=[Fraction(str(n)) if n is not None else None for n in numbers]
+            numbers=[Fraction(str(n)) if n is not None else None for n in numbers]
             if all(number is None for number in numbers):
                 wanted = [line for spec in specs if not isinstance(spec, Aggregate) or spec.kind in ("sum", "mean") for line in (spec.lines if isinstance(spec, Aggregate) else [spec])]  # 건수( ) counts rows and reads no figure
                 unread += [raw for raw in (ws.cell(*ref.at(position, line)).value for line in wanted) if _unread_figure(raw)]
@@ -2399,9 +2411,8 @@ class ExcelSource:
             order = [named.get(key, key) for key in order]
             origin_positions = {named.get(key, key): positions for key, positions in origin_positions.items()}
         for key in order:  # a mean or a rate is worked out once every row of the item is in
-            items[key] = [_aggregate_output(Fraction(value) / count if value is not None and isinstance(spec, Aggregate) and spec.kind in ("mean", "rate") else value)
+            items[key] = [Fraction(value) / count if value is not None and isinstance(spec, Aggregate) and spec.kind in ("mean", "rate") else value
                           for value, count, spec in zip(items[key], counts[key], specs)]
-        totals=[[_aggregate_output(value) for value in line] for line in totals]
         year_line = _year_beside_months(order)
         if year_line:  # 1월 to 12월 and 연간: the year is their whole, not a thirteenth month to rank them against
             order.remove(year_line)
@@ -2471,7 +2482,7 @@ class ExcelSource:
             issues.append(Issue("cross_nested", params))
         additive = not levels and not per_cent and not priced and facts.is_additive(f"{header} {ws.title}", fmt, [item.value for item in rows])
         total = before_total = None
-        added = sum(item.value for item in rows)
+        added = facts.exact_total(item.value for item in rows)
         has_total = False
         if additive:
             total = added
@@ -2489,7 +2500,7 @@ class ExcelSource:
             else:
                 issues.append(Issue("cross_no_total", {"added": facts.plain_number(added)}))
             if len(specs) == 2:
-                before_total = sum(item.before for item in rows if item.before is not None)
+                before_total = facts.exact_total(item.before for item in rows if item.before is not None)
                 if stated and stated[0] is not None and total is not None:
                     before_total = stated[0]
         # A rate shown as 4 and 6 cannot explain +1.8 points, so a rate keeps its digits unless the cell is a real percentage.
@@ -2500,7 +2511,9 @@ class ExcelSource:
         source = f"{ws.title}!{','.join(_line_name(ref, line) for line in labels)}," + ",".join(spec.word if isinstance(spec, Aggregate) else _line_name(ref, spec) for spec in specs) + f" · {len(rows)}"
         label_header = self._header(ws, ref, first or ref.start, labels[-1])
         label_header = "" if label_header == _line_name(ref, labels[-1]) else label_header  # no heading: blank, not a column letter
-        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1, basis, whole_lines, audit_origins)
+        output_format='General' if plain else fmt
+        if per_cent and '%' not in fmt:output_format+='"%"'
+        return Comparison(rows, header, total, before_total, additive, show, issues, source, label_header, has_total, rate, 100 if "%" in fmt else 1, basis, whole_lines, audit_origins,output_format)
 
     def _heading_row(self, ws, ref, labels, specs):
         """When rows are counted, the row of headings would count as one more item: a name that appears once among names that repeat."""
@@ -2556,7 +2569,7 @@ class ExcelSource:
             return found.show(item.value), found.source, found.issues
         if not found.additive or not found.total:
             raise IssueError("cross_not_additive", header=found.header)
-        return format_value(item.value / found.total, "0.0%")[0], found.source, found.issues
+        return format_value(facts.quotient(item.value,found.total), "0.0%")[0], found.source, found.issues
 
     def _comparison_for_rank(self, body, key):
         ref = self._parse_ref(body, key)
@@ -2580,9 +2593,10 @@ class ExcelSource:
         names = [label_header, self._report_heading(found.header)] + ([SHARE_HEADER] if with_share else [])
         table = [[(text, text, "General") for text in names]]
         for item in picked:
-            line = [(item.label, item.label, "General"), (item.value, found.show(item.value), "General")]
+            fmt=found.number_format
+            line = [(item.label, item.label, "General"), (item.value, found.show(item.value), fmt)]
             if with_share:
-                share = item.value / found.total
+                share = facts.quotient(item.value,found.total)
                 line.append((share, format_value(share, "0.0%")[0], "0.0%"))
             table.append(line)
         issues = list(found.issues)
@@ -2705,19 +2719,43 @@ class ExcelSource:
                 return {"op": "date_parts", "cells": [cell(ws, *ref.at(position, line)) for line in ref.date_parts],
                         "quarter": _holds_quarters(ws, ref, ref.date_parts[1])}
             return cell(ws, *ref.at(position, ref.date), "date" if isinstance(raw, (dt.date, dt.datetime)) else "cell")
+        condition_domains={}
         def term(ws, ref, spec, positions):
             if not isinstance(spec, Aggregate):
                 return cell(ws, *ref.at(positions[0], spec)) if len(positions) == 1 else None
             def condition(position, line, wanted):
                 origin = _merge_origin(ws, *ref.at(position, line)) or ref.at(position, line)
                 result = cell(ws, *origin, "date" if isinstance(ws.cell(*origin).value,(dt.date,dt.datetime)) else "cell")
-                domain=[ws.cell(*(_merge_origin(ws, *ref.at(p, line)) or ref.at(p, line))) for p in range(ref.start, ref.last(ws) + 1)]
-                result.update(wanted=wanted, domain=[c.coordinate for c in domain], date_domain=[c.coordinate for c in domain if isinstance(c.value,(dt.date,dt.datetime))])
+                domain_key=(ws.title,line)
+                if domain_key not in condition_domains:
+                    if ref.last(ws)-ref.start+1>100000:raise ValueError('filter evidence exceeds independent coverage budget')
+                    domain=[ws.cell(*(_merge_origin(ws, *ref.at(p, line)) or ref.at(p, line))) for p in range(ref.start, ref.last(ws) + 1)]
+                    condition_domains[domain_key]=(tuple(c.coordinate for c in domain),tuple(c.coordinate for c in domain if isinstance(c.value,(dt.date,dt.datetime))))
+                domain,date_domain=condition_domains[domain_key]
+                result.update(wanted=wanted, domain=domain, date_domain=date_domain)
                 return result
             return {"op": "aggregate", "kind": spec.kind, "product": spec.product,
                     "rows": [{"cells": [cell(ws, *ref.at(p, line)) for line in spec.lines],
                               "filters": [condition(p, line, wanted) for line, wanted in spec.filters],
                               "numerator": condition(p, *spec.numerator) if spec.numerator else None} for p in positions]}
+        def with_domain(recipe,ref):
+            # Choosing latest/ranked rows depends on candidates that may not appear in the output.
+            # Audit their formula caches too; a stale date must not hide the true newest row.
+            domain_key=('audit_domain',ref)
+            if domain_key not in self._made:
+                lines=set(ref.label_lines)|set(ref.date_parts)
+                if ref.date is not None:lines.add(ref.date)
+                for spec in ref.specs:
+                    if isinstance(spec,Aggregate):
+                        lines.update(spec.lines);lines.update(line for line,_word in spec.filters)
+                        if spec.numerator:lines.add(spec.numerator[0])
+                    else:lines.add(spec)
+                domain=[{'op':'selection_domain','sheet':ws.title,'by_row':ref.by_row,
+                         'lines':sorted(lines),'start':1,'stop':ref.last(ws)} for ws in ref.sheets]
+                self._made[domain_key]=domain
+            if len(recipe)>1 and recipe[1] and isinstance(recipe[1][0],dict):
+                recipe[1][0]['selection_domain']=self._made[domain_key]
+            return recipe
         if is_latest_key(key):
             ref, count = self._latest_request(key)
             recipe = [[None] * len(grid[0])]
@@ -2734,7 +2772,7 @@ class ExcelSource:
                         elif ws.cell(*ref.at(p, ref.date)).value not in (None, ""): current = None
                         if current is not None and current.date() == point.date.date(): positions.append(p)
                     recipe.append([date_cell(ws, ref, point.row, grid[len(recipe)][0][0]), term(ws, ref, ref.values[0], positions)])
-            return recipe
+            return with_domain(recipe,ref)
         if is_rank_key(key):
             match = RANK.fullmatch(key.translate(SMART_QUOTES));ref = self._parse_ref(match.group(3), key)
             found = self._comparison_for_rank(match.group(3), key)
@@ -2766,7 +2804,7 @@ class ExcelSource:
                                      "before": line < first_label}
                                     for line in range(1, first_label + NAME_LOOK_RIGHT + 1) if line not in figure_lines]
                 recipe.append([label, value] + ([{"op": "ratio", "numerator": value, "denominator": denominator}] if denominator is not None else []))
-            return recipe
+            return with_domain(recipe,ref)
         ws, (left, top, right, bottom), _where = self.locate(key)
         recipe = []
         for r in range(top, bottom + 1):
@@ -2780,6 +2818,55 @@ class ExcelSource:
                 line.append(cell(ws, rr, cc, "date" if isinstance(raw, (dt.date, dt.datetime)) else "cell"))
             recipe.append(line)
         return recipe
+
+    def text_evidence(self, key):
+        """Explicit input values for a text fill; saved wording is checked separately."""
+        expected = None
+        try:
+            if key.startswith('layout:'):
+                table_key=key.rpartition('!')[0]+'!grid'
+                grid, _where, _issues = self.range_cells(table_key)
+                expected=self._layout_value(key,False)[0]
+                return [{'source':self,'grid':grid,'recipe':self.audit_evidence(table_key,grid),'expected':expected}]
+            elif is_calc_key(key) or is_insight_key(key):
+                match = (CALC if is_calc_key(key) else INSIGHT).fullmatch(key.translate(SMART_QUOTES))
+                body = match.group(3) if is_calc_key(key) else match.group(1)
+                ref = self._parse_ref(body,key)
+                if self._is_comparison(ref):
+                    count = len(self._comparison(ref).items)
+                    table_key = 'top'+str(max(count,1))+':'+body
+                else:
+                    count = len(self._series(ref).points)
+                    if count>100000:raise ValueError('text calculation exceeds independent evidence budget')
+                    table_key = 'latest'+str(max(count,1))+':'+body
+                grid, _where, _issues = self.range_cells(table_key)
+                evidence={'source':self,'grid':grid,'recipe':self.audit_evidence(table_key,grid),'expected':None}
+                if is_calc_key(key):
+                    word=match.group(1);name=CALC_NAMES.get(word,word.lower())
+                    if name in ('prev','week','avg','peak','low'):
+                        found=self._series(ref)
+                        evidence['calculation']={'name':name,'count':int(match.group(2) or (30 if name in ('peak','low') else 7)),
+                            'rate':found.rate,'scale':found.scale,'lang':'ko' if HANGUL.search(word) else 'en',
+                            'date_parts':len(ref.date_parts),
+                            'quarter':bool(ref.date_parts and _holds_quarters(ref.sheets[0],ref,ref.date_parts[1]))}
+                return [evidence]
+            elif is_rank_key(key):
+                grid, _where, _issues = self.range_cells(key)
+                match=RANK.fullmatch(key.translate(SMART_QUOTES))
+                word=RANK_NAMES[match.group(1).lower()]
+                expected=grid[-1][0 if word=='name' else 2 if word=='share' else 1][1]
+            elif is_latest_key(key):
+                grid, _where, _issues = self.range_cells(key)
+                expected=grid[-1][-1][1]
+            else:
+                ws,(left,top,right,bottom),_where=self.locate(key)
+                if (left,top)!=(right,bottom):return []
+                raw,text,fmt,_issues=self.read(ws,top,left)
+                grid=[[(raw,text,fmt)]];expected=text
+            return [{'source':self,'grid':grid,'recipe':self.audit_evidence(key,grid),'expected':expected}]
+        except (IssueError,ValueError,IndexError) as exc:
+            return [{'source':self,'grid':[],'recipe':[],
+                     'unavailable':'text source evidence is unavailable: '+str(exc)}]
 
 
 # ---------------------------------------------------------------- writing text into slide XML
@@ -3063,11 +3150,11 @@ def _shape_now_covered(table, bottom_before, bottom_after):
     return ""
 
 
-def _chart_number_format(rows):
+def _chart_number_format(rows,column=None):
     """Number format for chart values. The XML writer in python-pptx does not escape it, so unsafe ones are dropped."""
     for line in rows[1:]:
-        for raw, _text, fmt in line[1:]:
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        for raw, _text, fmt in (line[column:column+1] if column is not None else line[1:]):
+            if isinstance(raw, (int, float,Fraction)) and not isinstance(raw, bool):
                 return "General" if set(fmt) & set("&<>") else fmt
     return "General"
 
@@ -3102,20 +3189,22 @@ def fill_chart(chart, rows):
     def number(cell):
         raw, text, _fmt = cell
         value = figure_number(raw)
-        if value is None or not math.isfinite(value):
+        try:finite=value is not None and math.isfinite(value)
+        except OverflowError:finite=False
+        if not finite:
             if raw is not None:
                 issues.append(Issue("chart_not_number", {"value": text}))
             return None
         if isinstance(raw, str):
             converted.append(text)
-        return value
+        return float(value) if isinstance(value,Fraction) else value
 
     converted = []
     number_format = _chart_number_format(rows)
     if chart.chart_type in BUBBLE_CHARTS:
         data = BubbleChartData(number_format=number_format)
         for c in range(1,len(rows[0]),2):
-            series=data.add_series(rows[0][c][1] or "")
+            series=data.add_series(rows[0][c][1] or "",number_format=_chart_number_format(rows,c))
             points=0
             for line in rows[1:]:
                 x,y,size=number(line[0]),number(line[c]),number(line[c+1])
@@ -3125,7 +3214,7 @@ def fill_chart(chart, rows):
     elif chart.chart_type in XY_CHARTS:
         data = XyChartData(number_format=number_format)
         for c in range(1, len(rows[0])):
-            series = data.add_series(rows[0][c][1] or "")
+            series = data.add_series(rows[0][c][1] or "",number_format=_chart_number_format(rows,c))
             for line in rows[1:]:
                 x, y = number(line[0]), number(line[c])
                 if x is not None and y is not None:
@@ -3139,7 +3228,7 @@ def fill_chart(chart, rows):
         else:
             data.categories = [c[1] or "" for c in categories]
         for c in range(1, len(rows[0])):
-            data.add_series(rows[0][c][1] or "", [number(line[c]) for line in rows[1:]])
+            data.add_series(rows[0][c][1] or "", [number(line[c]) for line in rows[1:]],number_format=_chart_number_format(rows,c))
     chart.replace_data(data)
     if converted:
         issues.append(Issue("chart_number_from_text", {"count": len(converted), "text": converted[0]}))
@@ -3158,6 +3247,7 @@ class _Run:
         self.items = {}
         self.done_parts = set()
         self.filled_paragraphs = set()  # table cells we just wrote: their data must not be scanned for placeholders
+        self.text_evidence_cache = {}
         self.words_of_template()  # now, while they are its own words and not what has been filled in
 
     def item(self, kind, key, where):
@@ -3188,8 +3278,16 @@ class _Run:
             item.source = source
             item.value = text or ""
             self.add_issues(item, issues)
+            if text is not None:self.capture_text_input(key,item,text)
             return text
         return resolve
+
+    def capture_text_input(self,key,item,text):
+        if not hasattr(self.source,'text_evidence'):return
+        if key not in self.text_evidence_cache:self.text_evidence_cache[key]=self.source.text_evidence(key)
+        for evidence in self.text_evidence_cache[key]:
+            self.guard.capture_text_input(evidence['source'],key,item,
+                                          {k:v for k,v in evidence.items() if k!='source'},str(text))
 
     def words_of_template(self):
         """The template's own words, for the language router. Placeholders are left out: they are mostly addresses."""
@@ -3218,14 +3316,18 @@ class _Run:
             issues = [Issue("insight_stale" if chosen else "insight_not_chosen", {})] + issues
         item.value = text
         self.add_issues(item, issues)
+        self.capture_text_input(key,item,text)
         return text
 
     def fill_part_text(self, part, where):
         self.done_parts.add(part)
         resolve = self.resolve_text(where)
-        for paragraph in part._element.iter(A_P):
+        for index,paragraph in enumerate(part._element.iter(A_P)):
             if paragraph not in self.filled_paragraphs:
+                before=etree.tostring(paragraph)
                 replace_in_paragraph(paragraph, resolve)
+                if etree.tostring(paragraph)!=before:
+                    self.guard.capture_paragraph(part,index,automatic.paragraph_text(paragraph))
 
     def fill_slide_diagrams(self, slide_part, where):
         """SmartArt keeps its words in a data part, and PowerPoint draws it from a drawn copy sized for the words
@@ -3280,8 +3382,11 @@ class _Run:
                 filled.append(key)
             return new
 
-        for paragraph in root.iter(A_P):
+        for index,paragraph in enumerate(root.iter(A_P)):
+            before=etree.tostring(paragraph)
             replace_in_paragraph(paragraph, counted)
+            if etree.tostring(paragraph)!=before:
+                self.guard.capture_paragraph(part,index,automatic.paragraph_text(paragraph))
         return root if filled else None
 
     def fill_marked_shape(self, shape, where, in_group):
@@ -3322,10 +3427,14 @@ class _Run:
         if any(i.is_error for i in result):
             return
         audited_source, audited_key = self.source, match.group(2)
-        if isinstance(self.source, Sources):
+        document_key=False
+        if isinstance(self.source,Sources) and DOCUMENT_MARK in audited_key:
+            document_key=True
+            audited_source=self.source.sources[0]
+        elif isinstance(self.source, Sources):
             _number, audited_source, audited_key = self.source._route(audited_key)
         try:
-            recipe = audited_source.audit_evidence(audited_key, rows)
+            recipe = self.source.document_evidence(audited_key) if document_key else audited_source.audit_evidence(audited_key, rows)
         except (IssueError, ValueError, TypeError, KeyError, IndexError, AttributeError):
             recipe = None
         self.guard.capture(shape, kind, audited_key, rows, recipe, audited_source, item,
@@ -3462,6 +3571,7 @@ class Sources:
         if not workbooks:
             raise SlideFillError("doc_needs_workbook")
         self.sources = [ExcelSource(path) for path in workbooks]
+        self.document_fingerprints = {path:automatic.digest(path) for path in paths if path not in workbooks}
         self.names = [os.path.splitext(os.path.basename(path))[0] for path in workbooks]
         self.documents = [_read_document(path) for path in paths if path not in workbooks]
         self._links = None
@@ -3505,9 +3615,9 @@ class Sources:
         for number, (document, links) in enumerate(self.links(), start=1):
             for place, found in enumerate(documents.highlights(links, DOCUMENT_LINKS), start=1):
                 period = documents.period_text(found.event.date, lang)
-                text = (f"[{document.name}] {period}에 적힌 일: {found.event.text} 같은 항목 {found.item.name}의 전 {found.window}개 기간 평균 {found.before:,.0f}, 후 {found.window}개 기간 평균 {found.after:,.0f}, {documents.change_text(found)}." if lang == "ko"
-                        else f"[{document.name}] Entered for {period}: {found.event.text} {found.item.name} averaged {found.before:,.0f} over the {found.window} periods before and {found.after:,.0f} over the {found.window} after, {documents.change_text(found)}.")
-                pack.append(facts.Fact(f"doc{number}_link{place}", text, tuple(facts.NUMBER.findall(f"{found.before:,.0f} {found.after:,.0f} {documents.change_text(found)}"))))
+                text = (f"[{document.name}] {period}에 적힌 일: {found.event.text} 같은 항목 {found.item.name}의 전 {found.window}개 기간 평균 {documents.mean_text(found.before)}, 후 {found.window}개 기간 평균 {documents.mean_text(found.after)}, {documents.change_text(found)}." if lang == "ko"
+                        else f"[{document.name}] Entered for {period}: {found.event.text} {found.item.name} averaged {documents.mean_text(found.before)} over the {found.window} periods before and {documents.mean_text(found.after)} over the {found.window} after, {documents.change_text(found)}.")
+                pack.append(facts.Fact(f"doc{number}_link{place}", text, tuple(facts.NUMBER.findall(f"{documents.mean_text(found.before)} {documents.mean_text(found.after)} {documents.change_text(found)}"))))
             if not links:
                 long = [text for text in document.paragraphs if len(text) >= documents.LONG_PARAGRAPH][:DOCUMENT_PARAGRAPHS]
                 pack += [facts.Fact(f"doc{number}_text{place}", f"[{document.name}] {text}", tuple(facts.NUMBER.findall(text))) for place, text in enumerate(long, start=1)]
@@ -3543,6 +3653,38 @@ class Sources:
         number, source, plain = self._route(key)
         text, where, issues = source.text_value(plain)
         return text, self._named(number, where), issues
+
+    def text_evidence(self,key):
+        if DOCUMENT_MARK in key:
+            return [{'source':row['source'],'grid':row['grid'],'recipe':row['recipe'],'expected':None}
+                    for row in self.document_evidence(key,all_links=True)['rows']]
+        if ALL_FILES in key:
+            _word,_mark,references=key.partition(ALL_FILES)
+            result=[]
+            for reference in references.split('|'):
+                _number,source,plain=self._route(reference)
+                result.extend(source.text_evidence('reading:'+plain))
+            return result
+        _number,source,plain=self._route(key)
+        return source.text_evidence(plain)
+
+    def document_evidence(self,key,all_links=False):
+        head,_mark,tail=key.partition(DOCUMENT_MARK)
+        number,_colon,count=tail.partition(':')
+        number=number.partition('#')[0]
+        document,links=self.links()[int(number or 0)]
+        selected=links if all_links else documents.highlights(links,int(count or DOCUMENT_LINKS))
+        rows=[]
+        for found in selected:
+            source=self.sources[found.item.file]
+            if not found.item.reference:raise ValueError('document figure has no explicit source reference')
+            if len(found.item.points)>100000:raise ValueError('document source evidence exceeds budget')
+            table_key='latest'+str(len(found.item.points))+':'+found.item.reference
+            grid,_where,_issues=source.range_cells(table_key)
+            rows.append({'source':source,'grid':grid,'recipe':source.audit_evidence(table_key,grid),
+                         'event':found.event.date,'name':found.item.name,'text':found.event.text,
+                         'window':found.window,'document':document.path})
+        return {'kind':'document','lang':'ko' if head.startswith(('ko','읽는법','해설','통찰')) else 'en','rows':rows}
 
     def _gather(self, references, word, template_text, lang=None):
         """Each file's readings, and what can be calculated across them. word is any prefix that reads a reference as an insight."""
@@ -3704,7 +3846,7 @@ def _with_commas(rows):
     for row in rows:
         cells = [row[0]]
         for raw, text, fmt in row[1:]:
-            if fmt in ("General", "0") and isinstance(raw, (int, float)) and not isinstance(raw, bool) and abs(raw) >= 1000:
+            if fmt in ("General", "0") and isinstance(raw, (int, float,Fraction)) and not isinstance(raw, bool) and abs(raw) >= 1000:
                 text = re.sub(r"^(-?)(\d+)", lambda m: f"{m.group(1)}{int(m.group(2)):,}", text)
             cells.append((raw, text, fmt))
         done.append(cells)
@@ -3731,34 +3873,24 @@ def run(template, excel, output=None, insights=None, source=None, thousands=Fals
                 return item.value if item is not None and item.status != "error" else match.group(0)
             binding["header"] = [PLACEHOLDER.sub(header_value, text) for text in binding["header"]]
     report = Report(items=list(work.items.values()), requests=work.requests, source_snapshot=source)
-    blob = None
-    if work.guard.bindings:
-        blob = automatic.serialize(prs)
+    blob = automatic.serialize(prs)
+    if work.guard.bindings or work.guard.paragraphs or work.guard.text_inputs:
         report.verification = work.guard.verify(blob)
         for item, detail in report.verification["failures"]:
             target = item or report.items[0]
             work.add_issues(target, [Issue("verification_failed", {"detail": detail})])
+        if report.incomplete and report.items:
+            work.add_issues(report.items[0],[Issue('verification_incomplete',{'detail':'; '.join(report.verification['reasons'][:3])})])
     if output:
         if report.blocked:
             raise SlideFillError("verification_blocked", detail="; ".join(reason for _item, reason in report.verification["failures"][:3]))
-        if blob is not None:
-            try: report.output = work.guard.publish(blob, output)
-            except automatic.Failure as exc: raise SlideFillError("verification_blocked", detail=str(exc))
-            except OSError as exc: raise SlideFillError("cannot_save", path=output, detail=str(exc))
-        else: report.output = _save(prs, output)
+        if report.incomplete:
+            raise SlideFillError("verification_incomplete",detail="; ".join(report.verification['reasons'][:3]))
+        try: report.output = work.guard.publish(blob, output)
+        except automatic.Incomplete as exc: raise SlideFillError("verification_incomplete",detail=str(exc))
+        except automatic.Failure as exc: raise SlideFillError("verification_blocked", detail=str(exc))
+        except OSError as exc: raise SlideFillError("cannot_save", path=output, detail=str(exc))
     return report
-
-
-def _save(prs, output):
-    tmp = output + ".tmp"
-    try:
-        prs.save(tmp)
-        os.replace(tmp, output)
-    except OSError as exc:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise SlideFillError("cannot_save", path=output, detail=str(exc))
-    return output
 
 
 def output_path(folder, template, today=None):

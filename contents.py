@@ -11,6 +11,7 @@ from tkinter import ttk
 
 import core
 import suggest
+from ui_timers import WindowTimers
 
 FONT_FAMILY = "Malgun Gothic"
 WM_DROPFILES = 0x0233
@@ -24,6 +25,7 @@ class DropTarget:
 
     def __init__(self, root, on_files):
         self.root, self.on_files = root, on_files
+        self.timers=WindowTimers(root)
         self.dropped = queue.SimpleQueue()
         self.hwnd = None
         try:
@@ -47,7 +49,7 @@ class DropTarget:
             return
         root.bind("<Destroy>", self.closing, add="+")
         atexit.register(self.release)
-        root.after(100, self.collect)
+        self.timers.after(100, self.collect)
 
     def handle(self, hwnd, message, wparam, lparam):
         # Windows calls this from inside Tk's own event handling, where calling Tk again ends the whole process. So the files only wait here.
@@ -67,7 +69,7 @@ class DropTarget:
     def collect(self):
         while not self.dropped.empty():
             self.on_files(self.dropped.get())
-        self.root.after(100, self.collect)
+        self.timers.after(100, self.collect)
 
     def closing(self, event):
         if event.widget is self.root:
@@ -200,6 +202,7 @@ class ContentsWindow:
         self.working = False
         self.names = [os.path.splitext(os.path.basename(path))[0] for path in files]
         window = self.window = tk.Toplevel(app.root)
+        self.timers=WindowTimers(window)
         window.title(app.t("helper_title_auto"))
         window.geometry(f"{app.px(1080)}x{app.px(680)}")
         window.transient(app.root)
@@ -248,7 +251,7 @@ class ContentsWindow:
         window.bind("<Escape>", lambda _e: window.destroy())
         window.bind("<Left>", lambda _e: self.turn(-1))
         window.bind("<Right>", lambda _e: self.turn(1))
-        window.after(50, self.poll)
+        self.timers.after(50, self.poll)
         self.change.configure(text=app.t("helper_working"))
         self.run(self.load, self.loaded)
 
@@ -277,7 +280,7 @@ class ContentsWindow:
         try:
             job, done, result, error = self.results.get_nowait()
         except queue.Empty:
-            self.window.after(60, self.poll)
+            self.timers.after(60, self.poll)
             return
         if job == self.job:
             self.working = False
@@ -287,7 +290,7 @@ class ContentsWindow:
                 self.change.configure(text=error)
             else:
                 done(result)
-        self.window.after(30, self.poll)
+        self.timers.after(30, self.poll)
 
     # ---- reading
 

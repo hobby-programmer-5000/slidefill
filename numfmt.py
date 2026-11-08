@@ -11,7 +11,8 @@ import operator
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
-from verification.kernel import round_decimal
+from fractions import Fraction
+from verification.kernel import round_decimal, round_rational
 
 from openpyxl.utils.datetime import WINDOWS_EPOCH, from_excel
 
@@ -106,7 +107,7 @@ def format_color(value, number_format="General"):
     #,##0;[Red]-#,##0 gives FF0000 for -5 and None for 5. Only numbers: a format colors text in its fourth
     section, which reports do not use.
     """
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float, Fraction)) or isinstance(value, bool):
         return None
     try:
         section, _negate = _pick_section(value, _split_sections(_localize(number_format or "General")))
@@ -144,7 +145,7 @@ def _format(value, fmt, epoch):
         if value < 0:
             raise Unsupported(fmt)
         elapsed = any(t[0] == "elapsed" for t in tokens)
-        return _render_date(from_excel(value, epoch, timedelta=elapsed), tokens)
+        return _render_date(from_excel(float(value) if isinstance(value,Fraction) else value, epoch, timedelta=elapsed), tokens)
     if ("sym", "@") in tokens and not any(t[0] == "digit" for t in tokens):
         return _general(value)  # Excel shows a number in a text format as General and drops the literals
     if any(t[0] == "general" for t in tokens):
@@ -161,7 +162,7 @@ _COMPARE = {">=": operator.ge, "<=": operator.le, "<>": operator.ne, ">": operat
 def _pick_by_condition(value, sections, conditions):
     """[>=5]#,##0;[<=-5]\\-#,##0;\\<5, as some publishers hide small counts: the first section whose test passes, else the last with no test of its own."""
     for place, (section, condition) in enumerate(zip(sections, conditions)):
-        if condition and _COMPARE[condition.group(1)](value, float(condition.group(2))):
+        if condition and _COMPARE[condition.group(1)](value, Fraction(condition.group(2)) if isinstance(value,Fraction) else float(condition.group(2))):
             return section.replace(condition.group(0), "", 1), place == 0 and value < 0
     rest = next((section for section, condition in zip(sections, conditions) if not condition), None)
     if rest is None:
@@ -345,8 +346,8 @@ def _render_number(value, tokens, negate):
 
     with localcontext() as ctx:
         ctx.prec = 80
-        number = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
-        number = number * Decimal(100) ** percent / Decimal(1000) ** scale
+        number = value if isinstance(value,Fraction) else Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+        number = number * (Fraction(100) if isinstance(value,Fraction) else Decimal(100)) ** percent / (Fraction(1000) if isinstance(value,Fraction) else Decimal(1000)) ** scale
         if sci is None:
             digits = _digits(number, int_digits, frac_digits, grouping)
         else:
@@ -360,7 +361,7 @@ def _render_number(value, tokens, negate):
 
 def _digits(number, int_digits, frac_digits, grouping):
     """Digits fill placeholders outward from the point. A leftover 0 prints a zero; # and ? print nothing."""
-    rounded = round_decimal(number,len(frac_digits))
+    rounded = round_rational(number,len(frac_digits)) if isinstance(number,Fraction) else round_decimal(number,len(frac_digits))
     whole, _, frac = f"{rounded:f}".partition(".")
     frac = frac.rstrip("0")
     frac += "0" * frac_digits[len(frac):].count("0")
@@ -372,12 +373,17 @@ def _digits(number, int_digits, frac_digits, grouping):
 
 
 def _scientific(number, int_digits, frac_digits, sign, exp_width):
-    exponent = number.adjusted() if number else 0
-    mantissa = number.scaleb(-exponent)
+    if isinstance(number,Fraction):
+        exponent=len(str(number.numerator))-len(str(number.denominator)) if number else 0
+        if number and number<Fraction(10)**exponent:exponent-=1
+        mantissa=number/(Fraction(10)**exponent)
+    else:
+        exponent = number.adjusted() if number else 0
+        mantissa = number.scaleb(-exponent)
     text = _digits(mantissa, int_digits, frac_digits, False)
     if text.startswith("10"):  # rounding carried over, e.g. 9.99 -> 10.0
         exponent += 1
-        text = _digits(mantissa.scaleb(-1), int_digits, frac_digits, False)
+        text = _digits(mantissa/10 if isinstance(mantissa,Fraction) else mantissa.scaleb(-1), int_digits, frac_digits, False)
     mark = "-" if exponent < 0 else ("+" if sign == "+" else "")
     return f"{text}E{mark}{abs(exponent):0{exp_width}d}"
 
@@ -508,16 +514,17 @@ def _general(value):
         return value.isoformat()
     if isinstance(value, dt.timedelta):
         return str(value)
-    if isinstance(value, int) or float(value).is_integer():
+    if isinstance(value, int) or (value.denominator==1 if isinstance(value,Fraction) else float(value).is_integer()):
         if abs(value) < 1e15:
             return str(int(value))
     size = abs(value)
-    if size >= 1e15 or (size and size < 1e-4):
+    if size >= 10**15 or (size and size < (Fraction(1,10000) if isinstance(value,Fraction) else 1e-4)):
         mantissa, _, exponent = f"{value:.5E}".partition("E")
         if "." in mantissa:
             mantissa = mantissa.rstrip("0").rstrip(".")
         return f"{mantissa}E{exponent}"
     with localcontext() as ctx:
         ctx.prec = 9 if size < 1 else 10
-        text = f"{+Decimal(repr(float(value))):f}"
+        number=Decimal(value.numerator)/Decimal(value.denominator) if isinstance(value,Fraction) else Decimal(repr(float(value)))
+        text = f"{+number:f}"
     return text.rstrip("0").rstrip(".") if "." in text else text

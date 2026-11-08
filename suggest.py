@@ -50,7 +50,7 @@ LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
 DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total", "people_across_kinds", "header_levels")
 PERIOD_COLUMNS_MIN = 4
-DOUBTS += ("structured_layout",)
+DOUBTS += ("structured_layout","rate_mean")
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
 MEAN_ROW = re.compile(r"평균|평균값|산술평균|mean|average|avg\.?", re.I)
@@ -81,6 +81,7 @@ WHOLE_MIN_GROUPS = 3  # dates or names: with fewer, a match could be chance
 WHOLE_MIN_VALUES = 3  # the whole and at least two parts: 남 and 여 of much the same size are not a whole and a part
 EVERY_ROW_MIN = 20  # so many rows each with a figure are items of one kind; a few are more likely different measures
 MEAN_NAME = re.compile(facts.RATE_SYLLABLE + r"|평균|가격|단가|점수|\b(?:price|rate|ratio|average|mean|score)\b", re.I)
+RATE_MEAN_NAME = re.compile(facts.RATE_SYLLABLE + r"|%|퍼센트|(?<![a-z])(?:rates?|ratios?|percent(?:age)?)(?![a-z])", re.I)
 # 분기별 평균 수출금액: each row's own average over time. Across rows these add up to the category's average, and a mean of them would hide how many rows it has.
 AVERAGE_OVER_TIME = re.compile(r"(?:분기|월|연|일|주|quarterly|monthly|annual|daily|weekly)\s*(?:별\s*)?(?:평균|average|mean)\s*\S*?(?:금액|수량|수입|판매|매출|액|량|건수|인원|amount|sales|revenue|exports?|imports?|quantity)", re.I)
 MEASURE_COLUMN = re.compile(r"measures?\b|지표|측정항목|indicator|metric", re.I)  # 건수, 동수 and 연면적 in one column of each date
@@ -1303,6 +1304,8 @@ def find_doubts(source, shape, base, value, found):
         add("example_sheet")
     if how == "count" or value.counted:
         add("count_only")
+    if how == "mean" and RATE_MEAN_NAME.search(name):
+        add("rate_mean")
     numbers = _figure_rows(ws, value)
     # A level by its name is averaged already. A Count of 1 on every line of a log is one thing each: adding them counts them.
     if how == "sum" and not AVERAGE_OVER_TIME.search(name) and base.many_rows and set(numbers.values()) != {1} and _nearly_the_same(list(numbers.values())):
@@ -1836,7 +1839,7 @@ def document_items(sources, events):
                     points = source._series(source._parse_ref(reference, reference)).points
                 except core.IssueError:
                     continue
-                items.append(documents.Item(name, shape.sheet, points, number))
+                items.append(documents.Item(name, shape.sheet, points, number, reference))
     return items
 
 

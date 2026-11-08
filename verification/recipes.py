@@ -4,6 +4,7 @@ from fractions import Fraction
 import math
 import re
 from .kernel import equal_rationals,sum_error_bounds
+from numfmt import format_value
 from .rawxlsx import address, position
 
 
@@ -64,10 +65,17 @@ def _matches(book,node,wanted):
     text=str(value).strip().casefold();word=str(wanted).strip().casefold()
     year=lambda x:re.fullmatch(r'\[?((?:19|20)\d\d)\]?년?',x)
     if year(word) and year(text):return year(word)[1]==year(text)[1]
-    choices=[];date_domain=set(node.get('date_domain',[]))
-    for ref in node['domain']:
-        raw=evaluate(book,{'op':'date','sheet':node['sheet'],'cell':ref}) if ref in date_domain else (sheet.condition_values or {}).get(ref,sheet.get(ref))
-        choices.append(str(raw if raw is not None else '').strip().casefold())
+    domain=node['domain'];dates=node.get('date_domain',())
+    if not hasattr(sheet,'_condition_domains'):sheet._condition_domains={}
+    key=(id(domain),id(dates));cached=sheet._condition_domains.get(key)
+    if cached is None:
+        choices=set();date_domain=set(dates)
+        for ref in domain:
+            raw=evaluate(book,{'op':'date','sheet':node['sheet'],'cell':ref}) if ref in date_domain else (sheet.condition_values or {}).get(ref,sheet.get(ref))
+            choices.add(str(raw if raw is not None else '').strip().casefold())
+        # Retain the domain objects so their identities cannot be reused in this session.
+        cached=(domain,dates,choices);sheet._condition_domains[key]=cached
+    choices=cached[2]
     return text==word if word in choices else word in text
 
 
@@ -197,6 +205,8 @@ def evaluate(book,node,decoded=False):
 
 def _cell_matches(book,expr,actual):
     wanted=evaluate(book,expr,decoded=True);raw=actual[0]
+    if expr['op']=='cell' and isinstance(wanted,Fraction) and isinstance(raw,(int,float)) and not isinstance(raw,bool):
+        wanted=_decoded_operand(book,expr,wanted)
     if isinstance(raw,bool) or isinstance(wanted,bool):return type(raw) is type(wanted) and raw==wanted
     if expr['op'] in ('date','date_parts'):
         if isinstance(raw,dt.date) and not isinstance(raw,dt.datetime):raw=dt.datetime.combine(raw,dt.time())
@@ -218,14 +228,21 @@ def _cell_matches(book,expr,actual):
         return a is not None and b is not None and near(a,b)
     if expr['op']=='aggregate':
         if wanted is None:return raw is None
-        if not isinstance(raw,(int,float)) or isinstance(raw,bool):return False
+        if not isinstance(raw,(int,float,Fraction)) or isinstance(raw,bool):return False
         wanted=Fraction(wanted)
         try:rounded=wanted.numerator if wanted.denominator==1 else float(wanted)
         except OverflowError:raise Unsupported('aggregate result outside finite decoded precision')
         if isinstance(rounded,float) and not math.isfinite(rounded):raise Unsupported('aggregate result outside finite decoded precision')
         # Exact integer result or a single correctly rounded float conversion.
         # No operation-count multiplier and no tolerance at the result scale.
-        return raw==rounded
+        if raw!=(wanted if isinstance(raw,Fraction) else rounded):return False
+        if actual[2] not in ('General','@'):
+            expected_text,exact=format_value(wanted,actual[2])
+            if not exact:raise Unsupported('aggregate output format cannot be independently rendered')
+            actual_text=actual[1]
+            if actual[2]=='0':expected_text=expected_text.replace(',','');actual_text=actual_text.replace(',','')
+            if expected_text!=actual_text:return False
+        return True
     return near(figure(wanted),figure(raw))
 
 

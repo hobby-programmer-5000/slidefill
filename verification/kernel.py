@@ -52,6 +52,12 @@ def round_decimal(value,places):
     if type(places) is not int or not 0<=places<=1000:raise ValueError('decimal places outside supported range')
     value=Decimal(value)
     if not value.is_finite():raise ValueError('finite decimal required')
+    return round_rational(Fraction(value),places)
+
+
+def round_rational(value,places):
+    """Round an exact rational once, half away from zero, through the proved kernel."""
+    if type(places) is not int or not 0<=places<=1000:raise ValueError('decimal places outside supported range')
     exact=Fraction(value);n,d=exact.numerator,exact.denominator;scale=10**places
     quotient=abs(n)*scale//d
     # Establish the generated method's precondition with integer arithmetic.

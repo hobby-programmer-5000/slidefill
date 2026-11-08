@@ -6,7 +6,7 @@
 
 Preview and Generate both call `core.run`. Preview fills a copy in memory and throws it away. So the list you check is what the report will hold, not an estimate.
 
-Filled tables and charts also pass through the automatic guard on serialized preview and final output. Saving reuses the preview source snapshot, checks source fingerprints and refuses a known mismatch. See [user behavior](verification.md) and [algorithms and code structure](verification-design.md); text-only fills do not trigger this table/chart guard.
+The unreleased development source checks filled text/tables/charts on serialized preview and final output. Saving reuses the preview source snapshot, checks source fingerprints and refuses both a known mismatch and incomplete independent coverage. Supported formula caches and numeric text calculations have separate source checks; this does not certify all prose or Office layout. See [the current reliability contract](reliability-hardening.md), [user behavior](verification.md) and [algorithms and code structure](verification-design.md). These extensions are not part of the published v0.3.0 executable.
 
 ## Placeholders split across runs
 

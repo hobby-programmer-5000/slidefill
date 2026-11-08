@@ -110,7 +110,7 @@ def early_sheet(records,version):
         if ident==0x0022:epoch=bool(struct.unpack_from('<H',body)[0])
         elif ident in (0x001e,0x041e):codes[len(codes)]=byte_text(body,2 if ident==0x041e else 0,codec,1)[0]
         elif ident in (0x0043,0x0243,0x0443):styles.append(body[1]&63 if version==2 else body[1])
-    cells={};types={};formats={};pending=None
+    cells={};types={};formats={};formulas={};pending=None
     label,number,boolean,formula,string=(4,3,5,6,7) if version==2 else (0x204,0x203,0x205,0x206 if version==3 else 0x406,0x207)
     for ident,body in records:
         if ident==string:
@@ -125,6 +125,7 @@ def early_sheet(records,version):
         if len(body)<at:raise Unsupported('truncated legacy BIFF cell header')
         fmt=body[5]&63 if version==2 else styles[struct.unpack_from('<H',body,4)[0]] if struct.unpack_from('<H',body,4)[0]<len(styles) else 0
         ref=address(r+1,c+1)
+        if ident==formula:formulas[ref]={'kind':'binary'}
         if ref in cells:raise Unsupported('duplicate legacy BIFF value cell')
         formats[ref]=codes.get(fmt,BUILTINS.get(fmt,'UNSUPPORTED'))
         if ident==label:value=byte_text(body,at,codec,1 if version==2 else 2)[0];kind='s'
@@ -144,7 +145,7 @@ def early_sheet(records,version):
         cells[ref]=value;types[ref]=kind
         if len(cells)>MAX_CELLS:raise Unsupported('legacy BIFF cell budget exceeded')
     if pending is not None:raise Unsupported('legacy BIFF formula string missing')
-    return {'Sheet 1':Sheet(cells,[],formats,types,epoch)}
+    return {'Sheet 1':Sheet(cells,[],formats,types,epoch,formulas=formulas)}
 
 
 def xls(path):
@@ -180,7 +181,7 @@ def xls(path):
     result={};total=0
     for name,offset in tabs:
         if name in result:raise Unsupported('duplicate BIFF worksheet name')
-        cells={};types={};formats={};merges=[];pending=None
+        cells={};types={};formats={};merges=[];formulas={};pending=None
         for ident,body in biff_records(data,offset):
             if ident==0x00e5:
                 count=struct.unpack_from('<H',body)[0]
@@ -212,6 +213,7 @@ def xls(path):
             elif ident==0x00d6:values=[(c,xf,rich_text(body,version,codec),'s')]
             elif ident==0x0205:values=[(c,xf,ERRORS.get(body[6],'#ERROR') if body[7] else bool(body[6]),'e' if body[7] else 'b')]
             else:
+                formulas[address(r+1,c+1)]={'kind':'binary'}
                 cached=body[6:14]
                 if cached[6:8]!=b'\xff\xff':values=[(c,xf,numeric(struct.unpack('<d',cached)[0]),'n')]
                 elif cached[0]==0:pending=address(r+1,c+1);formats[pending]=codes.get(styles[xf],BUILTINS.get(styles[xf],'UNSUPPORTED'));continue
@@ -227,7 +229,7 @@ def xls(path):
                 total+=1
                 if total>MAX_CELLS:raise Unsupported('BIFF cell count exceeds budget')
         if pending is not None:raise Unsupported('BIFF formula string cache missing')
-        result[name]=Sheet(cells,merges,formats,types,epoch)
+        result[name]=Sheet(cells,merges,formats,types,epoch,formulas=formulas)
     if not result:raise Unsupported('BIFF worksheet streams missing')
     return result
 
@@ -285,7 +287,7 @@ def xlsb(path):
         result={};total=0
         for name,member in tabs:
             if name in result:raise Unsupported('duplicate XLSB sheet name')
-            cells={};types={};formats={};merges=[];row=None;column=-1
+            cells={};types={};formats={};merges=[];formulas={};row=None;column=-1
             for ident,body in xlsb_records(part(z,member)):
                 if ident==0:row=struct.unpack_from('<I',body)[0];column=-1;continue
                 if ident==176:
@@ -315,10 +317,11 @@ def xlsb(path):
                 elif kind==62:value=wide(body,at+1)[0];typ='s'
                 else:raise Unsupported('unsupported XLSB cell record')
                 ref=address(row+1,column+1)
+                if kind in (8,9,10,11):formulas[ref]={'kind':'binary'}
                 if ref in cells:raise Unsupported('duplicate XLSB value cell')
                 cells[ref]=None if typ=='s' and value=='' else value;types[ref]=typ;fmt=styles[style&0xffffff] if style&0xffffff<len(styles) else 0
                 formats[ref]=codes.get(fmt,BUILTINS.get(fmt,'UNSUPPORTED'));total+=1
                 if total>MAX_CELLS:raise Unsupported('XLSB cells exceed budget')
-            result[name]=Sheet(cells,merges,formats,types,epoch)
+            result[name]=Sheet(cells,merges,formats,types,epoch,formulas=formulas)
         if not result:raise Unsupported('XLSB worksheets missing')
         return result

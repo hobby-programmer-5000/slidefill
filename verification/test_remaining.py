@@ -132,7 +132,7 @@ class Remaining(unittest.TestCase):
             self.write([['Day','Amount','Factor'],['2026-01-01',1e16,1],['2026-01-01',1.0,1],['2026-01-01',-1e16,1],['2026-01-02',0.1,1],['2026-01-02',0.2,1]])
             key='latest2:Data!A,'+kind;self.make(key)
             source=core.ExcelSource(str(self.book));grid,_,_=source.range_cells(key)
-            expected=1/3 if kind.startswith('mean') else 1
+            expected=Fraction(1,3) if kind.startswith('mean') else 1
             self.assertEqual(grid[1][1][0],expected,(kind,grid))
             self.assertEqual(self.run_app(True,source).verification['state'],'passed');self.out.unlink()
         self.write([['Item','Amount'],['A',1e16],['A',1.0],['A',-1e16],['B',0.1],['B',0.2]])
@@ -177,7 +177,7 @@ class Remaining(unittest.TestCase):
             for line,(day,items) in zip(grid[1:],groups.items()):
                 terms=[a*b if product else a for a,b,flag in items if not filtered or flag=='keep']
                 exact=sum(terms,Fraction())/(len(terms) if mean else 1)
-                expected=exact.numerator if exact.denominator==1 else float(exact)
+                expected=exact
                 self.assertEqual(line[1][0],expected,(expression,day))
             self.make(key);result=self.run_app(source=source);self.assertEqual(result.verification['state'],'passed',result.verification)
 

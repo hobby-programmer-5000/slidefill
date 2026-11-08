@@ -237,11 +237,14 @@ class AutomaticGuard(unittest.TestCase):
         self.assertEqual(report.verification['state'],'passed')
         self.assertEqual(report.verification['source_checked'],1)
 
-    def test_text_only_report_does_not_run_extra_serialization(self):
+    def test_text_only_report_uses_source_and_serialized_text_guard(self):
         prs=Presentation();slide=prs.slides.add_slide(prs.slide_layouts[6]);slide.shapes.add_textbox(0,0,Inches(5),Inches(1)).text='{{Data!B2}}';prs.save(self.template)
-        with patch.object(automatic,'serialize',side_effect=AssertionError('unnecessary guard serialization')):
+        with patch.object(automatic,'serialize',wraps=automatic.serialize) as serialize:
             report=self.run_app()
-        self.assertEqual(report.verification,{})
+        self.assertEqual(serialize.call_count,1)
+        self.assertEqual(report.verification['state'],'passed')
+        self.assertEqual(report.verification['text_checked'],1)
+        self.assertEqual(report.verification['text_source_checked'],1)
 
 
 class VerifiedBridge(unittest.TestCase):

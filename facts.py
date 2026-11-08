@@ -8,9 +8,11 @@ import datetime as dt
 import hashlib
 import re
 from dataclasses import dataclass
-from statistics import mean, median
+from fractions import Fraction
+from statistics import median
 
 from numfmt import format_value
+from verification.kernel import round_rational, sum_rationals
 
 NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 HANGUL = re.compile(r"[가-힣]")
@@ -18,22 +20,22 @@ LATIN = re.compile(r"[A-Za-z]")
 PERCENT = "+0.0%;-0.0%;0.0%"
 # When a reading rule speaks. Set from a year of real daily data so that a rule fires rarely enough to be worth reading.
 UNUSUAL_SPREAD = 3.0  # usual spreads from the same weekday's median
-UNUSUAL_CHANGE = 0.07  # and at least this far from it, so a very steady series does not flag small moves
-USUAL_CHANGE = 0.05  # within this of the median, a day may be called usual. Between the two, the rules say nothing
+UNUSUAL_CHANGE = Fraction('0.07')  # and at least this far from it, so a very steady series does not flag small moves
+USUAL_CHANGE = Fraction('0.05')  # within this of the median, a day may be called usual. Between the two, the rules say nothing
 ODD_SPREAD = 3.0  # the same two tests for a day in the recent past
-ODD_CHANGE = 0.15
-ODD_MOVES_MEAN = 0.02  # a day is only worth naming if leaving it out moves the comparison this much
-WEEKEND_GAP = 0.10  # weekends must differ from weekdays this much for the weekend to explain anything
-CONFLICT_CHANGE = 0.03  # both comparisons must really move
+ODD_CHANGE = Fraction('0.15')
+ODD_MOVES_MEAN = Fraction('0.02')  # a day is only worth naming if leaving it out moves the comparison this much
+WEEKEND_GAP = Fraction('0.10')  # weekends must differ from weekdays this much for the weekend to explain anything
+CONFLICT_CHANGE = Fraction('0.03')  # both comparisons must really move
 WEEKS_IN_A_ROW = 3
-LARGE_CHANGE = 0.15  # a move this big is never called nothing to note, however widely the series usually swings
+LARGE_CHANGE = Fraction('0.15')  # a move this big is never called nothing to note, however widely the series usually swings
 YEAR_RUN = 3  # months or quarters in a row above or below the year before
-FAR_FROM_PEAK = 0.7  # below this share of the same month's best, the long view is worth a sentence
+FAR_FROM_PEAK = Fraction('0.7')  # below this share of the same month's best, the long view is worth a sentence
 MIN_TO_READ = 3
 OTHER_ITEM = re.compile(r"기타|그\s*외|others?|misc\.?|etc\.?", re.I)
 AMOUNT = 0  # the scale of a series whose changes are plain amounts rather than points
 PART_MARK = re.compile(r"[-–·•]\s")
-NESTED_TOLERANCE = 0.001  # a parent's figure is the exact sum of its parts, give or take rounding
+NESTED_TOLERANCE = Fraction('0.001')  # a parent's figure is the exact sum of its parts, give or take rounding
 MACHINE_NAME = re.compile(r"[A-Za-z]+(?:_[A-Za-z0-9-]+)+|[a-z]+[A-Z][A-Za-z0-9]*")  # tourStatConfirmManageBiz, RETAINED_CATCH_KG: exported names, in no one's language
 SNAKE_NAME = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])")
 NAME_UNITS = {"kg": "kg", "g": "g", "mj": "MJ", "kj": "kJ", "kcal": "kcal", "km": "km", "m2": "m²", "m3": "m³", "kwh": "kWh", "mwh": "MWh", "usd": "USD", "aud": "AUD", "krw": "KRW", "pct": "%", "percent": "%"}
@@ -43,10 +45,10 @@ KOREAN_UNIT_MARK = re.compile(r"(?<=[가-힣])_(원|천원|만원|백만원|억�
 PRICE_NAME = re.compile(r"^(?!.*(?:총|합계|누계|\b(?:total|sum)\b))(?=.*(?:수수료|요금|가격|단가|이용료|사용료|입장료|참가비|회비|\b(?:price|fee|tariff)s?\b)\s*[_( ]?\s*(?:원|천원|만원|달러|krw|usd|aud|\$)?\s*\)?\s*$)", re.I)
 MIN_NESTED_PARENT = 100  # among hospitals with 1, 2 or 3 doctors, 2 = 1 + 1 says nothing: it took 38 doctors out of a list of 127
 MAX_NESTED_ITEMS = 100  # among thousands of companies, one is bound to equal the sum of the next few by chance, and they are not its parts
-CLOSE_SECOND = 1.1  # the first is less than this many times the second: a multiple like 1.0 says nothing
+CLOSE_SECOND = Fraction('1.1')  # the first is less than this many times the second: a multiple like 1.0 says nothing
 OUTLINE = (("roman", re.compile(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)]|[IVX]+\.\s")), ("dash", re.compile(r"\d+-\d+\.")), ("number", re.compile(r"\d+\.(?!\d)")),
            ("paren", re.compile(r"\(\d+\)")), ("hangul", re.compile(r"[가-하]\.")))
-SMALL_ITEM = 0.01  # an item under this share of the largest is not named for moving most
+SMALL_ITEM = Fraction('0.01')  # an item under this share of the largest is not named for moving most
 MAX_LISTED = 6
 SEPARATE_LISTS = {"ko": "번호가 겹치는 항목이 함께 있어(자산과 부채 등) 크기를 비교하지 않았습니다.", "en": "Numbers repeat among these lines, as with assets and liabilities, so their sizes were not compared."}
 PLANNED = {"budget": {"ko": "예산", "en": "budget"}, "target": {"ko": "목표", "en": "target"}, "plan": {"ko": "계획", "en": "plan"}}  # what the older column was, in the words a sentence uses
@@ -117,7 +119,30 @@ def fingerprint(pack, lang):
 
 def ratio(now, base):
     """Relative change, or None when the base is zero: a percentage of nothing has no meaning."""
-    return None if not base else (now - base) / abs(base)
+    if not base:
+        return None
+    a,b = Fraction(str(now)),Fraction(str(base))
+    return (a-b)/abs(b)
+
+
+def difference(now,base):
+    return Fraction(str(now))-Fraction(str(base))
+
+
+def quotient(numerator,denominator):
+    return Fraction(str(numerator))/Fraction(str(denominator))
+
+
+def mean(values):
+    values=[Fraction(str(value)) for value in values]
+    if not values:raise ValueError('mean of no values')
+    return sum_rationals(values)/len(values)
+
+
+def exact_total(values):
+    """Exact decoded-decimal sum, retaining rational precision through formatting."""
+    result=sum_rationals(Fraction(str(value)) for value in values)
+    return result.numerator if result.denominator==1 else result
 
 
 def percent(value):
@@ -128,15 +153,20 @@ def points_text(difference, lang="ko", scale=1):
     """A change in a rate or a score, as a difference. A percentage of a percentage reads wrong."""
     if scale == AMOUNT:  # a column of ups and downs in a count: its change is an amount, in no unit of its own
         return ("+" if difference > 0 else "") + plain_number(difference)
-    size = round(difference * scale, 1) + 0.0
+    size = round_rational(Fraction(str(difference))*Fraction(str(scale)),1)
+    if not size: size = abs(size)
     return f"{size:+.1f}포인트" if lang == "ko" else f"{size:+.1f} points"
+
+
+def plain_number_format(value):
+    size = abs(value)
+    integer=Fraction(str(value)).denominator==1
+    return "#,##0" if size >= 1000 or integer else "0.#" if size >= 10 else "0.##" if size >= 1 else "0.###"
 
 
 def plain_number(value):
     """A figure for a sentence when its cell has no format: 4,930,916 rather than 4930915.845, and 115.9 rather than 115.884985."""
-    size = abs(value)
-    pattern = "#,##0" if size >= 1000 or float(value).is_integer() else "0.0" if size >= 10 else "0.00" if size >= 1 else "0.000"
-    text = format_value(value, pattern)[0]
+    text = format_value(value, plain_number_format(value))[0]
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
@@ -182,11 +212,11 @@ def same_weekday(points, weeks=8):
     The spread has a floor of 1% of the level, so a perfectly steady series can still show a real change.
     """
     day = points[-1].date.weekday()
-    earlier = [p.value for p in points[:-1] if p.date.weekday() == day][-weeks:]
+    earlier = [Fraction(str(p.value)) for p in points[:-1] if p.date.weekday() == day][-weeks:]
     if len(earlier) < 3:
         return None
     level = median(earlier)
-    spread = max(1.4826 * median(abs(value - level) for value in earlier), abs(level) * 0.01)
+    spread = max(Fraction('1.4826') * median(abs(value - level) for value in earlier), abs(level) * Fraction('0.01'))
     return (level, spread, len(earlier)) if spread else None  # every Sunday 0, closed: there is no usual range to stand outside
 
 
@@ -200,7 +230,7 @@ def week_total_change(points):
     """Change of the newest 7 points' total against the 7 before them, or None with fewer than 14."""
     if len(points) < 14:
         return None
-    return ratio(sum(p.value for p in points[-7:]), sum(p.value for p in points[-14:-7]))
+    return ratio(exact_total(p.value for p in points[-7:]), exact_total(p.value for p in points[-14:-7]))
 
 
 def _usual_gap(points):
@@ -345,7 +375,7 @@ def stands_out(points):
     """(usual level, change) when the newest point is far from its weekday's usual level by both size and spread, else None."""
     usual = same_weekday(points)
     change = ratio(points[-1].value, usual[0]) if usual else None
-    if change is None or abs(change) < ODD_CHANGE or abs(points[-1].value - usual[0]) / usual[1] < ODD_SPREAD:
+    if change is None or abs(change) < ODD_CHANGE or abs(difference(points[-1].value,usual[0])) / usual[1] < ODD_SPREAD:
         return None
     return usual[0], change
 
@@ -371,10 +401,10 @@ def _movement(change, lead, lang):
     words = WORDS[lang]
     size = format_value(abs(change), "0.0%")[0]
     if lang == "ko":
-        if round(abs(change), 3) == 0:
+        if size == '0.0%':
             return f"{lead} {words['flat']}"
         return f"{lead} {size} {words['up'] if change > 0 else words['down']}"
-    if round(abs(change), 3) == 0:
+    if size == '0.0%':
         return f"{words['flat']} {lead}"
     return f"{words['up'] if change > 0 else words['down']} {size} {lead}"
 
@@ -389,7 +419,7 @@ def weekend_gap(points, count=28):
 
 def weeks_in_a_row(points):
     """How many weeks in a row the 7-point total has moved the same way, newest back: +3, -2, or 0."""
-    totals = [sum(p.value for p in points[end - 7:end]) for end in range(len(points), 6, -7)]
+    totals = [exact_total(p.value for p in points[end - 7:end]) for end in range(len(points), 6, -7)]
     count, direction = 0, 0
     for later, earlier in zip(totals, totals[1:]):
         step = (later > earlier) - (later < earlier)
@@ -423,7 +453,7 @@ def readings(points, show, lang="ko", limit=3):
 
     months = partial_year(points)
     if months:
-        per_month = ratio(newest.value / months, before.value / 12)
+        per_month = ratio(quotient(newest.value,months), quotient(before.value,12))
         if prev_change is None or per_month is None:  # a year of 0 before it: nothing to take a percentage of
             found.append(("read_partial_year", f"{day(newest)} 값은 {months}개월치로 보입니다. 직전 {day(before)} 값이 {show(before.value)}이라 변화율을 낼 수 없습니다." if ko else
                           f"{day(newest)} looks like {months} months. {day(before)} was {show(before.value)}, so no percentage can be given."))
@@ -496,8 +526,8 @@ def readings(points, show, lang="ko", limit=3):
                 found.append(("read_same_month", f"같은 {word} 기준으로 {len(same) + 1}개 해 중 가장 {'높' if newest.value > top.value else '낮'}습니다." if ko else
                               f"For this {word}, it is the {'highest' if newest.value > top.value else 'lowest'} of {len(same) + 1} years."))
             elif top.value > 0 and newest.value < top.value * FAR_FROM_PEAK:
-                found.append(("read_same_month", f"같은 {word} 기준 최고는 {day(top)} {show(top.value)}이고, 이번 값은 그 {format_value(newest.value / top.value, '0.0%')[0]} 수준입니다." if ko else
-                              f"The best for this {word} was {day(top)}, {show(top.value)}. This value is {format_value(newest.value / top.value, '0.0%')[0]} of it."))
+                found.append(("read_same_month", f"같은 {word} 기준 최고는 {day(top)} {show(top.value)}이고, 이번 값은 그 {format_value(quotient(newest.value,top.value), '0.0%')[0]} 수준입니다." if ko else
+                              f"The best for this {word} was {day(top)}, {show(top.value)}. This value is {format_value(quotient(newest.value,top.value), '0.0%')[0]} of it."))
 
     if is_daily(points):
         usual = same_weekday(points)
@@ -511,7 +541,7 @@ def readings(points, show, lang="ko", limit=3):
 
         if usual:
             change = ratio(newest.value, usual[0])
-            spread = (newest.value - usual[0]) / usual[1]
+            spread = difference(newest.value,usual[0]) / usual[1]
             if change is not None and abs(spread) >= UNUSUAL_SPREAD and abs(change) >= UNUSUAL_CHANGE:
                 found.append(("read_unusual", f"이번 값은 직전 {usual[2]}번 {name}요일의 중앙값 {show(usual[0])}보다 {_size(change)} {low_high(change)}아, 평소 범위를 벗어난 수준입니다.{check_end(change)}" if ko else
                               f"This value is {_size(change)} {low_high(change)} the median of the previous {usual[2]} {plural}, {show(usual[0])}, and outside their usual range.{check_end(change)}"))
@@ -596,10 +626,10 @@ def fact_pack(points, header, show, lang="ko"):
     pack = [("value", f"{day(newest)} {header}: {show(newest.value)}")]
     months = partial_year(points)
     if months:  # Rank, streak and means against whole years would all mislead, so only the fair comparison goes in.
-        change = ratio(newest.value / months, points[-2].value / 12)
+        change = ratio(quotient(newest.value,months), quotient(points[-2].value,12))
         if change is not None:
-            pack.append(("per_month", f"월평균 {show(newest.value / months)}, {day(points[-2])} 월평균 {show(points[-2].value / 12)} 대비 {percent(change)}" if ko else
-                         f"per month {show(newest.value / months)}, {percent(change)} against {show(points[-2].value / 12)} per month in {day(points[-2])}"))
+            pack.append(("per_month", f"월평균 {show(quotient(newest.value,months))}, {day(points[-2])} 월평균 {show(quotient(points[-2].value,12))} 대비 {percent(change)}" if ko else
+                         f"per month {show(quotient(newest.value,months))}, {percent(change)} against {show(quotient(points[-2].value,12))} per month in {day(points[-2])}"))
         return readings(points, show, lang, limit=9) + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
     if year_to_date(points):  # Steps, means and rank mean nothing on a running total.
         return readings(points, show, lang, limit=9) + [Fact(name, text, tuple(NUMBER.findall(text))) for name, text in pack]
@@ -629,11 +659,11 @@ def fact_pack(points, header, show, lang="ko"):
     spread = None
     if usual:
         change = ratio(newest.value, usual[0])
-        spread = (newest.value - usual[0]) / usual[1]
+        spread = difference(newest.value,usual[0]) / usual[1]
         name = WEEKDAYS[lang][newest.date.weekday()]
         plural = WEEKDAY_PLURALS[newest.date.weekday()]
-        pack.append(("weekday", f"직전 {usual[2]}번 {name}요일의 중앙값 {show(usual[0])} 대비 {percent(change) if change is not None else '비교 불가'}, 평소 변동폭의 {spread:+.1f}배" if ko else
-                     f"{percent(change) if change is not None else 'not comparable'} against the median of the previous {usual[2]} {plural}, {show(usual[0])}, {spread:+.1f} times the usual spread"))
+        pack.append(("weekday", f"직전 {usual[2]}번 {name}요일의 중앙값 {show(usual[0])} 대비 {percent(change) if change is not None else '비교 불가'}, 평소 변동폭의 {round_rational(spread,1):+.1f}배" if ko else
+                     f"{percent(change) if change is not None else 'not comparable'} against the median of the previous {usual[2]} {plural}, {show(usual[0])}, {round_rational(spread,1):+.1f} times the usual spread"))
     if daily_data:
         kind = same_kind_before(points)
         if kind:
@@ -647,8 +677,8 @@ def fact_pack(points, header, show, lang="ko"):
             pack.append(("signal_conflict", f"비교 기준의 방향이 엇갈림: 전주 같은 요일 기준 {percent(week_change)}, 직전 7개 평균 기준 {percent(avg_change)}. 직전 7개에는 주말 {mixed}개가 섞여 있음" if ko else
                          f"the comparisons point different ways: {percent(week_change)} by the same weekday last week, {percent(avg_change)} by the mean of the previous 7, which includes {mixed} weekend values"))
         if spread is not None and abs(spread) >= UNUSUAL_SPREAD and change is not None and abs(change) >= UNUSUAL_CHANGE:
-            pack.append(("signal_unusual", f"같은 요일 기준으로 평소 범위를 벗어남: 평소 변동폭의 {spread:+.1f}배" if ko else
-                         f"outside the usual range for this weekday: {spread:+.1f} times the usual spread"))
+            pack.append(("signal_unusual", f"같은 요일 기준으로 평소 범위를 벗어남: 평소 변동폭의 {round_rational(spread,1):+.1f}배" if ko else
+                         f"outside the usual range for this weekday: {round_rational(spread,1):+.1f} times the usual spread"))
         odd = odd_day(points)
         if odd:
             pack.append(("signal_odd_day", f"최근 7개 중 평소 같은 요일과 가장 다른 날: {day(odd[0])} {show(odd[0].value)}, 평소 {show(odd[1])} 대비 {percent(odd[2])}" if ko else
@@ -665,8 +695,8 @@ def fact_pack(points, header, show, lang="ko"):
         pack.append(("streak", f"{abs(run)}회 연속 {'증가' if run > 0 else '감소'}" if ko else f"{abs(run)} {'rises' if run > 0 else 'falls'} in a row"))
     change = week_total_change(points) if daily_data else None
     if change is not None:
-        pack.append(("week_total", f"최근 7개 합계 {show(sum(p.value for p in points[-7:]))}, 그 전 7개 합계 {show(sum(p.value for p in points[-14:-7]))} 대비 {percent(change)}" if ko else
-                     f"latest 7 total {show(sum(p.value for p in points[-7:]))}, {percent(change)} against the 7 before, {show(sum(p.value for p in points[-14:-7]))}"))
+        pack.append(("week_total", f"최근 7개 합계 {show(exact_total(p.value for p in points[-7:]))}, 그 전 7개 합계 {show(exact_total(p.value for p in points[-14:-7]))} 대비 {percent(change)}" if ko else
+                     f"latest 7 total {show(exact_total(p.value for p in points[-7:]))}, {percent(change)} against the 7 before, {show(exact_total(p.value for p in points[-14:-7]))}"))
     recent = points[-28:]
     weekdays = [p.value for p in recent if p.date.weekday() < 5]
     weekends = [p.value for p in recent if p.date.weekday() >= 5]
@@ -705,7 +735,7 @@ def is_price(header):
 
 def is_additive(header, fmt, values):
     """True when items can be shares of a whole. A rate, an index or a mean cannot, and neither can negative figures."""
-    return not is_rate(header, fmt) and all(value >= 0 for value in values) and sum(values) > 0
+    return not is_rate(header, fmt) and all(value >= 0 for value in values) and exact_total(values) > 0
 
 
 def outline_kind(label):
@@ -768,7 +798,7 @@ def separate_lists(items):
 
 
 def _share(value, total):
-    return format_value(value / total, "0.0%")[0]
+    return format_value(quotient(value,total), "0.0%")[0]
 
 
 def without_parts(items):
@@ -877,7 +907,7 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
             moves = [(ratio(item.value, item.before), item) for item in pairs if item.before > 0 and max(item.value, item.before) >= size * SMALL_ITEM]
             word = lambda change: percent(change)  # noqa: E731
         else:
-            moves = [(item.value - item.before, item) for item in pairs]
+            moves = [(difference(item.value,item.before), item) for item in pairs]
             word = lambda change: points_text(change, lang, scale)  # noqa: E731
         ups, downs = [m for m in moves if m[0] > 0], [m for m in moves if m[0] < 0]
         if ups:
@@ -919,15 +949,16 @@ def item_readings(items, show, lang="ko", total=None, additive=True, before_tota
     if additive and total:
         found.append(("read_top", f"가장 큰 항목은 {top.label}({show(top.value)})이고, {whole} {show(total)}의 {_share(top.value, total)}입니다." if ko else
                       f"The largest is {top.label} ({show(top.value)}), {_share(top.value, total)} of {whole}, {show(total)}."))
-        if second.value > 0 and top.value / second.value < CLOSE_SECOND:
+        if second.value > 0 and quotient(top.value,second.value) < CLOSE_SECOND:
             found.append(("read_gap", f"2위 {second.label}({show(second.value)}, {_share(second.value, total)})와 차이가 크지 않습니다." if ko else
                           f"The second, {second.label} ({show(second.value)}, {_share(second.value, total)}), is close behind."))
-        elif second.value > 0 and top.value / second.value < 100:  # beyond this a multiple tells a reader nothing the share does not
-            found.append(("read_gap", f"2위 {second.label}({show(second.value)}, {_share(second.value, total)})의 {top.value / second.value:.1f}배입니다." if ko else
-                          f"That is {top.value / second.value:.1f} times the second, {second.label} ({show(second.value)}, {_share(second.value, total)})."))
+        elif second.value > 0 and quotient(top.value,second.value) < 100:  # beyond this a multiple tells a reader nothing the share does not
+            found.append(("read_gap", f"2위 {second.label}({show(second.value)}, {_share(second.value, total)})의 {round_rational(quotient(top.value,second.value),1):.1f}배입니다." if ko else
+                          f"That is {round_rational(quotient(top.value,second.value),1):.1f} times the second, {second.label} ({show(second.value)}, {_share(second.value, total)})."))
         if len(ordered) >= 5:
-            found.append(("read_top_three", f"항목 {len(ordered)}개 중 상위 3개가 {whole}의 {_share(sum(item.value for item in ordered[:3]), total)}입니다." if ko else
-                          f"The top 3 of {len(ordered)} items are {_share(sum(item.value for item in ordered[:3]), total)} of {whole}."))
+            top_sum = exact_total(item.value for item in ordered[:3])
+            found.append(("read_top_three", f"항목 {len(ordered)}개 중 상위 3개가 {whole}의 {_share(top_sum, total)}입니다." if ko else
+                          f"The top 3 of {len(ordered)} items are {_share(top_sum, total)} of {whole}."))
     else:
         found.append(("read_range", f"항목 {len(ordered)}개 중 가장 높은 항목은 {top.label}({show(top.value)}), 가장 낮은 항목은 {bottom.label}({show(bottom.value)})입니다." if ko else
                       f"Of {len(ordered)} items, the highest is {top.label} ({show(top.value)}) and the lowest is {bottom.label} ({show(bottom.value)})."))
@@ -993,10 +1024,10 @@ def rate_found(points, show, lang="ko", scale=1):
         base = year_ago(points)
         word = WORDS[lang]["달" if is_monthly(points) else "분기"]
         if base:
-            found.append(("read_year_points", f"전년 같은 {word} {day(base)} {show(base.value)} 대비 {points_text(newest.value - base.value, lang, scale)}입니다." if ko else
-                          f"{points_text(newest.value - base.value, lang, scale)} against the same {word} last year, {day(base)}, {show(base.value)}."))
-    found.append(("read_prev_points", f"직전 {day(before)} {show(before.value)} 대비 {points_text(newest.value - before.value, lang, scale)}입니다." if ko else
-                  f"{points_text(newest.value - before.value, lang, scale)} against {day(before)}, {show(before.value)}."))
+            found.append(("read_year_points", f"전년 같은 {word} {day(base)} {show(base.value)} 대비 {points_text(difference(newest.value,base.value), lang, scale)}입니다." if ko else
+                          f"{points_text(difference(newest.value,base.value), lang, scale)} against the same {word} last year, {day(base)}, {show(base.value)}."))
+    found.append(("read_prev_points", f"직전 {day(before)} {show(before.value)} 대비 {points_text(difference(newest.value,before.value), lang, scale)}입니다." if ko else
+                  f"{points_text(difference(newest.value,before.value), lang, scale)} against {day(before)}, {show(before.value)}."))
     run = streak(points)
     if abs(run) >= WEEKS_IN_A_ROW:
         found.append(("read_points_run", f"{abs(run)}번 연속 {'상승' if run > 0 else '하락'}했습니다." if ko else f"It has {'risen' if run > 0 else 'fallen'} {abs(run)} times in a row."))
@@ -1033,7 +1064,7 @@ def cut_short_text(points, found, usual, show, lang="ko"):
     else:
         text = f"{day(newest)} has {found} rows where {usual} is usual, so it looks incomplete."
     if before:
-        whole, each = ratio(newest.value, before.value), ratio(newest.value / found, before.value / usual)
+        whole, each = ratio(newest.value, before.value), ratio(quotient(newest.value,found), quotient(before.value,usual))
         if whole is not None and each is not None:
             text += (f" {day(before)} {show(before.value)} 대비 {percent(whole)}는 그대로 읽을 수 없고, 행당 평균으로 맞추면 {percent(each)}입니다. 빠진 행의 계절 차이는 반영되지 않습니다." if lang == "ko" else
                      f" {percent(whole)} against {day(before)}, {show(before.value)}, cannot be read as it stands. Per row it is {percent(each)}, which does not allow for the season of the missing rows.")
@@ -1063,7 +1094,7 @@ def sentence(points, header, show, lang="ko", count=7):
         parts.append(_movement(change, lead, lang))
     months = partial_year(points)
     if months:
-        change = ratio(newest.value / months, base.value / 12)
+        change = ratio(quotient(newest.value,months), quotient(base.value,12))
         if change is not None:
             parts.append(_movement(change, words["per_month"], lang))
     # A mean of the months before says little once the year before is known: it mostly shows the season.

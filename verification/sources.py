@@ -88,7 +88,7 @@ def _ods(path):
     with ZipFile(path) as z:root=ET.fromstring(z.read('content.xml'))
     result={};budget=0
     for table in root.findall('.//'+O+'spreadsheet/'+T+'table'):
-        cells={};types={};formats={};merges=[];r=1
+        cells={};types={};formats={};merges=[];formulas={};r=1
         # Descendant rows also cover explicit row/header groups.
         for row in table.iter(T+'table-row'):
             repeat=int(row.get(T+'number-rows-repeated','1'));c=1;items=[]
@@ -109,20 +109,23 @@ def _ods(path):
                 else:raise Unsupported('ODS value type outside independent reader contract')
                 wide=int(cell.get(T+'number-columns-spanned','1'));high=int(cell.get(T+'number-rows-spanned','1'))
                 if wide<1 or high<1:raise Unsupported('invalid ODS merge')
-                if value is not None or wide>1 or high>1:
+                formula=cell.get(T+'formula')
+                if value is not None or formula is not None or wide>1 or high>1:
                     budget+=count*repeat
                     if budget>MAX_CELLS or c+count+wide-2>16384 or r+repeat+high-2>1048576:raise Unsupported('ODS source exceeds independent cell budget')
-                    items.append((c,count,value,kind,wide,high))
+                    items.append((c,count,value,kind,wide,high,formula))
                 c+=count
             # No materialization of huge trailing empty repeats.
             for rr in range(r,r+repeat) if items else ():
-                for col,count,value,kind,wide,high in items:
+                for col,count,value,kind,wide,high,formula in items:
                     for cc in range(col,col+count):
                         ref=address(rr,cc)
+                        if formula is not None:
+                            formulas[ref]={'text':formula,'kind':'ods' if repeat==count==1 else 'ods-repeated'}
                         if value is not None:cells[ref]=value;types[ref]=kind;formats[ref]='General'
                         if wide>1 or high>1:merges.append((rr,cc,rr+high-1,cc+wide-1))
             r+=repeat
-        result[_title(table.get(T+'name','Sheet'),result)]=Sheet(cells,merges,formats,types)
+        result[_title(table.get(T+'name','Sheet'),result)]=Sheet(cells,merges,formats,types,formulas=formulas)
     if not result:raise Unsupported('ODS spreadsheet tables missing')
     return result
 

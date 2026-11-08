@@ -1,5 +1,6 @@
 """Check generated category/XY caches and every referenced embedded XLSX cell."""
 import datetime as dt
+import math
 from io import BytesIO
 import posixpath
 import re
@@ -8,6 +9,7 @@ import xml.etree.ElementTree as ET
 from .kernel import same_ints
 from .rawxlsx import workbook,position,address
 from .recipes import figure,near,Unsupported
+from numfmt import format_value
 
 C='{http://schemas.openxmlformats.org/drawingml/2006/chart}'
 R='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
@@ -48,15 +50,18 @@ def check(z,part,grid,mode,date_axis):
         except Unsupported as exc:partial.append(str(exc));return unknown
     def cache_number(raw):
         if raw in (None,''):return None
+        if not re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?',str(raw)):
+            raise ValueError('invalid numeric chart cache or embedded value')
         try:return Fraction(str(raw))
         except ValueError:raise ValueError('invalid numeric chart cache or embedded value')
 
-    def check_ref(container,values,numeric):
+    def check_ref(container,values,numeric,formats=None):
         if container is None:errors.append('chart data field missing');return
         ref=container.find(C+('numRef' if numeric else 'strRef'))
         if ref is None:errors.append('chart data reference missing or wrong type');return
         cache=ref.find(C+('numCache' if numeric else 'strCache'))
         if cache is None:errors.append('chart cache missing');return
+        cache_format=cache.findtext(C+'formatCode','General')
         count=cache.find(C+'ptCount')
         if count is None or int(count.get('val','-1'))!=len(values):errors.append('chart point count differs')
         points={};indices=[]
@@ -73,6 +78,21 @@ def check(z,part,grid,mode,date_axis):
                 if wanted is None:
                     if cached not in (None,'') or embedded not in (None,''):errors.append('chart gap replaced with a number')
                 elif not near(cache_number(cached),wanted) or not near(cache_number(embedded),wanted):errors.append(f'chart numeric cache/embedded mismatch at point{i}')
+                else:
+                    try:
+                        decoded=float(wanted)
+                        if not math.isfinite(decoded) or wanted.denominator==1 and Fraction.from_float(decoded)!=wanted:
+                            errors.append(f'chart cannot preserve the exact integer at point{i}')
+                        if formats and formats[i] not in ('General','@'):
+                            required,exact=format_value(wanted,formats[i])
+                            if not exact:partial.append('chart number format cannot be independently rendered')
+                            else:
+                                embedded_format=book[sheet].formats.get(refs[i],'General')
+                                for actual,actual_format in ((cached,cache_format),(embedded,embedded_format)):
+                                    rendered,covered=format_value(float(cache_number(actual)),actual_format)
+                                    if not covered:partial.append('chart number format cannot be independently rendered')
+                                    elif rendered!=required:errors.append(f'chart output loses declared decimal precision at point{i}')
+                    except (ValueError,OverflowError):partial.append('chart number exceeds supported numeric precision')
             else:
                 if not same_text(cached or '',wanted or '') or not same_text(embedded or '',wanted or ''):errors.append(f'chart category/name mismatch at point{i}')
 
@@ -86,13 +106,14 @@ def check(z,part,grid,mode,date_axis):
         if col>=len(grid[0]):break
         check_ref(node.find(C+'tx'),[grid[0][col][1] or ''],False)
         if mode in ('xy','bubble'):
-            pairs=[tuple(expected_number(row[c][0]) for c in ([0,col,col+1] if mode=='bubble' else [0,col])) for row in grid[1:]]
-            if any(unknown in pair for pair in pairs):partial.append('scatter source point interpretation is incomplete');continue
-            pairs=[p for p in pairs if all(v is not None for v in p)]
-            check_ref(node.find(C+'xVal'),[p[0] for p in pairs],True)
-            check_ref(node.find(C+'yVal'),[p[1] for p in pairs],True)
-            if mode=='bubble':check_ref(node.find(C+'bubbleSize'),[p[2] for p in pairs],True)
+            columns=[0,col,col+1] if mode=='bubble' else [0,col]
+            pairs=[(tuple(expected_number(row[c][0]) for c in columns),tuple(row[c][2] for c in columns)) for row in grid[1:]]
+            if any(unknown in pair for pair,_fmts in pairs):partial.append('scatter source point interpretation is incomplete');continue
+            pairs=[p for p in pairs if all(v is not None for v in p[0])]
+            check_ref(node.find(C+'xVal'),[p[0][0] for p in pairs],True,[p[1][0] for p in pairs])
+            check_ref(node.find(C+'yVal'),[p[0][1] for p in pairs],True,[p[1][1] for p in pairs])
+            if mode=='bubble':check_ref(node.find(C+'bubbleSize'),[p[0][2] for p in pairs],True,[p[1][2] for p in pairs])
         else:
             check_ref(node.find(C+'cat'),categories,dates)
-            check_ref(node.find(C+'val'),[expected_number(row[col][0]) for row in grid[1:]],True)
+            check_ref(node.find(C+'val'),[expected_number(row[col][0]) for row in grid[1:]],True,[row[col][2] for row in grid[1:]])
     return errors,partial

@@ -81,14 +81,20 @@ class LegacyHTML(unittest.TestCase):
                 self.book=self.root/('biff'+str(version)+'.xls');legacy_fixture(self.book,version)
                 sheet='Data' if version==5 else 'Sheet 1';key=sheet+'!A1:C3';raw=sources.read(self.book)[sheet]
                 self.assertEqual(raw.get('A2'),'Café');self.assertEqual(raw.get('B2'),'12');self.assertEqual(raw.get('B3'),'-2.5');self.assertEqual(raw.get('C2'),'6.25')
-                original=self.book.read_bytes();self.table(key);result=self.run_app();self.assertEqual(result.verification['state'],'passed',result.verification)
-                self.assertEqual(self.run_app(True).verification['state'],'passed');self.assertEqual(original,self.book.read_bytes());self.out.unlink()
+                original=self.book.read_bytes();self.table(key);result=self.run_app();self.assertEqual(result.verification['state'],'partial',result.verification)
+                self.assertTrue(any('formula cache' in reason for reason in result.verification['reasons']))
+                with self.assertRaises(core.SlideFillError) as error:self.run_app(True)
+                self.assertEqual(error.exception.code,'verification_incomplete')
+                self.assertEqual(original,self.book.read_bytes());self.assertFalse(self.out.exists())
                 self.corruption_blocks(key)
 
     def test_biff5_korean_codepage_rich_text_and_custom_format(self):
         self.book=self.root/'korean.xls';legacy_fixture(self.book,5,949);sheet=sources.read(self.book)['Data']
         self.assertEqual(sheet.get('A2'),'서울');self.assertEqual(sheet.get('A3'),'Rich text');self.assertEqual(sheet.formats['B2'],'0.00');self.assertEqual(sheet.get('C3'),'cached text')
-        self.table('Data!A1:C3');result=self.run_app(True);self.assertEqual(result.verification['state'],'passed',result.verification)
+        self.table('Data!A1:C3');result=self.run_app();self.assertEqual(result.verification['state'],'partial',result.verification)
+        self.assertTrue(any('formula cache' in reason for reason in result.verification['reasons']))
+        with self.assertRaises(core.SlideFillError) as error:self.run_app(True)
+        self.assertEqual(error.exception.code,'verification_incomplete')
 
     def test_biff8_rstring_unformatted_unicode_and_runs(self):
         self.book=self.root/'rich8.xls';xls_fixture(self.book)

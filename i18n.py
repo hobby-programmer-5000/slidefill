@@ -2,8 +2,13 @@
 
 STRINGS = {
     "en": {
-        "verification_passed": "Automatic verification passed for {checked} table(s)/chart(s). Source selection still needs your review.",
-        "verification_partial": "Automatic checks cover part of {checked} table(s)/chart(s). Some representations or source interpretations could not be independently checked; review the selected scope.",
+        "verification_passed": "Verified {checked} table/chart updates, preserved text in {texts} paragraphs, and checked {formulas} formula results. Confirm the selected scope and business meaning.",
+        "verification_partial": "Verification is incomplete for {checked} table/chart updates. Saving is disabled. Check the listed unsupported values, formulas or representations.",
+        "verification_incomplete": "Some source values, formulas or representations could not be independently checked. No report was saved. Open the listed details and use supported inputs.",
+        "err_verification_incomplete": "The report was not saved because some values or formulas could not be independently checked. Review the details and use supported inputs.\n{detail}",
+        "issue_verification_incomplete": "Verification is incomplete: {detail}. Saving is disabled until these values can be checked.",
+        "issue_nonfinite_value": "{cell} is not a finite number. Correct it in the source workbook and preview again.",
+        "doubt_rate_mean": "{figure} is averaged equally across rows. That is not the overall rate obtained by dividing the total numerator by the total denominator. Confirm the intended scope and operation, or select an explicitly calculated overall rate in the source.",
         "verification_blocked": "Automatic verification found a mismatch. The report was not saved. Reopen the input and check the listed details.",
         "issue_verification_failed": "Automatic verification failed: {detail}. Reopen the input; this mismatch cannot be overridden when saving.",
         "err_verification_blocked": "The report was not saved because automatic verification failed. Reopen the input and preview again.\n{detail}",
@@ -347,8 +352,13 @@ Shortcuts
         "insight_err_other": "The model could not answer: {detail}",
     },
     "ko": {
-        "verification_passed": "표·차트 {checked}개 자동 검증을 통과했습니다. 선택한 업무 범위는 확인해 주세요.",
-        "verification_partial": "표·차트 {checked}개에 자동 검증을 일부 적용했습니다. 지원하지 않는 표현이나 원본 해석은 독립 검산하지 못했으니 선택한 범위를 확인해 주세요.",
+        "verification_passed": "표·차트 값 {checked}개, 텍스트 보존 {texts}곳, 수식 결과 {formulas}개를 검증했습니다. 선택한 업무 범위와 의미는 확인해 주세요.",
+        "verification_partial": "표·차트 {checked}개의 검증이 미완료되어 저장할 수 없습니다. 목록에서 지원하지 않는 값·수식·표현을 확인하세요.",
+        "verification_incomplete": "일부 원본 값·수식·표현을 독립 검산하지 못해 저장하지 않았습니다. 목록의 상세 내용을 확인하고 지원하는 입력을 사용하세요.",
+        "err_verification_incomplete": "일부 값이나 수식을 독립 검산하지 못해 보고서를 저장하지 않았습니다. 상세 내용을 확인하고 지원하는 입력을 사용하세요.\n{detail}",
+        "issue_verification_incomplete": "검증 미완료: {detail}. 해당 값을 검산할 수 있을 때까지 저장할 수 없습니다.",
+        "issue_nonfinite_value": "{cell}이 유한한 수가 아닙니다. 원본에서 값을 수정하고 다시 미리보기하세요.",
+        "doubt_rate_mean": "{figure}은(는) 각 행을 같은 비중으로 평균 낸 값입니다. 분자 합계를 분모 합계로 나눈 전체 비율과는 다릅니다. 범위와 계산 방식을 확인하거나, 원본에서 명시적으로 계산한 전체 비율을 선택하세요.",
         "verification_blocked": "자동 검증에서 불일치를 발견해 저장하지 않았습니다. 원본을 다시 열고 목록의 상세 내용을 확인하세요.",
         "issue_verification_failed": "자동 검증 실패: {detail}. 원본을 다시 여세요. 이 불일치는 무시하고 저장할 수 없습니다.",
         "err_verification_blocked": "자동 검증에서 불일치를 발견해 보고서를 저장하지 않았습니다. 원본을 다시 열고 미리보기를 확인하세요.\n{detail}",

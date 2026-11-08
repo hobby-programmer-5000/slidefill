@@ -20,6 +20,7 @@ import i18n
 import insight
 import readers
 import suggest
+from ui_timers import WindowTimers
 
 STATUS_ORDER = {"error": 0, "warn": 1, "ok": 2}
 STATUS_COLOR = {"error": "#B3261E", "warn": "#9A6700", "ok": "#1A7F37"}
@@ -122,6 +123,7 @@ class DoubtWindow:
 class App:
     def __init__(self, root):
         self.root = root
+        self.timers=WindowTimers(root)
         self.settings_file = core.settings_path(app_dir())
         self.insights_file = core.settings_path(app_dir(), core.INSIGHTS_FILE)
         self.insights = core.load_settings(self.insights_file)
@@ -151,7 +153,7 @@ class App:
         self.vars["excel"].trace_add("write", lambda *_a: self.show_files())
         self.show_files()
         self.drop = contents.DropTarget(root, self.add_files)
-        root.after(50, self.poll)
+        self.timers.after(50, self.poll)
         if self.ready():
             self.preview()
 
@@ -331,7 +333,8 @@ class App:
         state = verification.get("state")
         result_status = key in ("saved", "auto_ready", "auto_ready_doubt", "auto_ready_unread", "auto_ready_left", "select_hint", "no_placeholders", "template_first_file")
         if state in ("passed", "partial", "blocked") and result_status:
-            words += "\n" + self.t("verification_" + state, checked=verification.get("checked", 0))
+            words += "\n" + self.t("verification_" + state, checked=verification.get("checked", 0),
+                                   texts=verification.get('text_checked',0),formulas=verification.get('formula_checked',0))
         self.message.configure(text=words)
 
     def issue_text(self, issue):
@@ -348,7 +351,7 @@ class App:
         if report is None:
             self.summary.configure(text="")
             return
-        if report.blocked:
+        if report.blocked or report.incomplete:
             self.generate_button.configure(state="disabled")
         order = {key: place for place, key in enumerate(self.auto.labels)} if self.auto and not self.template_path() else {}  # as the report reads
         for item in sorted(report.items, key=lambda i: (STATUS_ORDER[i.status], order.get(i.key.casefold(), 0))):
@@ -554,7 +557,7 @@ class App:
         if self.again and not self.busy:  # a file was chosen while another was still being read
             self.again = False
             self.preview()
-        self.root.after(50, self.poll)
+        self.timers.after(50, self.poll)
 
     def set_busy(self, busy):
         self.busy = busy
@@ -685,7 +688,7 @@ class App:
         def work():
             path, source = (template, None) if template else self.auto_template(files, lang)
             preview = core.run(path, excel, insights=insights, source=source, thousands=not template)
-            if preview.blocked:
+            if preview.blocked or preview.incomplete:
                 return path, preview, VERIFICATION_BLOCKED
             if not template and self.auto.doubts:
                 return path, preview, DOUBTFUL
@@ -705,7 +708,7 @@ class App:
         if made is VERIFICATION_BLOCKED:
             self.report = preview
             self.render_report()
-            self.set_status("verification_blocked", checked=preview.verification.get("checked", 0))
+            self.set_status("verification_incomplete" if preview.incomplete else "verification_blocked", checked=preview.verification.get("checked", 0))
             return
         if made is DOUBTFUL:
             self.report = preview
@@ -874,6 +877,7 @@ class InsightWindow:
         self.shown = []
         self.hypotheses = []
         window = self.window = tk.Toplevel(app.root)
+        self.timers=WindowTimers(window)
         window.title(app.t("insight_title"))
         window.geometry(f"{app.px(820)}x{app.px(680)}")
         window.transient(app.root)
@@ -938,7 +942,7 @@ class InsightWindow:
         self.apply_button.pack(side="left", padx=small)
         ttk.Button(foot, text=app.t("insight_close"), command=window.destroy).pack(side="left")
         window.bind("<Escape>", lambda _e: window.destroy())
-        window.after(50, self.poll)
+        self.timers.after(50, self.poll)
         self.show_facts()
         self.show_calculated()
         self.make()
@@ -998,17 +1002,17 @@ class InsightWindow:
         try:
             turn, kind, value = self.results.get_nowait()
         except queue.Empty:
-            self.window.after(100, self.poll)
+            self.timers.after(100, self.poll)
             return
         if turn != self.round:
-            self.window.after(10, self.poll)
+            self.timers.after(10, self.poll)
             return
         if kind == "run":
             done, runs, found = value
             self.add_candidates(found)
             if done < runs:
                 self.show_progress(done + 1, runs)
-            self.window.after(100, self.poll)
+            self.timers.after(100, self.poll)
             return
         self.working = False
         self.bar.stop()
@@ -1018,7 +1022,7 @@ class InsightWindow:
             self.status.configure(text=self.app.t("insight_err_" + value.code, **value.params))
         else:
             self.show_candidates(value)
-        self.window.after(100, self.poll)
+        self.timers.after(100, self.poll)
 
     def show_calculated(self):
         """There from the first moment, needing no model: the program's own sentences, marked apart from what a model writes."""
@@ -1093,6 +1097,7 @@ class HelperWindow:
         self.sheets = []
         self.bases = []
         window = self.window = tk.Toplevel(app.root)
+        self.timers=WindowTimers(window)
         window.title(app.t("helper_title_auto" if plain else "helper_title"))
         window.geometry(f"{app.px(960)}x{app.px(640)}")
         window.transient(app.root)
@@ -1159,7 +1164,7 @@ class HelperWindow:
         ttk.Button(foot, text=app.t("insight_close"), command=window.destroy).pack(side="left")
         window.bind("<Escape>", lambda _e: window.destroy())
         window.bind("<Control-c>", lambda _e: self.copy())
-        window.after(50, self.poll)
+        self.timers.after(50, self.poll)
         self.run(self.load, self.loaded)
 
     # ---- background work: a large workbook takes a while, and the window should stay alive
@@ -1189,7 +1194,7 @@ class HelperWindow:
         try:
             job, done, result, error = self.results.get_nowait()
         except queue.Empty:
-            self.window.after(100, self.poll)
+            self.timers.after(100, self.poll)
             return
         if job == self.job:
             self.working = False
@@ -1199,7 +1204,7 @@ class HelperWindow:
                 self.detail.configure(text=error)
             else:
                 done(result)
-        self.window.after(100, self.poll)
+        self.timers.after(100, self.poll)
 
     # ---- reading
 

@@ -4,32 +4,36 @@
 
 소스 트리의 자동 검증 코드가 왜 필요한지, 어떤 수학을 쓰는지, 어디까지 보장하는지 설명합니다. 앱의 상태와 특수상황별 보고서 설명은 [사용자 안내](verification.ko.md), 지원하지 않는 배치와 남은 실증은 [한계 안내](limits.ko.md)를 참고하세요.
 
+여기의 수식·텍스트·정확한 중간값 개선은 **아직 릴리스하지 않은 개발 소스**이며 배포된 v0.3.0 EXE의 기능이나 새 검증 근거가 아닙니다. [현재 계약](reliability-hardening.ko.md)을 참고하세요.
+
 ## 계산된 숫자 외에 무엇을 검사하나
 
-계산이 맞아도 행 누락, 차트의 오래된 캐시, ‘데이터 편집’의 다른 숫자, 미리보기 이후 원본 변경으로 보고서가 틀릴 수 있습니다. 같은 계산 함수를 다시 부르면 그 함수의 오류까지 반복할 수 있습니다. 그래서 검증을 세 질문으로 나눕니다.
+계산이 맞아도 행 누락, 차트의 오래된 캐시, ‘데이터 편집’의 다른 숫자, 미리보기 이후 원본 변경으로 보고서가 틀릴 수 있습니다. 같은 계산 함수를 다시 부르면 그 함수의 오류까지 반복할 수 있습니다. 그래서 검증을 네 질문으로 나눕니다.
 
 1. 지원하는 원본 계산 근거를 별도의 원시 XLSX 리더로 계산해도 값이 맞는가?
-2. 직렬화한 표·차트와 내장 데이터가 채우기로 선택한 값과 일치하는가?
-3. 최종 저장하는 원본 바이트와 결과 바이트가 검사한 것과 같은가?
+2. 사용한 저장 수식과 의존 셀이 제한된 독립 수식 계산기와 일치하는가?
+3. 직렬화한 텍스트·표·차트와 내장 데이터가 검사한 값과 일치하는가?
+4. 최종 저장하는 원본 바이트와 결과 바이트가 검사한 것과 같은가?
 
 이 분리는 구현 오류를 찾는 데 도움이 됩니다. 선택한 셀이 업무 질문에 맞는지까지 독립적으로 판단하지는 않습니다. 원본 계산 근거와 스키마의 의미는 신뢰하는 명세에 포함됩니다.
 
 ## 자동 실행 경로
 
 ```text
-앱 미리보기·생성 -> core.run -> 표·차트 자리표시자 채우기
-  -> 확정 값·원본 계산 근거·도형/차트 식별 정보 기록
+앱 미리보기·생성 -> core.run -> 텍스트·표·차트 채우기
+  -> 확정 값·원본 계산 근거·문단/도형 식별 정보 기록
   -> 미리보기 직렬화 -> Session.verify
        -> rawxlsx + recipes/oracle: 지원 원본의 독립 재구성
-       -> 표 XML 또는 charts: 실제 출력과 내장 XLSX 대조
+       -> formulas/text_values: 제한된 수식 캐시·수치 텍스트
+       -> 텍스트·표 XML 또는 charts: 실제 출력과 내장 XLSX 대조
   -> 완료 / 부분 검증 / 차단
 저장 -> 미리보기의 원본 스냅샷 재사용 -> 임시 결과 -> 재검증
      -> 바이트·해시와 원본 지문 확인 -> 새 결과로만 확정
 ```
 
-`core._Run.fill_marked_shape`가 성공적으로 채운 표·차트 자리표시자를 기록하며 구조화 보고서도 포함합니다. `Session.verify`는 오류와 미지원 범위를 모으고, 확정된 오류가 하나라도 있으면 부분 검증보다 차단을 우선합니다. `Session.publish`는 최종 후보를 검사한 뒤 기존 결과를 덮어쓰지 않고 확정합니다. `app.App.generate_checked`는 일반 확인창을 통한 차단 우회를 막고, core의 저장 경로도 거절합니다.
+`core._Run`이 채운 텍스트·표·차트를 기록하며 구조화 보고서와 Word 연결 평균도 포함합니다. `Session.verify`는 오류와 미지원 범위를 모으고 확정된 오류가 하나라도 있으면 부분 검증보다 차단을 우선합니다. `Session.publish`는 최종 후보를 검사한 뒤 기존 결과를 덮어쓰지 않고 확정합니다. UI와 core 저장 경로 모두 확정된 오류와 부분 검증을 거절하며 일반 확인으로 어느 상태도 우회할 수 없습니다.
 
-텍스트만 채우면 이 검증은 작동하지 않습니다. 표시 없는 기존 템플릿 차트, 생성 문장 전체와 선택형 모델 문장을 표·차트 검사로 인증하지 않습니다. 기존의 다른 경고와 문장 검사는 계속 적용됩니다. 일반 사용에서 보고서에 증명 코드나 인증서를 첨부하지 않습니다.
+텍스트만 채워도 검증합니다. 바꾼 문단의 내용·순서를 직렬화 뒤 대조하고 직접·최신·순위 값에 원본 근거를 연결하며 `전일대비/전주대비/평균대비/최고일/최저일`을 독립 재구성합니다. 해설·모델 문장의 입력도 검사하지만 모든 문장 의미를 독립 증명하지는 않습니다. 표시 없는 기존 템플릿 내용과 임의 Office 배치는 이 수치 계약 밖입니다. 다른 기존 경고와 문장 검사도 적용하며 일반 사용에서 증명 코드나 인증서를 보고서에 첨부하지 않습니다.
 
 ## 수학적 알고리즘과 사용하는 이유
 
@@ -39,7 +43,7 @@
 
 예를 들어 `0.10 + 0.20`은 `(10 + 20) * 10^-2 = 0.30`입니다. `kernel.sum_decimals`는 유한한 십진수 두 개의 변환을 구현합니다. `layouts._cost_sum`이 식품비와 운영비의 합을 원본 합계와 비교할 때 사용하며, 다르면 원본 합계를 유지하고 경고합니다. 여러 단가 행을 지출액으로 합산하는 용도가 아닙니다.
 
-Dafny의 `Sum` 계약은 모든 유한 정수열의 합산과 종료를 증명합니다. 십진수 인코딩·복원은 테스트한 Python 코드이며 형식 증명에는 포함되지 않습니다. 명시한 그룹 집계도 이제 공통 분모로 바꿔 생성된 정수 합산을 사용합니다. 다른 통계 계산 전체를 대체한 것은 아닙니다.
+Dafny의 `Sum` 계약은 모든 유한 정수열의 합산과 종료를 증명합니다. 십진수 인코딩·복원은 테스트한 Python 코드이며 형식 증명에는 포함되지 않습니다. 명시한 앱 합계·평균도 유리수 중간값과 생성된 합산을 사용하지만 모든 통계나 어떤 행을 집계할지의 선택을 증명하지는 않습니다.
 
 ### 정확한 목록 일치
 
@@ -63,7 +67,13 @@ abs(p*s*u - r*q*u) <= t*q*s
 
 `kernel.equal_rationals`가 Fraction의 분자·양의 분모를 추출해 생성된 `RationalWithin`을 호출합니다. 이 계약은 교차곱 정수 계산이 위 실수·유리수 부등식과 같다는 것을 증명합니다. 실수 배율은 증명 전용 ghost 코드라 앱 생성 코드에는 들어가지 않습니다. Fraction 정규화·값 추출은 신뢰 경계이며 허용치의 선택이 적절하다는 증명은 아닙니다.
 
-`recipes.near`는 양쪽이 모두 정수이면 정확한 일치를 요구하며 나머지 직접/직렬화 비교는 2ULP를 사용합니다. 명시한 그룹 집계는 합·곱·평균의 중간값을 정확한 유리수로 유지하고 마지막 공개 값 경계에서 한 번 변환합니다. 독립 검사는 지원하는 십진 디코딩 연결을 재구성하고 생성된 `SumBound`로 주어진 행별 디코딩 차이의 합을 감싼 뒤 정확한 최종 정수 또는 독립적으로 변환한 float를 요구합니다. 연산 수에 따른 ULP 배수는 없습니다. 변환 규칙과 다른 부동소수점 통계는 테스트·신뢰 경계이며 IEEE 하드웨어 정리가 아닙니다. [수식과 신뢰 경계](binary-verification.ko.md#정확한-집계와-원본-디코딩-오차)를 참고하세요.
+`recipes.near`는 양쪽이 모두 정수이면 정확한 일치를 요구하며 나머지 직접/직렬화 비교는 2ULP를 사용합니다. 명시한 그룹 집계는 합·곱·평균·표시와 필요한 컨테이너 변환까지 정확한 유리수 중간값을 유지합니다. 독립 검사는 지원하는 십진 디코딩 연결을 재구성하고 생성된 `SumBound`로 주어진 행별 디코딩 차이의 합을 감싼 뒤 정확한 유리수 또는 지원하는 기존 단일 변환 표현을 요구합니다. 기록한 유리수는 정확히 일치해야 합니다. 연산 수에 따른 ULP 배수는 없습니다. 차트 정수는 float 왕복이 정확해야 하고 명시한 지원 서식의 표시 정밀도를 유지해야 합니다. 변환/서식 정책과 다른 통계 경로는 테스트·신뢰 경계이며 IEEE 하드웨어 정리가 아닙니다. [수식과 신뢰 경계](binary-verification.ko.md#정확한-집계와-원본-디코딩-오차)를 참고하세요.
+
+### 정확한 증감과 제한된 저장 수식 검사
+
+앱 합·평균·차이·비율은 읽어낸 십진 표기의 Fraction을 유지합니다. 상대 증감률은 `(현재-기준)/abs(기준)`이며 기준이 0이면 유보합니다. 퍼센트포인트 차이는 명시한 배율을 사용합니다. `text_values.py`는 명시한 원본 이력으로 수치 비교·최고/최저 자리표시자를 독립 재구성해 표시 결과를 검사하고 `automatic._document`는 Word 연결 기간 수·평균을 독립 검사합니다. 원본·날짜·지표 선택은 질문을 명시하며 올바른 업무 질문인지 증명하지는 않습니다.
+
+`formulas.py`는 명시한 Excel 문법을 별도로 해석하고 지원하는 표현·의존 셀을 유리수로 계산합니다. 최신·순위 선택 범위의 수식도 포함해 사용 수식을 검사하고 오래된 캐시와 미지원 표현을 구분합니다. [문법·형 변환·정밀도·자원 제한](reliability-hardening.ko.md#수식-문법과-제한)은 명시적입니다. Excel을 실행하거나 원본을 바꾸거나 모든 Excel 부동소수점 동작과 동등함을 증명하지 않습니다. 알 수 없는 사례는 조용히 통과시키지 않고 저장을 막습니다.
 
 ### 독립 계산·범위·무결성
 
@@ -73,7 +83,7 @@ abs(p*s*u - r*q*u) <= t*q*s
 
 SHA256 지문은 검사 사이에 원본·결과 바이트가 바뀌었는지 확인합니다. 작성자 신원이나 자료의 진실성을 인증하는 서명은 아닙니다. ZIP/XML 처리·파일시스템·마지막 검사와 결과 확정 사이의 남은 구간은 신뢰 경계입니다.
 
-십진수 표시도 `kernel.round_decimal`을 통해 증명한 정수 반올림 판단을 호출하며 실제 Excel 표시는 별도 비교합니다. [바이너리 리더·그룹·반올림 상세](binary-verification.ko.md)를 참고하세요.
+십진수·유리수 표시는 `kernel.round_decimal` / `round_rational`로 증명한 정수 반올림 판단을 호출하며 실제 Excel 표시는 별도 비교합니다. 독립 원본 근거·텍스트 검사는 앱의 `numfmt` 표시 연결을 공유하므로 독립 숫자 재구성을 제공하지만 별도의 독립 숫자 서식기는 아닙니다. [바이너리 리더·그룹·반올림 상세](binary-verification.ko.md)를 참고하세요.
 
 ## 코드별 역할
 
@@ -84,12 +94,13 @@ SHA256 지문은 검사 사이에 원본·결과 바이트가 바뀌었는지 �
 | [suggest.py](../suggest.py), [layouts.py](../layouts.py) | 보고서 선택·배치, 범위를 정한 구조화 기록·경고·십진 비용 합산. |
 | [automatic.py](../verification/automatic.py) | `Session.capture`, `verify`, `publish`: 앱 내부 조정과 최종 저장 검사. |
 | [sources.py](../verification/sources.py), [rawxlsx.py](../verification/rawxlsx.py), [recipes.py](../verification/recipes.py) | 독립 원시 리더와 명시한 원본 계산·비교 정책. |
+| [formulas.py](../verification/formulas.py), [text_values.py](../verification/text_values.py) | 제한된 저장 수식·의존 셀 검사와 독립 수치 텍스트 계산. |
 | [oracle.py](../verification/oracle.py), [charts.py](../verification/charts.py) | 구조화 의미·범위·경고 및 저장된 차트·내장 데이터 검사. |
 | [binary.py](../verification/binary.py), [compound.py](../verification/compound.py), [htmlsource.py](../verification/htmlsource.py), [numfmt.py](../numfmt.py) | 독립 바이너리·HTML 근거와 증명한 표시 반올림. |
 | [kernel.py](../verification/kernel.py), [verified_kernel.py](../verification/verified_kernel.py) | 타입 변환과 앱이 실제 호출하는 생성된 정수 코드. |
 | [Kernel.dfy](../verification/proofs/Kernel.dfy), [build.py](../verification/proofs/build.py), [receipt.json](../verification/proofs/receipt.json) | 증명 계약·고정 버전 생성·원본과 생성 코드의 바이트 동일성. |
 | [pipeline.py](../verification/pipeline.py), [check.py](../verification/check.py), [output.py](../verification/output.py), [arithmetic.py](../verification/arithmetic.py) | 개발용 구조화 표 인증과 기준/출력 검사. 이 CLI의 계약에는 일반 차트 인증이 포함되지 않습니다. |
-| [test_coverage.py](../verification/test_coverage.py), [test_automatic.py](../verification/test_automatic.py), [test_verification.py](../verification/test_verification.py) | 손상·부분/오류 우선순위·원본 변경·저장 동작·변환·구조화 사례·유한 전수 검사. |
+| [test_coverage.py](../verification/test_coverage.py), [test_automatic.py](../verification/test_automatic.py), [test_verification.py](../verification/test_verification.py), [test_formulas.py](../verification/test_formulas.py), [test_reliability.py](../verification/test_reliability.py) | 손상·부분/오류 우선순위·원본 변경·저장·수식·정밀도·텍스트·구조화 사례·유한 전수 검사. |
 
 ## 근거와 변경 방법
 

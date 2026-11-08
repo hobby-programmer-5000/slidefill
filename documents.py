@@ -9,6 +9,8 @@ import re
 import statistics
 import zipfile
 from dataclasses import dataclass, field
+from fractions import Fraction
+from verification.kernel import round_rational, sum_rationals
 
 from lxml import etree
 
@@ -68,6 +70,7 @@ class Item:
     sheet: str
     points: list
     file: int = 0
+    reference: str = ""  # explicit workbook recipe for independent before/after checks
 
 
 @dataclass
@@ -80,7 +83,7 @@ class Link:
 
     @property
     def change(self):
-        return (self.after / self.before - 1) * 100 if self.before > 0 else None
+        return (Fraction(str(self.after))/Fraction(str(self.before))-1)*100 if self.before>0 else None
 
     @property
     def moved(self):
@@ -198,7 +201,8 @@ def link(event, item):
     for side in (before, after):  # a gap in the data would stretch the comparison over more time than it says
         if (side[-1].date - side[0].date).days > (window - 1) * gap * 1.5 + 1:
             return None
-    mean_before, mean_after = sum(p.value for p in before) / window, sum(p.value for p in after) / window
+    mean_before = sum_rationals(Fraction(str(p.value)) for p in before)/window
+    mean_after = sum_rationals(Fraction(str(p.value)) for p in after)/window
     if not mean_before and not mean_after:
         return None
     return Link(event, item, mean_before, mean_after, window)
@@ -225,7 +229,7 @@ def highlights(links, count):
     half = count // 2
     chosen = list(links[:count - half])
     largest = max(found.before for found in links) or 1
-    sharp = sorted((found for found in links if found not in chosen and found.change is not None and found.before >= largest * SMALLEST_SHARE), key=lambda found: -abs(found.change))
+    sharp = sorted((found for found in links if found not in chosen and found.change is not None and found.before >= largest * Fraction(str(SMALLEST_SHARE))), key=lambda found: -abs(found.change))
     chosen += sharp[:half]
     chosen += [found for found in links if found not in chosen][:count - len(chosen)]
     return sorted(chosen, key=lambda found: found.event.date)
@@ -236,7 +240,11 @@ def period_text(date, lang):
 
 
 def change_text(found):
-    return f"{found.change:+.1f}%" if found.change is not None else f"0 → {found.after:,.0f}"
+    return f"{round_rational(found.change,1):+.1f}%" if found.change is not None else f"{round_rational(found.before,0):,.0f} → {round_rational(found.after,0):,.0f}"
+
+
+def mean_text(value):
+    return f"{round_rational(value,0):,.0f}"
 
 
 def key_paragraphs(document):
@@ -270,9 +278,9 @@ def headline(document, links, lang):
     events = len({(found.event.date, found.event.text) for found in links})
     if lang == "ko":
         return (f"문서의 날짜 기록 {total}건 중 {events}건이 수치의 항목과 맞습니다. 전후 변화가 가장 큰 곳은 {top.item.name}, "
-                f"{period_text(top.event.date, lang)} 전 {top.window}개 기간 평균 {top.before:,.0f}에서 후 {top.window}개 기간 평균 {top.after:,.0f}로 {change_text(top)}입니다.")
+                f"{period_text(top.event.date, lang)} 전 {top.window}개 기간 평균 {mean_text(top.before)}에서 후 {top.window}개 기간 평균 {mean_text(top.after)}로 {change_text(top)}입니다.")
     return (f"{events} of the document's {total} dated entries name a figure in the workbooks. The largest move is {top.item.name} around {period_text(top.event.date, lang)}: "
-            f"a mean of {top.before:,.0f} over the {top.window} periods before, {top.after:,.0f} over the {top.window} after, {change_text(top)}.")
+            f"a mean of {mean_text(top.before)} over the {top.window} periods before, {mean_text(top.after)} over the {top.window} after, {change_text(top)}.")
 
 
 def caution(lang):
@@ -283,11 +291,17 @@ def caution(lang):
 def table_rows(links, count, lang):
     """Rows of (raw, text, format), as a range from a workbook would be."""
     ko = lang == "ko"
-    window = links[0].window if links else 4
+    selected=highlights(links,count)
+    windows={found.window for found in selected}
+    window = next(iter(windows)) if len(windows)==1 else 4
     head = ("시기", "항목", "문서 기록", f"전 {window}개 평균", f"후 {window}개 평균", "변화") if ko else ("When", "Figure", "In the document", f"Mean of {window} before", f"Mean of {window} after", "Change")
+    if len(windows)>1:
+        head=("시기","항목","문서 기록","이전 평균 (기간 수)","이후 평균 (기간 수)","변화") if ko else ("When","Figure","In the document","Mean before (periods)","Mean after (periods)","Change")
     rows = [[(word, word, "General") for word in head]]
-    for found in highlights(links, count):
-        cells = (period_text(found.event.date, lang), found.item.name, found.event.text, f"{found.before:,.0f}", f"{found.after:,.0f}", change_text(found))
+    for found in selected:
+        suffix=f" ({found.window})" if len(windows)>1 else ""
+        cells = (period_text(found.event.date, lang), found.item.name, found.event.text,
+                 f"{round_rational(found.before,0):,.0f}"+suffix,f"{round_rational(found.after,0):,.0f}"+suffix, change_text(found))
         rows.append([(word, word, "General") for word in cells])
     return rows
 

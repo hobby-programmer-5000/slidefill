@@ -5,9 +5,9 @@
 Choose an Excel workbook and get a PowerPoint report, or fill your own company template from it, so a weekly or monthly report takes one key press instead of an hour of copy and paste.
 
 > [!IMPORTANT]
-> **Review reports before sharing.** SlideFill uses explicit calculation rules and automatically checks supported tables and charts. Optional AI suggests wording. A passed check does not certify source accuracy, business meaning or every Office layout.
+> **Review reports before sharing.** SlideFill uses explicit calculation rules and checks supported values and saved output. Optional AI suggests wording. A passed check does not certify source accuracy, business meaning or every Office layout.
 >
-> Confirm the selected sheets, measures, aggregation, periods, units and warnings; inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. **Excel formulas are read from saved results, not recalculated.** Use a recalculated, saved workbook. See [accuracy and supported scope](#accuracy-and-supported-scope).
+> Confirm the selected sheets, measures, aggregation, periods, units and warnings; inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. Use a recalculated, saved workbook. The [unreleased reliability changes](doc/reliability-hardening.md) add bounded formula-cache and text checks and refuse saving when independent coverage is incomplete; they are not part of the published v0.3.0 executable.
 
 [![SlideFill demo: preview values and create a report](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4)
 
@@ -37,9 +37,9 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 
 ## Accuracy and supported scope
 
-SlideFill checks supported table/chart values and representations automatically, but does not certify that the source data is true, the selected measure answers your business question, or every input format and Office layout is correct. A passed check covers the checks performed; a partial check leaves stated gaps. Review the sheet, period, unit, conditions and warnings before using a report.
+SlideFill checks supported values and saved representations automatically, but does not certify that the source data is true, the selected measure answers your business question, or every input format and Office layout is correct. Review the sheet, period, unit, conditions and warnings before using a report.
 
-Formula cells use their saved results; SlideFill does not recalculate Excel formulas. For formula-based input, recalculate and save the workbook in Excel before using it. The table/chart check does not certify all generated prose or text-only fills.
+The development source retains exact rational calculation intermediates, independently checks a bounded set of saved formulas and numeric text placeholders, and blocks known mismatches **and partial coverage**. It still reads saved workbooks rather than recalculating them in Excel, and does not certify all prose or layouts. See [the exact contract and remaining limits](doc/reliability-hardening.md). These changes are unreleased; v0.3.0 has the earlier table/chart checks described in its release notes.
 
 See [automatic checks and what to do](doc/verification.md), [supported layouts](doc/limits.md), and [algorithms, code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
 
@@ -231,7 +231,7 @@ The Excel and PowerPoint checks need Office installed, and the format comparison
 
 See [supported layouts and remaining verification](doc/limits.md). Public-file regression checks do not establish compatibility with your company's files or replace a person's trial of the executable.
 
-Automatic CPU verification runs inside preview and saving for filled tables and category/date/XY charts. Known mismatches block saving; incomplete independent coverage is displayed. No local model or separate user command is required. See the [verification guide](doc/verification.md) for the exact coverage.
+Automatic CPU verification runs inside preview and saving for filled tables and category/date/XY charts. The unreleased source also checks text inputs and supported formula caches, and blocks incomplete coverage. No local model or separate user command is required. See the [verification guide](doc/verification.md) for the exact coverage.
 
 ## Project layout
 
@@ -258,7 +258,7 @@ samples/            made-up example files
 
 - [@hobby-programmer-5000](https://github.com/hobby-programmer-5000): idea, requirements, testing
 - **Claude** (Anthropic): design and implementation, pair-programmed in [Claude Code](https://claude.com/claude-code)
-- **Codex** (OpenAI): participated from the eighth measurement on v0.2.0 through v0.3.0: measurement, regression fixes, bounded layout support, automatic CPU verification and proof integration, build/privacy checks, Windows 10/Office validation, documentation and release preparation. See [the work history](doc/development-history.md).
+- **Codex** (OpenAI): participated from the eighth measurement on v0.2.0 onward, including v0.3.0 and the current unreleased numeric hardening: measurement, regression fixes, bounded layout support, automatic CPU verification and proof integration, build/privacy checks, Windows 10/Office validation, documentation and release preparation. See [the work history](doc/development-history.md).
 
 ## License
 

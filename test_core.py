@@ -249,6 +249,7 @@ class Base(unittest.TestCase):
 
     def go(self, xlsx=None):
         self.prs.save(self.pptx)
+        if os.path.exists(self.out):self.out=core.output_path(self.dir,self.pptx)
         return core.run(self.pptx, xlsx or self.xlsx, self.out), Presentation(self.out)
 
     @staticmethod
@@ -4992,6 +4993,7 @@ class InsightPlaceholder(Base):
         if not self.slide.shapes:
             textbox_runs(self.slide, ["{{" + (key or self.KEY) + "}}"])
         self.prs.save(self.pptx)
+        if os.path.exists(self.out):self.out=core.output_path(self.dir,self.pptx)
         report = core.run(self.pptx, self.book(rows, name), self.out, insights=insights)
         return report, Presentation(self.out).slides[0].shapes[0].text_frame.text
 

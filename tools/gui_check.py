@@ -11,12 +11,14 @@ Run: .venv\\Scripts\\python.exe -X utf8 tools\\gui_check.py <work folder>
 import ctypes
 import ctypes.wintypes
 import json
+import io
 import os
 import sys
 import threading
 import time
 import tkinter as tk
 import zipfile
+import xml.etree.ElementTree as ET
 from tkinter import font as tkfont
 from tkinter import messagebox
 
@@ -113,6 +115,66 @@ def reports():
     return sorted(n for n in os.listdir(work) if n.endswith(".pptx") and n.startswith(("sample_template_", "issues_")))
 
 
+def reliability_checks(root,ui):
+    """Default UI must not bypass stale/incomplete checks, in either language."""
+    template=os.path.join(work,'reliability-template.pptx')
+    prs=Presentation();slide=prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_textbox(0,0,9144000,914400).text='{{Data!B2}}'
+    prs.save(template)
+    xml='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    metrics=[]
+    for label,expression,cached,expected in (
+            ('stale','B3*2',999,'blocked'),
+            ('unknown','UNKNOWN(B3)',12,'partial'),
+            ('verified','B3*2',68,'passed')):
+        path=os.path.join(work,'reliability-'+label+'.xlsx')
+        wb=openpyxl.Workbook();wb.active.title='Data'
+        for row in [['Item','Amount'],['A',12],['B',34]]:wb.active.append(row)
+        wb.save(path)
+        stream=io.BytesIO()
+        with zipfile.ZipFile(path) as src,zipfile.ZipFile(stream,'w') as dst:
+            for entry in src.infolist():
+                data=src.read(entry.filename)
+                if entry.filename=='xl/worksheets/sheet1.xml':
+                    node=ET.fromstring(data)
+                    cell=next(c for c in node.findall('.//'+xml+'c') if c.get('r')=='B2')
+                    for child in list(cell):cell.remove(child)
+                    ET.SubElement(cell,xml+'f').text=expression
+                    ET.SubElement(cell,xml+'v').text=str(cached)
+                    data=ET.tostring(node,encoding='utf-8')
+                dst.writestr(entry,data)
+        with open(path,'wb') as stream_file:stream_file.write(stream.getvalue())
+        ui.own_template.set(True);ui.vars['template'].set(template)
+        ui.vars['excel'].set(path);ui.vars['output'].set(work)
+        press(root,'<F5>');wait(root,ui)
+        check(label+' preview has explicit verification state',ui.report and ui.report.verification['state']==expected)
+        check(label+' generate button state',str(ui.generate_button.cget('state'))==('normal' if expected=='passed' else 'disabled'))
+        before=set(os.listdir(work));questions=len(asked)
+        press(root,'<Control-g>');wait(root,ui)
+        made=[name for name in set(os.listdir(work))-before if name.startswith('reliability-template_') and name.endswith('.pptx')]
+        if expected=='passed':
+            check('verified formula can be generated',len(made)==1 and ui.status[0]=='saved')
+            check('verified text retains the formula value',Presentation(ui.last_output).slides[0].shapes[0].text_frame.text=='68')
+        else:
+            check(label+' Ctrl+G cannot save',not made)
+            check(label+' cannot fall through ordinary confirmation',len(asked)==questions)
+            check(label+' status explains refusal',ui.status[0]==('verification_blocked' if expected=='blocked' else 'verification_incomplete'))
+        for lang in ('en','ko'):
+            if ui.lang!=lang:press(root,'<Control-l>');root.update()
+            check(label+' '+lang+' has no missing counter placeholders',not any(word in ui.message.cget('text') for word in ('{texts}','{formulas}','{checked}')))
+            shot(root,'reliability-'+label+'-'+lang)
+        if ui.lang!='en':press(root,'<Control-l>');root.update()
+    for width,height in ((900,600),(1200,800)):
+        root.geometry(f'{width}x{height}');root.update()
+        for lang in ('en','ko'):
+            if ui.lang!=lang:press(root,'<Control-l>');root.update()
+            bottom=ui.message.winfo_rooty()-root.winfo_rooty()+ui.message.winfo_height()
+            check(f'verification status fits {width}x{height} {lang}',bottom<=root.winfo_height())
+            metrics.append({'requested':[width,height],'actual':[root.winfo_width(),root.winfo_height()],'language':lang,'status_fits':bottom<=root.winfo_height()})
+            shot(root,f'reliability-size-{width}-{height}-{lang}')
+    with open(os.path.join(work,'reliability-ui.json'),'w',encoding='utf-8') as output:json.dump(metrics,output,indent=2)
+
+
 def main():
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -150,7 +212,7 @@ def main():
     press(root, "<Control-l>")
     root.update()
     verified = ui.report.verification
-    expected_status = i18n.text("ko", "select_hint") + ("\n" + i18n.text("ko", "verification_" + verified["state"], checked=verified["checked"]) if verified else "")
+    expected_status = i18n.text("ko", "select_hint") + ("\n" + i18n.text("ko", "verification_" + verified["state"], checked=verified["checked"],texts=verified.get('text_checked',0),formulas=verified.get('formula_checked',0)) if verified else "")
     check("switching with a row selected leaves no stray text", ui.message.cget("text") == expected_status,
           ui.message.cget("text"))
     press(root, "<Control-l>")
@@ -718,7 +780,14 @@ def main():
     check("language survives a restart", ui.lang == "en")
     check("paths survive a restart", ui.vars["excel"].get() == EXCEL and ui.vars["template"].get() == TEMPLATE)
     shot(root, "restart_en")
+    reliability_checks(root,ui)
+    owned_jobs=tuple(ui.timers.pending|ui.drop.timers.pending)
     root.destroy()
+    check('closing the window clears owned polling callbacks',ui.timers.closed and not ui.timers.pending and not ui.drop.timers.pending)
+    for job in owned_jobs:
+        try:root.tk.call('after','info',job);removed=False
+        except tk.TclError:removed=True
+        check('closed-window timer is absent from the Tcl queue',removed)
 
     print("RESULT: " + ("FAIL " + str(len(failures)) if failures else "PASS"))
     return 1 if failures else 0

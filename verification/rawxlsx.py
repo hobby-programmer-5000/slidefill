@@ -37,6 +37,8 @@ class Sheet:
     epoch1904: bool = False
     row_levels: dict = None
     condition_values: dict = None  # independent delimited-text normalization for filters
+    formulas: dict = None  # cached results need a separate formula/dependency audit
+    formula_regions: list = None  # array/data-table results can omit a per-cell <f>
 
     def get(self, ref):
         return self.cells.get(ref)
@@ -50,6 +52,7 @@ class Sheet:
 
 def workbook(path):
     with ZipFile(path) as z:
+        if len(z.namelist())!=len(set(z.namelist())):raise ValueError('duplicate source ZIP member')
         shared = []
         if 'xl/sharedStrings.xml' in z.namelist():
             shared = [''.join(n.itertext()) if not n.findall('.//' + S + 't') else ''.join(t.text or '' for t in n.findall('.//' + S + 't'))
@@ -67,18 +70,32 @@ def workbook(path):
         properties=bookroot.find(S+'workbookPr')
         epoch1904=properties is not None and properties.get('date1904') in ('1','true')
         for tab in bookroot.findall('.//' + S + 'sheet'):
+            if tab.get('name','').casefold() in {name.casefold() for name in result}:
+                raise ValueError('duplicate source sheet name')
             target = relations[tab.get(R + 'id')]
             member = target.lstrip('/') if target.startswith('/') else posixpath.normpath('xl/' + target)
             root = ET.fromstring(z.read(member))
-            cells, formats, merges, types = {}, {}, [], {}
+            cells, formats, merges, types, formulas, regions = {}, {}, [], {}, {}, []
             for n in root.findall('.//' + S + 'sheetData/' + S + 'row/' + S + 'c'):
                 ref, typ = n.get('r'), n.get('t')
+                if typ not in (None,'n','s','inlineStr','str','b','e','d'):
+                    raise ValueError('unsupported source cell type')
+                r, c = position(ref or '')
+                if r>1048576 or c>16384 or ref in formats:
+                    raise ValueError('duplicate or out-of-grid source cell')
                 text = n.findtext(S + 'v')
+                formula = n.find(S + 'f')
+                if formula is not None:
+                    formulas[ref] = {'text': formula.text or '', 'kind': formula.get('t', 'normal'),
+                                     'shared': formula.get('si'), 'range': formula.get('ref')}
+                    if formula.get('t') in ('array', 'dataTable') and formula.get('ref'):
+                        regions.append(formula.get('ref'))
                 if typ == 's' and text is not None:
                     text = shared[int(text)]
                 elif typ == 'inlineStr':
                     text = ''.join(t.text or '' for t in n.findall('.//' + S + 't'))
                 elif typ == 'b':
+                    if text not in ('0','1'):raise ValueError('invalid source boolean')
                     text = True if text == '1' else False
                 elif typ == 'e':
                     text = 'ERROR:' + str(text)
@@ -90,7 +107,18 @@ def workbook(path):
                 merges.append((top,left,bottom,right))
             levels={int(n.get('r')):int(n.get('outlineLevel','0')) for n in root.findall('.//'+S+'sheetData/'+S+'row') if n.get('r')}
             if any(not 0<=v<=7 for v in levels.values()):raise ValueError('invalid row outline level')
-            result[tab.get('name')] = Sheet(cells,merges,formats,types,epoch1904,row_levels=levels)
+            anchors = {}
+            for ref,node in formulas.items():
+                if node['kind']=='shared' and node['text']:
+                    if node['shared'] is None or node['shared'] in anchors:
+                        raise ValueError('missing or duplicate shared-formula identity')
+                    anchors[node['shared']] = (ref,node)
+            for ref, node in formulas.items():
+                if node['kind'] == 'shared' and not node['text'] and node['shared'] in anchors:
+                    origin, anchor = anchors[node['shared']]
+                    node.update(text=anchor['text'], origin=origin, range=anchor['range'])
+            result[tab.get('name')] = Sheet(cells,merges,formats,types,epoch1904,row_levels=levels,
+                                            formulas=formulas, formula_regions=regions)
     return result
 
 
