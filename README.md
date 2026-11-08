@@ -4,6 +4,11 @@
 
 Choose an Excel workbook and get a PowerPoint report, or fill your own company template from it, so a weekly or monthly report takes one key press instead of an hour of copy and paste.
 
+> [!IMPORTANT]
+> **Review reports before sharing.** SlideFill uses explicit calculation rules and automatically checks supported tables and charts. Optional AI suggests wording. A passed check does not certify source accuracy, business meaning or every Office layout.
+>
+> Confirm the selected sheets, measures, aggregation, periods, units and warnings; inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. **Excel formulas are read from saved results, not recalculated.** Use a recalculated, saved workbook. See [accuracy and supported scope](#accuracy-and-supported-scope).
+
 [![SlideFill demo: preview values and create a report](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4)
 
 [Watch the demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4). Original synthetic data; a scripted UI demo from the release source on Windows 10. The finished report is rendered by PowerPoint on the host.
@@ -33,6 +38,8 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 ## Accuracy and supported scope
 
 SlideFill checks supported table/chart values and representations automatically, but does not certify that the source data is true, the selected measure answers your business question, or every input format and Office layout is correct. A passed check covers the checks performed; a partial check leaves stated gaps. Review the sheet, period, unit, conditions and warnings before using a report.
+
+Formula cells use their saved results; SlideFill does not recalculate Excel formulas. For formula-based input, recalculate and save the workbook in Excel before using it. The table/chart check does not certify all generated prose or text-only fills.
 
 See [automatic checks and what to do](doc/verification.md), [supported layouts](doc/limits.md), and [algorithms, code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
 
