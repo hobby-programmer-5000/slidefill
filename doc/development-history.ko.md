@@ -25,3 +25,15 @@ EXE는 18,655,237바이트, SHA256 `d19d0404311b22f42fa6dc36edc6c384e591030d59d6
 8차 입력은 수정 후 회귀 자료가 됐습니다. 이후 처음 보는 새 파일의 공정 정확도 측정은 없습니다. 비공개 회사 파일·Windows 11·두 번째 물리 PC·독립적인 사람의 직접 조작·모든 차트의 실제 데이터 편집 창은 미시험입니다. 자동 조작 데모를 사람의 사용성 시험으로 세지 않습니다. 원하지 않은 지표를 고를 수 있고 미지원 입력은 부분 검증으로 남을 수 있습니다. 검사 통과는 명시한 계약 범위이며 앱 전체의 증명이나 원본의 진실성 보장이 아닙니다.
 
 원본 코드·문서는 [MIT](../LICENSE)를 유지하고 구성요소는 [각자의 조건](../THIRD-PARTY-NOTICES.md)을 따릅니다. 데모는 직접 만든 가상 자료를 씁니다. 비공개 Windows 미디어나 제3자의 원본 통합 문서·템플릿은 앱과 배포하지 않습니다.
+
+## GitHub 커밋 기여 표기
+
+README에는 프로젝트의 역할과 이력을 적습니다. GitHub는 커밋 메타데이터와 계정에 연결된 이메일로 작성자를 연결합니다. 이 프로젝트에서 Codex가 참여한 변경에는 본문 뒤 빈 줄 다음에 아래 줄을 한 번 넣습니다.
+
+```text
+Co-authored-by: Codex <noreply@openai.com>
+```
+
+이는 [공식 Codex 소스](https://github.com/openai/codex/blob/main/codex-rs/ext/git-attribution/src/world_state.rs)의 표기입니다. [GitHub 공동작성자 형식](https://docs.github.com/en/pull-requests/how-tos/commit-changes/creating-a-commit-with-multiple-authors)을 따르고 사람의 작성자와 실제 참여한 도구를 사실대로 유지합니다.
+
+v0.3.0 커밋 `280af57`은 본문에 Codex 참여를 설명했지만 이 줄을 누락했습니다. 이번 후속 문서 커밋에는 정식 공동작성자 표기를 넣고 앞으로의 규칙을 기록합니다. 공개한 v0.3.0 태그와 검증한 EXE는 원래 스냅샷을 유지합니다.

@@ -45,3 +45,11 @@
 
 - 회사 자료나 남의 템플릿을 `samples/`에 넣지 않는다. 샘플은 `tools/make_samples.py`로 직접 만든다.
 - 앱 이름에 Excel, PowerPoint 같은 Microsoft 상표를 쓰지 않는다.
+
+
+## 커밋 기여 표기
+
+- 실제 작업에 참여한 AI 도구를 커밋 본문과 개발 이력에 사실대로 적는다. Codex가 참여한 커밋에는 아래 줄을 본문 뒤 빈 줄 다음에 한 번 넣는다.
+- `Co-authored-by: Codex <noreply@openai.com>`
+- 사람의 작성자 identity는 유지한다. 다른 도구의 이름을 관성적으로 붙이지 않으며 README의 기여자 설명과 GitHub 커밋 메타데이터를 구분한다.
+- 게시한 커밋·태그는 기여 표기만을 위해 다시 쓰지 않는다. 후속 변경에는 올바른 공동작성자 줄을 넣고 `git interpret-trailers --parse`와 GitHub의 연결 계정을 확인한다.
