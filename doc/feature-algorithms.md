@@ -6,6 +6,42 @@ This is a feature-by-feature reference for the development source at `d58471b`. 
 
 The arithmetic, source selection, descriptive rules and optional model wording have different guarantees. Exact arithmetic establishes an answer to a declared calculation. It cannot establish that the chosen measure, source or business definition was appropriate.
 
+## Arithmetic and error boundaries
+
+Use two categories **within each feature**:
+
+- **A — mathematically determined work:** once the decoded operands, selected records and operation are fixed, a definite result follows. The main arithmetic paths retain rational intermediates; specified comparisons and rounding have explicit rules.
+- **B — fallible boundaries:** reading/choosing operands, choosing the calculation's meaning, interpreting its result, and converting or presenting it can disagree with the intended report. Many of these steps are deterministic code too. Deterministic behavior alone does not make a business choice correct.
+
+Category A does not mean the implementation can never contain a bug. It describes where the mathematical answer is well defined and the implementation uses the stated exact operations. The six proved executable kernel contracts cover a small part of that implementation; decoders, callers, shared bridges and the complete app are not thereby proved.
+
+| Feature or stage | A — what calculation can determine | B — where an error or misleading result can enter |
+|---|---|---|
+| Reading source values | Represent an established integer/decoded decimal as an exact rational. | Source mistakes/staleness, decoding precision, numeric-text interpretation, dates, units and missing-value meaning. Arithmetic cannot recover information already lost here. |
+| Sum/product/count/mean | Sum or multiply declared operands; count qualifying records; divide a declared total by a declared count. | Wrong rows/columns, overlapping totals, blank handling, row-mean vs cell-mean, equal weights vs denominator weights. |
+| Relative and point change | `(current-base)/abs(base)` with a nonzero base; `(current-base)*scale` for points. | Wrong comparison period, rate/amount classification, wrong scale/denominator or an inappropriate business comparison. |
+| Latest/extreme/rank | Order established dates, select extrema/ties, compute `1+count(values greater)` in a declared set. | Date parsing, omitted candidates/window, and semantic policies such as placing Other last. The latter is not pure numeric ranking. |
+| Descriptive statistics | Calculate the declared median, MAD, spread, change and threshold predicate. | Whether “three spreads and 7%” means an important anomaly in this business. A threshold being met is not evidence of a cause or statistical significance. |
+| Word before/after | Compute exact means/differences for two declared source windows. | Name/event matching, event-date index, window size, sparse periods and causal interpretation. Document-number overlap is only a hint. |
+| Saved-formula audit | Independently evaluate the expected rational result of a supported expression. | Parser/grammar coverage, operand decoding and the two-ULP noninteger cache policy; this is not exact bit identity or a complete Excel engine. |
+| Cross-file direction | Compare signs of supplied changes under the stated rules. | Period/basis compatibility and percentages extracted from formatted text with float; display rounding can change a tiny move's classification. No correlation is calculated. |
+| Numeric display and PPTX | Apply the declared rounding rule; compare supported saved strings, integers, dimensions, order and data bindings. | General's digit limit, chart float conversion/format policy, axes/labels, overflow, clipping and native Office layout. The contents sketch can omit Fraction-valued series. |
+| Optional insight prose | Compare citation IDs and evaluate the specified rule predicates. | Probabilistic wording, missed semantic errors, six-significant-digit number normalization and user edits that are not re-filtered. This is not exact arithmetic certification. |
+| Final verification/save | Reconstruct declared numeric evidence, compare supported saved representations, check fingerprints and publish to a new name. | A wrong declared recipe/business scope, shared decoder/formatter errors, uncovered prose/layout and runtime/filesystem assumptions. Independent paths can still share a faulty bridge. |
+
+For example, the mean of rates `100/100` and `0/900` is exactly **50%**, while the combined rate is exactly **10%**. Both arithmetic answers are correct for their definitions. Choosing which definition belongs in the report is category B. Likewise an exact Word mean does not establish that a dated paragraph refers to that series, and an exact MAD does not establish that a point is a business error.
+
+### What the current guard does about errors
+
+| Situation | Current handling / remaining responsibility |
+|---|---|
+| A supported source-to-output mismatch or stale supported formula cache is detected | Block saving. |
+| Independent numeric coverage is unknown/unsupported | Partial; refuse saving without a generic override. |
+| Automatic business selection is doubtful | Present the doubt; changing the selection recomputes it, while keeping it adds a qualification. Numeric checks can still pass for that declared choice. |
+| Source truth, every sentence or arbitrary visual layout is uncertain | There is no universal automatic certification. Some warnings help, but the intended definition and final presentation still need confirmation. |
+
+The strongest supported claim is therefore: **the declared supported calculation and its saved numeric representation passed the implemented checks.** This evidence concerns calculation/transfer consistency. The appropriateness of the business definition and the final presentation needs separate confirmation. The sections below identify the exact operations and boundaries for each feature.
+
 ## Feature map
 
 | Action or feature | Processing | Details |
