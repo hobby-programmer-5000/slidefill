@@ -26,6 +26,7 @@ STATUS_COLOR = {"error": "#B3261E", "warn": "#9A6700", "ok": "#1A7F37"}
 FONT_FAMILY = "Malgun Gothic"
 SETTINGS_KEYS = ("template", "excel", "output", "lang")
 DOUBTFUL = object()  # what a run returns in place of a report when a person should look first
+VERIFICATION_BLOCKED = object()
 FILE_PATTERN = " ".join("*" + ext for ext in readers.ALL_TYPES + readers.DOCUMENT_TYPES)
 
 
@@ -241,7 +242,7 @@ class App:
         self.helper_button = ttk.Button(actions, command=self.open_helper)
         self.helper_button.grid(row=0, column=3, padx=(self.px(6), 0), ipady=self.px(3))
         self.summary = ttk.Label(actions, style="Summary.TLabel", anchor="e")
-        self.summary.grid(row=0, column=4, sticky="ew")
+        self.summary.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(self.px(4),0))
 
         table = ttk.Frame(main)
         table.grid(row=3, column=0, sticky="nsew")
@@ -325,7 +326,13 @@ class App:
 
     def render_status(self):
         key, params = self.status
-        self.message.configure(text=self.t(key, **params))
+        words = self.t(key, **params)
+        verification = getattr(self.report, "verification", {}) if self.report else {}
+        state = verification.get("state")
+        result_status = key in ("saved", "auto_ready", "auto_ready_doubt", "auto_ready_unread", "auto_ready_left", "select_hint", "no_placeholders", "template_first_file")
+        if state in ("passed", "partial", "blocked") and result_status:
+            words += "\n" + self.t("verification_" + state, checked=verification.get("checked", 0))
+        self.message.configure(text=words)
 
     def issue_text(self, issue):
         return self.t("issue_" + issue.code, **issue.params)
@@ -341,6 +348,8 @@ class App:
         if report is None:
             self.summary.configure(text="")
             return
+        if report.blocked:
+            self.generate_button.configure(state="disabled")
         order = {key: place for place, key in enumerate(self.auto.labels)} if self.auto and not self.template_path() else {}  # as the report reads
         for item in sorted(report.items, key=lambda i: (STATUS_ORDER[i.status], order.get(i.key.casefold(), 0))):
             value = self.issue_text(item.issues[0]) if item.issues and (item.status == "error" or not item.value) else item.value
@@ -364,6 +373,9 @@ class App:
         if item is None:
             return
         lines = [self.issue_text(issue) for issue in item.issues]
+        verification = getattr(self.report, "verification", {})
+        if verification.get("state") == "partial":
+            lines.append(self.t("verification_partial", checked=verification.get("checked", 0)))
         if not lines:
             label, source = self.plain_words(item)
             lines = [f"{label} → {item.value}" + (f"  ({source})" if source else "")]
@@ -673,12 +685,14 @@ class App:
         def work():
             path, source = (template, None) if template else self.auto_template(files, lang)
             preview = core.run(path, excel, insights=insights, source=source, thousands=not template)
+            if preview.blocked:
+                return path, preview, VERIFICATION_BLOCKED
             if not template and self.auto.doubts:
                 return path, preview, DOUBTFUL
             problems = preview.count("error")
             if problems:
                 return path, preview, None
-            return path, preview, core.run(path, excel, core.output_path(folder, path), insights, thousands=not template)
+            return path, preview, core.run(path, excel, core.output_path(folder, path), insights, source=preview.source_snapshot, thousands=not template)
 
         self.start(work, lambda result, error: self.generate_checked(result, error, excel, folder, not template), "generating")
 
@@ -688,6 +702,11 @@ class App:
             self.set_status("start_hint")
             return
         template, preview, made = result
+        if made is VERIFICATION_BLOCKED:
+            self.report = preview
+            self.render_report()
+            self.set_status("verification_blocked", checked=preview.verification.get("checked", 0))
+            return
         if made is DOUBTFUL:
             self.report = preview
             self.render_report()
@@ -701,7 +720,7 @@ class App:
                 self.set_status("select_hint")
                 return
             insights = dict(self.insights)
-            self.start(lambda: core.run(template, excel, core.output_path(folder, template), insights, thousands=thousands),
+            self.start(lambda: core.run(template, excel, core.output_path(folder, template), insights, source=preview.source_snapshot, thousands=thousands),
                        self.generate_done, "generating")
             return
         self.generate_done(made, None)

@@ -11,6 +11,7 @@ import operator
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from verification.kernel import round_decimal
 
 from openpyxl.utils.datetime import WINDOWS_EPOCH, from_excel
 
@@ -359,7 +360,7 @@ def _render_number(value, tokens, negate):
 
 def _digits(number, int_digits, frac_digits, grouping):
     """Digits fill placeholders outward from the point. A leftover 0 prints a zero; # and ? print nothing."""
-    rounded = number.quantize(Decimal(1).scaleb(-len(frac_digits)), rounding=ROUND_HALF_UP)
+    rounded = round_decimal(number,len(frac_digits))
     whole, _, frac = f"{rounded:f}".partition(".")
     frac = frac.rstrip("0")
     frac += "0" * frac_digits[len(frac):].count("0")

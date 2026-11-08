@@ -10,6 +10,7 @@ import datetime as dt
 import html.parser
 import io
 import os
+import posixpath
 import re
 import struct
 import xml.etree.ElementTree as ET  # expat fetches no external entities
@@ -108,37 +109,72 @@ def _from_text(path, raw, ext):
 
 
 class _Tables(html.parser.HTMLParser):
-    """Rows of every <table>, each cell as (text, rows it spans, columns it spans)."""
+    """Each nested table gets a sheet; the parent cell retains a sheet marker."""
 
-    def __init__(self):
+    def __init__(self, stem="Sheet"):
         super().__init__(convert_charrefs=True)
-        self.tables = []
-        self.row = None
-        self.cell = None
-        self.span = (1, 1)
+        self.tables, self.names, self.stack = [], [], []
+        self.stem, self.used = stem, 0
+
+    def _finish_cell(self):
+        if not self.stack or self.stack[-1]["cell"] is None:
+            return
+        frame = self.stack[-1]
+        parts, down, across = frame["cell"]
+        self.used += down * across
+        if self.used > 2_000_000:
+            raise ValueError("HTML tables exceed cell budget")
+        frame["row"].append((" ".join("".join(parts).split()), down, across))
+        frame["cell"] = None
+
+    def _finish_row(self):
+        self._finish_cell()
+        if self.stack:
+            frame = self.stack[-1]
+            if frame["row"]:
+                frame["table"].append(frame["row"])
+            frame["row"] = None
 
     def handle_starttag(self, tag, attrs):
         if tag == "table":
-            self.tables.append([])
-        elif tag == "tr" and self.tables:
-            self.row = []
-        elif tag in ("td", "th") and self.row is not None:
-            self.cell = []
+            if len(self.stack) >= 32 or len(self.tables) >= 256:
+                raise ValueError("HTML nesting/table budget exceeded")
+            name = _title(self.stem if not self.tables else f"{self.stem} {len(self.tables) + 1}", self.names)
+            if self.stack:
+                parent = self.stack[-1]
+                if parent["cell"] is None:
+                    raise ValueError("nested HTML table is outside a parent cell")
+                parent["cell"][0].append(" [" + name + "] ")
+            rows = []
+            self.tables.append(rows)
+            self.names.append(name)
+            self.stack.append({"table": rows, "row": None, "cell": None})
+        elif tag == "tr" and self.stack:
+            self._finish_row()
+            self.stack[-1]["row"] = []
+        elif tag in ("td", "th") and self.stack and self.stack[-1]["row"] is not None:
+            self._finish_cell()
             given = dict(attrs)
-            self.span = tuple(min(MAX_SPAN, max(1, _whole(given.get(name)))) for name in ("rowspan", "colspan"))
+            down, across = (min(MAX_SPAN, max(1, _whole(given.get(name)))) for name in ("rowspan", "colspan"))
+            self.stack[-1]["cell"] = ([], down, across)
 
     def handle_endtag(self, tag):
-        if tag in ("td", "th") and self.cell is not None:
-            self.row.append((" ".join("".join(self.cell).split()), *self.span))
-            self.cell = None
-        elif tag == "tr" and self.row is not None:
-            if self.tables and self.row:
-                self.tables[-1].append(self.row)
-            self.row = None
+        if tag in ("td", "th"):
+            self._finish_cell()
+        elif tag == "tr":
+            self._finish_row()
+        elif tag == "table" and self.stack:
+            self._finish_row()
+            self.stack.pop()
 
     def handle_data(self, data):
-        if self.cell is not None:
-            self.cell.append(data)
+        if self.stack and self.stack[-1]["cell"] is not None:
+            self.stack[-1]["cell"][0].append(data)
+
+    def close(self):
+        super().close()
+        if self.stack:
+            raise ValueError("HTML table end tag is missing")
 
 
 def _whole(text):
@@ -183,16 +219,18 @@ def _laid_out(table):
 
 
 def _from_html(path, raw):
-    parser = _Tables()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    parser = _Tables(stem)
     parser.feed(_decode(raw))
-    tables = [table for table in parser.tables if table]
+    parser.close()
+    tables = [(name, table) for name, table in zip(parser.names, parser.tables) if table]
     if not tables:
         raise ValueError("no table in this file")
     wb = openpyxl.Workbook()
     stem = os.path.splitext(os.path.basename(path))[0]
-    for number, table in enumerate(tables):
+    for number, (name, table) in enumerate(tables):
         ws = wb.active if number == 0 else wb.create_sheet()
-        ws.title = _title(stem if number == 0 else f"{stem} {number + 1}", [s.title for s in wb.worksheets if s is not ws])
+        ws.title = name
         rows, merges = _laid_out(table)
         _put_rows(ws, rows)
         for top, left, bottom, right in merges:
@@ -219,7 +257,10 @@ def _from_xls(path):
                 kind, value = sheet.cell_type(r, c), sheet.cell_value(r, c)
                 if kind in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
                     continue
-                fmt = book.format_map[book.xf_list[sheet.cell_xf_index(r, c)].format_key].format_str
+                format_key = book.xf_list[sheet.cell_xf_index(r, c)].format_key
+                fmt = book.format_map[format_key].format_str
+                if format_key == 14:
+                    fmt = 'mm-dd-yy'  # canonical locale date; numfmt applies the actual Windows short-date setting
                 if kind == xlrd.XL_CELL_DATE:
                     try:
                         value = xlrd.xldate.xldate_as_datetime(value, book.datemode)
@@ -301,15 +342,20 @@ def _xlsb_formats(path):
             part = target if target.startswith("xl/") else "xl/" + target
             if part not in names:
                 continue
-            cells, row, merges = {}, 0, []
+            cells, row, merges, column = {}, 0, [], -1
             for record, data in _records(package.read(part)):
                 if record == XLSB_MERGE and len(data) >= 16:
                     top, bottom, left, right = struct.unpack_from("<IIII", data, 0)
                     merges.append((top + 1, left + 1, bottom + 1, right + 1))
                 elif record == XLSB_ROW and len(data) >= 4:
                     row = struct.unpack_from("<I", data, 0)[0]
-                elif record in XLSB_CELLS and len(data) >= 8:
-                    column, style = struct.unpack_from("<II", data, 0)
+                    column = -1
+                elif record in XLSB_CELLS or record==62 or 12 <= record <= 18:
+                    if record in XLSB_CELLS or record==62:
+                        column, style = struct.unpack_from("<II", data, 0)
+                    else:
+                        column += 1
+                        style = struct.unpack_from("<I", data, 0)[0]
                     style &= 0xFFFFFF
                     code = styles[style] if style < len(styles) else "General"
                     if code != "General":
@@ -416,9 +462,118 @@ def _formats(path):
         return {}, {}
 
 
+def _expanded_xlsb(path):
+    """Translate short worksheet cells in memory for calamine; input stays untouched.
+
+    Short records 12..18 omit the column and use the preceding column plus one.
+    This is an observed compatibility extension, not a published MS-XLSB layout.
+    The automatic verifier independently reads the original, unexpanded bytes.
+    """
+    def encoded(kind, data):
+        header=bytearray()
+        for value in (kind,len(data)):
+            while value >= 128:
+                header.append((value & 127) | 128);value >>= 7
+            header.append(value)
+        return bytes(header)+data
+    changed={}
+    with zipfile.ZipFile(path) as package:
+        relationships=ET.fromstring(package.read('xl/_rels/workbook.bin.rels'))
+        parts=[n.get('Target') for n in relationships if n.get('Type','').endswith('/worksheet') and n.get('TargetMode')!='External']
+        for target in parts:
+            part=target.lstrip('/') if target.startswith('/') else posixpath.normpath('xl/'+target)
+            if package.getinfo(part).file_size > 128*1024*1024:raise ValueError('XLSB worksheet exceeds byte budget')
+            raw=package.read(part);pieces=[];row=None;column=-1;expanded=False
+            for kind,data in _records(raw):
+                if kind==0:
+                    row=struct.unpack_from('<I',data)[0];column=-1
+                elif kind in XLSB_CELLS or kind==62:
+                    new_column=struct.unpack_from('<I',data)[0]
+                    if new_column<=column:raise ValueError('XLSB cells out of order')
+                    column=new_column
+                elif 12<=kind<=18:
+                    if row is None or row>=1048576 or not 0<=column<16383:raise ValueError('XLSB short cell requires a preceding cell inside the grid')
+                    column+=1
+                    if len(data)<4:raise ValueError('truncated XLSB short style')
+                    expected={12:4,13:8,14:5,15:5,16:12,18:8}.get(kind)
+                    if kind==17:
+                        if len(data)<8:raise ValueError('truncated XLSB short string')
+                        expected=8+2*struct.unpack_from('<I',data,4)[0]
+                    if len(data)!=expected:raise ValueError('invalid XLSB short value length')
+                    kind-=11;data=struct.pack('<I',column)+data;expanded=True
+                pieces.append(encoded(kind,data))
+            if expanded:changed[part]=b''.join(pieces)
+        if not changed:return None
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as destination:
+            for item in package.infolist():destination.writestr(item,changed.get(item.filename,package.read(item.filename)))
+        output.seek(0)
+        return output
+
+
+def _ods_times(path):
+    """Clock values become ISO text; other durations keep the complete literal."""
+    with zipfile.ZipFile(path) as package:
+        if package.getinfo('content.xml').file_size>128*1024*1024:raise ValueError('ODS content exceeds byte budget')
+        root=ET.fromstring(package.read('content.xml'))
+    table='{'+ODS['table']+'}';office='{'+ODS['office']+'}';result={};budget=0
+    for sheet in root.findall('.//'+office+'spreadsheet/'+table+'table'):
+        cells={};row=1
+        for node in sheet.iter(table+'table-row'):
+            repeat=int(node.get(table+'number-rows-repeated','1'));column=1
+            for cell in node:
+                if cell.tag not in (table+'table-cell',table+'covered-table-cell'):continue
+                width=int(cell.get(table+'number-columns-repeated','1'))
+                if repeat<1 or width<1:raise ValueError('invalid ODS repetition')
+                if cell.get(office+'value-type')=='time':
+                    literal=cell.get(office+'time-value','');value=literal
+                    match=re.fullmatch(r'P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.(\d+))?S)?)?',literal)
+                    if match and any(v is not None for v in match.groups()) and not literal.endswith('T'):
+                        day,hour,minute,second,fraction=match.groups();fraction=(fraction or '').rstrip('0')
+                        seconds=int(day or 0)*86400+int(hour or 0)*3600+int(minute or 0)*60+int(second or 0)
+                        if seconds<86400 and len(fraction)<=6:
+                            h,rem=divmod(seconds,3600);m,s=divmod(rem,60)
+                            value=dt.time(h,m,s,int(fraction.ljust(6,'0') or 0)).isoformat()
+                    budget+=repeat*width
+                    if budget>MAX_FORMATTED_CELLS or row+repeat-1>1048576 or column+width-1>16384:raise ValueError('ODS time cells exceed budget')
+                    for r in range(row,row+repeat):
+                        for c in range(column,column+width):cells[r,c]=value
+                column+=width
+            row+=repeat
+        result[sheet.get(table+'name','Sheet')]=cells
+    return result
+
+
+def _xlsb_errors(path):
+    """Retain original error/cache cells that calamine exposes as empty values."""
+    codes={0:'#NULL!',7:'#DIV/0!',15:'#VALUE!',23:'#REF!',29:'#NAME?',36:'#NUM!',42:'#N/A',43:'#GETTING_DATA'}
+    result={}
+    with zipfile.ZipFile(path) as package:
+        rels={n.get('Id'):n.get('Target') for n in ET.fromstring(package.read('xl/_rels/workbook.bin.rels')) if n.get('TargetMode')!='External'}
+        for kind,body in _records(package.read('xl/workbook.bin')):
+            if kind!=XLSB_SHEET or struct.unpack_from('<I',body,8)[0]==0xffffffff:continue
+            relation,at=_wide(body,8);name,_at=_wide(body,at);target=rels.get(relation)
+            if target is None:continue
+            part=target.lstrip('/') if target.startswith('/') else posixpath.normpath('xl/'+target)
+            errors={};row=None;column=-1
+            for record,data in _records(package.read(part)):
+                if record==0:row=struct.unpack_from('<I',data)[0];column=-1
+                elif record in XLSB_CELLS or record==62:
+                    column=struct.unpack_from('<I',data)[0]
+                    if record in (3,11):errors[row+1,column+1]=codes.get(data[8],'#VALUE!')
+                elif 12<=record<=18:
+                    column+=1
+                    if record==14:errors[row+1,column+1]=codes.get(data[4],'#VALUE!')
+            result[name]=errors
+    return result
+
+
 def _from_calamine(path):
     from python_calamine import CalamineWorkbook
-    book = CalamineWorkbook.from_path(path)
+    expanded=_expanded_xlsb(path) if path.lower().endswith('.xlsb') else None
+    book = CalamineWorkbook.from_filelike(expanded) if expanded is not None else CalamineWorkbook.from_path(path)
+    times=_ods_times(path) if path.lower().endswith('.ods') else {}
+    errors=_xlsb_errors(path) if path.lower().endswith('.xlsb') else {}
     formats, merged = _formats(path)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -444,6 +599,10 @@ def _from_calamine(path):
         for top, left, bottom, right in ranges or merged.get(name, []):  # the reader gives merges for .xls only; .xlsb and .ods have them from their own records
             if bottom >= top and right >= left and (bottom, right) != (top, left):
                 ws.merge_cells(start_row=top, start_column=left, end_row=bottom, end_column=right)
+        for (r,c),value in times.get(name,{}).items():
+            cell=ws.cell(r,c,value);cell.data_type='s';cell.number_format='General'
+        for (r,c),value in errors.get(name,{}).items():
+            cell=ws.cell(r,c,value);cell.data_type='e'
     return wb
 
 
@@ -455,7 +614,7 @@ def load(path):
     if ext in TEXT_TYPES:
         return _from_text(path, raw, ext)
     if ext == ".xls":
-        if raw[:8] == bytes.fromhex("d0cf11e0a1b11ae1"):
+        if raw[:8] == bytes.fromhex("d0cf11e0a1b11ae1") or raw[:2] in (b'\x09\x00',b'\x09\x02',b'\x09\x04',b'\x09\x08'):
             return _from_xls(path)
         if zipfile.is_zipfile(path):  # a renamed .xlsx
             return openpyxl.load_workbook(io.BytesIO(raw), data_only=True)

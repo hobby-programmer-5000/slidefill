@@ -4,7 +4,9 @@
 
 Choose an Excel workbook and get a PowerPoint report, or fill your own company template from it, so a weekly or monthly report takes one key press instead of an hour of copy and paste.
 
-![SlideFill window showing each value before the report is created](doc/images/screenshot.png)
+[![SlideFill demo: preview values and create a report](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4)
+
+[Watch the demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4). Original synthetic data; a scripted UI demo from the release source on Windows 10. The finished report is rendered by PowerPoint on the host.
 
 ## Why I made this
 
@@ -28,13 +30,19 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 - **Insight sentences you choose from** (optional): one sentence that says what a figure means, so whoever reads the report gets the point without working it out from the table. A model on your own PC reads the calculated results and suggests them. They pass checks, but nothing goes in the report until you pick it.
 - **Nothing leaves your PC**: no account, no Office needed to run it, no internet connections. The optional insight step talks only to Ollama on this PC. English and Korean.
 
+## Accuracy and supported scope
+
+SlideFill checks supported table/chart values and representations automatically, but does not certify that the source data is true, the selected measure answers your business question, or every input format and Office layout is correct. A passed check covers the checks performed; a partial check leaves stated gaps. Review the sheet, period, unit, conditions and warnings before using a report.
+
+See [automatic checks and what to do](doc/verification.md), [supported layouts](doc/limits.md), and [algorithms, code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
+
 ## Install
 
 Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-5000/slidefill/releases) and run it. It is one portable file: no installer and no admin rights. Its settings are kept in `SlideFill.json` next to it, which appears the first time you pick a file, preview, or change the language.
 
 The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
 
-The first release, v0.1.0, is a pre-release: it has not yet been tried on real company files. Its known limits are in the release notes.
+v0.3.0 is a pre-release, tested with synthetic and public inputs. The exact executable passed a fresh Windows 10 VM without Office and native PowerPoint rendering on the host. Windows 11 and private-company compatibility are untested. See the [release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0) and [development and verification history](doc/development-history.md).
 
 ## Build from source
 
@@ -60,8 +68,6 @@ build.bat
 
 If there are signs it chose wrongly, it shows why and asks first. If you choose **Create it as it is**, the slide says the value was not confirmed.
 
-![The window asking you to check a figure](doc/images/doubt.png)
-
 **Insight sentences (optional):** select a figure in the list and press **Ctrl+I**. A model on this PC suggests sentences from the calculated results. The one you choose takes the place of that figure's "how to read it". If you choose none, the calculated sentence stays.
 
 Each sheet gets one slide: sentences on the left, a chart and a table on the right. What goes in:
@@ -72,7 +78,7 @@ Each sheet gets one slide: sentences on the left, a chart and a table on the rig
 - Charts: a figure more than 10 times larger or smaller than the first goes in the table only.
 - Tables: large numbers get commas. With your own template they stay as Excel shows them.
 - Year columns: with columns such as `2025` and `2024`, only the newest goes in.
-- Left out: a table with several levels of headings, such as sex and measure under each year, is not guessed at. The app says it cannot lay out a report by itself.
+- Several header levels: a merged layout with the same complete sex/measure combinations under every period is read using one explicit combination, which the app asks you to confirm. Missing, duplicate or inconsistent combinations are not guessed at.
 
 If your slides are already laid out, use a template as below.
 
@@ -98,6 +104,7 @@ Alt text: right-click the table or chart, then **View Alt Text**. The marker is 
 
 - Tables fill from the top-left cell, so include the header row. The column count must match.
 - Charts read the first row as series names and the first column as categories.
+- Bubble templates use an explicit X column followed by Y/size pairs; see [verification coverage](doc/verification.md).
 - Prefer defined names or Excel tables. They keep working when rows move, and a table grows with new data.
 
 For a sheet that gains a row every day, name the date column first and SlideFill finds the newest rows by date:
@@ -193,10 +200,12 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 - `△500`, `(300)` and `(1,234)` read as negatives. `(1)`, `(2)` under the headings number the columns and are not figures. Digits it cannot read, such as `▲500` or `1,2,3` with commas that do not group thousands, are left out, so it asks first.
 - A table beyond an empty column, or another table under a blank row, is not mixed in. Of tables stacked on one sheet only the first is read, and it asks first, as it does when rows may have been left out because a sum matched by chance.
 - Placeholders inside SmartArt are filled. PowerPoint then lays the SmartArt out again when it opens the report, so a long value fits its box. A SmartArt saved in a shape SlideFill cannot read is reported, with the slide it is on.
-- A number format's colour, such as `[Red]` for a loss, carries to the slide: only the value is coloured, in text and in tables. `[Black]` and `[White]` keep the template's own colour, and a value put into a sentence is not coloured.
+- A number format's colour, such as `[Red]` for a loss, carries to the slide: only the value is coloured, in text and in tables. A calculated dated sentence also colours its current value when it comes directly from one source cell. Other words, aggregates, comparisons and model sentences keep the template's colour. `[Black]` and `[White]` keep it too.
 - A table's heading rows can be merged down and it still grows and shrinks. With merges in the body, match the row count. A table that would grow over a shape below it gets a warning.
 - Dynamic names built from `OFFSET`, `INDEX`, `COUNTA`, `COUNT`, `ROWS` and `COLUMNS` are worked out to the cells they cover, so a name that grows with its data is read. A name holding any other formula is reported.
-- A financial year (`2025-26`, `Q1 FY24`) ends when the workbook says it does, in words such as `year ending 31 March`, `July to June`, `4월~3월` or `3월 결산`. If it says nothing, or says two different things, June is assumed, and calling a period unfinished can then be a few months off.
+- A financial year (`2025-26`, `Q1 FY24`) ends when the workbook says it does, in words such as `year ending 31 March`, `July to June`, `4월~3월` or `3월 결산`. If the end is missing or conflicting, the report says so and shows the current value without deciding completion or comparing periods. Add the year end to the workbook and preview again; an explicit change placeholder stays unresolved until then.
+- Charts read numeric text, including `23,109` and `(500)`, with the same rules as calculations and report that conversion. Unreadable text and booleans remain gaps with warnings.
+- Annual sheets named only `2025`, `2024`, etc. retain that year on every generated slide. A single unit note above a wide table is found even at its right edge.
 - Unusual number formats (fractions, `[DBNum1]` and the like) fall back to the plain value with a warning. Conditions such as `[>=5]#,##0` show as Excel shows them.
 - Numbers are written with `,` for thousands and `.` for decimals on every PC. Excel follows the PC's region, so on a PC set to German it shows `1.234,5` where the slide says `1,234.5`. This is on purpose: the sentences SlideFill writes use the same marks, and a report should read the same whichever PC made it. Text such as `1.234,5` typed into a cell is not read as a number, so it asks first. Spaces that group thousands, as in `39 925`, are read.
 
@@ -213,6 +222,10 @@ Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 
 The Excel and PowerPoint checks need Office installed, and the format comparison reflects the regional settings of the PC running it. More detail: [how it works](doc/how-it-works.md).
 
+See [supported layouts and remaining verification](doc/limits.md). Public-file regression checks do not establish compatibility with your company's files or replace a person's trial of the executable.
+
+Automatic CPU verification runs inside preview and saving for filled tables and category/date/XY charts. Known mismatches block saving; incomplete independent coverage is displayed. No local model or separate user command is required. See the [verification guide](doc/verification.md) for the exact coverage.
+
 ## Project layout
 
 ```
@@ -221,6 +234,9 @@ contents.py         the window for changing contents, and dropping files
 readers.py          reads .xls, .xlsb, .ods, .csv and more into one form
 documents.py        reads Word files and lines their dated entries up with figures
 core.py             reads the workbook, fills the template (no GUI, no model)
+suggest.py          chooses report contents and builds starter slides
+layouts.py          bounded rate/organization tables and source warnings
+verification/       automatic checks, independent oracles, proved kernel, tests
 facts.py            calculated figures and the language router
 insight.py          candidate sentences from the local model, and their checks
 numfmt.py           renders values the way Excel displays them
@@ -235,6 +251,7 @@ samples/            made-up example files
 
 - [@hobby-programmer-5000](https://github.com/hobby-programmer-5000): idea, requirements, testing
 - **Claude** (Anthropic): design and implementation, pair-programmed in [Claude Code](https://claude.com/claude-code)
+- **Codex** (OpenAI): participated from the eighth measurement on v0.2.0 through v0.3.0: measurement, regression fixes, bounded layout support, automatic CPU verification and proof integration, build/privacy checks, Windows 10/Office validation, documentation and release preparation. See [the work history](doc/development-history.md).
 
 ## License
 

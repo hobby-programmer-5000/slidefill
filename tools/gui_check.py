@@ -149,7 +149,9 @@ def main():
     root.update()
     press(root, "<Control-l>")
     root.update()
-    check("switching with a row selected leaves no stray text", ui.message.cget("text") == i18n.text("ko", "select_hint"),
+    verified = ui.report.verification
+    expected_status = i18n.text("ko", "select_hint") + ("\n" + i18n.text("ko", "verification_" + verified["state"], checked=verified["checked"]) if verified else "")
+    check("switching with a row selected leaves no stray text", ui.message.cget("text") == expected_status,
           ui.message.cget("text"))
     press(root, "<Control-l>")
     root.update()

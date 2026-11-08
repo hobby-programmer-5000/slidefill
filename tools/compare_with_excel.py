@@ -56,6 +56,7 @@ $ErrorActionPreference = "Stop"
 $cases = Get-Content -Raw -Encoding UTF8 $CasesFile | ConvertFrom-Json
 $xl = New-Object -ComObject Excel.Application
 $hadBooks = $xl.Workbooks.Count -gt 0
+$taskOriginalAlerts=$xl.DisplayAlerts
 $xl.DisplayAlerts = $false
 try {
     $wb = $xl.Workbooks.Add()
@@ -99,6 +100,7 @@ try {
     $shown | ConvertTo-Json | Out-File -Encoding utf8 $Result
 }
 finally {
+    $xl.DisplayAlerts=$taskOriginalAlerts
     if (-not $hadBooks -and $xl.Workbooks.Count -eq 0) { $xl.Quit() }
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl) | Out-Null
 }
@@ -130,10 +132,12 @@ def main():
         rolling = "no issue"
     except core.IssueError as exc:
         rolling = exc.issue.code
+    dynamic, _dynamic_where, dynamic_issues = source.range_cells("RollingRange")
     checks = [("defined name on a formula cell", named[0], total),
               ("Excel table size", f"{len(rows)}x{len(rows[0])}", "3x2"),
               ("Excel table formula cell", rows[2][1][1], table_cell),
-              ("dynamic name is explained", rolling, "name_not_cells")]
+              ("dynamic range is explained in text", rolling, "range_for_text"),
+              ("dynamic range resolves to source cells", (len(dynamic),len(dynamic[0]),dynamic[1][0][0],dynamic[1][1][0],bool(dynamic_issues)), (2,2,"Seoul",1500.5,False))]
     failed = [c for c in checks if c[1] != c[2]]
     for label, got, wanted in failed:
         print(f"DIFF  {label}: excel={wanted!r} slidefill={got!r}")

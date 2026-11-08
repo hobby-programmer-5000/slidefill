@@ -1,0 +1,10 @@
+{
+  "dafny": "4.11.0+fcb2042d6d043a2634f0854338c08feeaaaf4ae2",
+  "source_sha256": "541938414050c8fd9ce52d02b07b0a85259fb3d133372b0a8953858caa701b31",
+  "generated_class_sha256": "389b28f4322d3ce5f3ee87e68cdb86b2c3503a2824869999c437175684492709",
+  "verified": 9,
+  "errors": 0,
+  "transformation": "unused imports removed, generated class AST identical",
+  "runtime": "integer-only subset; no Dafny runtime copied",
+  "trust": "Dafny/Boogie/Z3, Python integers, compiler, extraction script, bridge conversions"
+}

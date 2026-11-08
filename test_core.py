@@ -2064,7 +2064,7 @@ class Suggestions(Base):
     def test_every_doubt_has_words_in_both_languages(self):
         for code in suggest.DOUBTS:
             for lang in ("en", "ko"):
-                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12, count=23, same="0", total="1,910.43", kind="진료형태", values="입원, 외래, 약국"), code)
+                self.assertTrue(i18n.text(lang, "doubt_" + code, figure="가", parent="나", parts="다, 라", item="마", period="2024년", filled=3, usual=12, count=23, same="0", total="1,910.43", kind="진료형태", values="입원, 외래, 약국", chosen="남 / 사망자수"), code)
 
     def test_a_total_under_a_total_is_one_total(self):
         rows = [["구분", "합  계", None, None, "세대"], [None, "계", "남", "여", None]] + [[f"시{n}", 100 + n * 37 % 91, 50, 50, 10 + n * 3 % 7] for n in range(6)] + [["총  계", 700, 300, 300, 80]]
@@ -2074,7 +2074,7 @@ class Suggestions(Base):
 
     def test_a_financial_year_ends_before_its_calendar_year_does(self):
         rows = [["Fin. Year", "Items"]] + [[f"{year}-{(year + 1) % 100:02d}", 1000 + year % 7 * 13] for year in range(2018, 2026)]
-        path = self.book("회계.xlsx", 표=rows)
+        path = self.book("회계.xlsx", 표=rows, Notes=[["Financial year ending 30 June"]])
         for saved, expected in ((dt.datetime(2025, 10, 3), True), (dt.datetime(2026, 10, 7), False)):
             source = core.ExcelSource(path)
             source.wb.properties.modified = saved
@@ -2830,6 +2830,7 @@ class TriedReports(Base):
             wb.active.append(row)
         info = wb.create_sheet("Information")
         info.append(["Data as at 30-Sep-2025, for applications created on or after 01-Jul-2018."])
+        info.append(["Financial year ending 30 June"])
         wb.properties.modified = dt.datetime(2025, 10, 3)
         path = os.path.join(self.dir, "미완결.xlsx")
         wb.save(path)
@@ -2852,6 +2853,7 @@ class TriedReports(Base):
         for year in range(2015, 2026):
             wb.active.append([f"{year}-{(year + 1) % 100:02d}", 100 + year])
         wb.create_sheet("Notes").append(["Rules as at 01-Jul-2012 apply."])
+        wb["Notes"].append(["Financial year ending 30 June"])
         path = os.path.join(self.dir, "다른날짜.xlsx")
         wb.save(path)
         source = core.ExcelSource(path)
@@ -2936,7 +2938,7 @@ class TriedReports(Base):
         self.assertEqual(core.as_date("Q3 2026"), dt.datetime(2026, 7, 1))  # a plain quarter is still a calendar one
         quarters = [f"Q{q} {y}/{y + 1}" for y in range(12, 15) for q in range(1, 5)]
         rows = [["사용량"] + quarters, ["Total Consumption"] + [100 + n * 7 % 23 for n in range(12)], ["주거용"] + [50 + n for n in range(12)]]
-        section = suggest.plan_report(core.ExcelSource(self.book("물.xlsx", 표=rows))).sections[0]
+        section = suggest.plan_report(core.ExcelSource(self.book("물.xlsx", 표=rows, Notes=[["Financial year ending 30 June"]]))).sections[0]
         note = self.note(section)
         self.assertTrue(note.startswith("Q4 14/15 "), note)  # the newest, not the first column
         self.assertIn("Q4 13/14", " ".join(item.result for item in section.sentences))
@@ -5597,7 +5599,9 @@ class KnownLimits(Base):
         silent = self._fiscal_book("silent.xlsx", rows, None)
         self.assertFalse(self._unfinished(said, dt.datetime(2026, 5, 2)))  # 2025-26 ended on 31 March 2026
         self.assertTrue(self._unfinished(said, dt.datetime(2026, 3, 20)))
-        self.assertTrue(self._unfinished(silent, dt.datetime(2026, 5, 2)))  # nothing said: June, as before
+        self.assertFalse(self._unfinished(silent, dt.datetime(2026, 5, 2)))  # an unknown end no longer implies June
+        source = core.ExcelSource(silent)
+        self.assertIn("fiscal_end_unknown", [i.code for i in source._series(source._parse_ref("표!A,B", "x")).notes])
 
     def test_a_quarter_of_a_year_starting_in_october_is_placed_where_it_falls(self):
         rows = [["Quarter", "Claims"]] + [[f"Q{q} FY{y}", 500 + q * 11 + y] for y in (24, 25) for q in range(1, 5)] + [["Q1 FY26", 230]]
@@ -5833,6 +5837,136 @@ def etree_paragraph(texts):
         run = etree.SubElement(paragraph, core.A_R)
         etree.SubElement(run, core.A_T).text = text
     return paragraph
+
+
+class EighthMeasure(Base):
+    """Output contracts from the eighth, now-seen public-file batch."""
+
+    book = Suggestions.book
+    planned = Suggestions.planned
+
+    def test_text_numbers_fill_saved_chart_and_embedded_workbook(self):
+        path = self.book("text.xlsx", Data=[["Year", "Count"], [2023, "23,109"], [2024, "30,488"], [2025, "29,770"]])
+        add_chart(self.slide, "{{chart:Data!A1:B4}}")
+        report, saved = self.go(path)
+        made = next(s for s in saved.slides[0].shapes if s.has_chart).chart
+        self.assertEqual(tuple(made.series[0].values), (23109, 30488, 29770))
+        with zipfile.ZipFile(self.out) as package:
+            import io
+            embedded = next(n for n in package.namelist() if n.startswith("ppt/embeddings/") and n.endswith(".xlsx"))
+            wb = openpyxl.load_workbook(io.BytesIO(package.read(embedded)), data_only=True)
+            self.assertEqual([wb.active.cell(r, 2).value for r in (2, 3, 4)], [23109, 30488, 29770])
+        self.assertFalse(any(i.code == "chart_not_number" for item in report.items for i in item.issues))
+
+    def test_each_year_sheet_is_visible_on_its_own_slide(self):
+        rows = lambda n: [["기관", "기본급"], ["가", n], ["나", n * 2], ["다", n * 3]]
+        plan, _slides, words, _report = self.planned("data.xlsx", **{"2023": rows(100), "2024": rows(200), "2025": rows(300)})
+        self.assertEqual(len(plan.sections), 3)
+        for section, text in zip(plan.sections, words):
+            self.assertIn(section.sheet, text)
+            self.assertIn(section.sheet, section.period)
+
+    def test_unit_note_at_the_right_edge_of_a_wide_sheet_is_kept(self):
+        path = self.book("wide.xlsx", data=[["노선", "화물수송"], ["가", 100], ["나", 300], ["다", 200]])
+        wb = openpyxl.load_workbook(path)
+        wb.active["BD1"] = "(단위: 톤)"
+        wb.save(path)
+        source = core.ExcelSource(path)
+        plan = suggest.plan_report(source)
+        self.assertIn("단위: 톤", plan.sections[0].heading)
+        suggest.make_report(self.pptx, "data", plan.sections)
+        core.run(self.pptx, path, self.out)
+        text = " ".join(s.text for s in Presentation(self.out).slides[0].shapes if s.has_text_frame)
+        self.assertIn("단위: 톤", text)
+
+    def test_completed_period_sentence_is_not_blocked_by_the_next_year(self):
+        pack = (facts.Fact("subject", "", (), "Apprenticeship", "2026"),
+                facts.Fact("read_lead", "2026 had not ended when the file was saved on 2026-05-01.", ()),
+                facts.Fact("read_ended", "The latest period that has ended is 2025 29,770. -2.4% against the year before, 2024, 30,488.", ("29,770", "2.4", "2024", "30,488"), "Apprenticeship", "2025"))
+        said = lambda text: insight.check({"statement": text, "fact_ids": ["read_ended"]}, pack, "en")
+        self.assertNotIn("unfinished", said("Apprenticeship in 2025 was 2.4% below the year before, 2024."))
+        self.assertIn("unfinished", said("Apprenticeship in 2026 was 2.4% below the year before."))
+        self.assertIn("unfinished", said("Apprenticeship fell two years in a row."))
+        self.assertIn("unfinished", said("Apprenticeship in 2025 fell, and in 2026 fell again."))
+
+    def test_unknown_fiscal_end_keeps_value_but_does_not_invent_completion(self):
+        rows = [["Fin. Year", "Items"], ["2023-24", 900], ["2024-25", 1200], ["2025-26", 1300]]
+        path = self.book("fiscal.xlsx", Data=rows)
+        source = core.ExcelSource(path)
+        source.wb.properties.modified = dt.datetime(2026, 11, 1)
+        self.assertIsNone(source.fiscal_end(2026))
+        for key, expected in (("note:Data!A,B", "fiscal year end"), ("해설:Data!A,B", "종료월")):
+            text, _origin, issues = source.text_value(key)
+            self.assertIn(expected, text)
+            self.assertIn("1,300", text)
+            self.assertIn("fiscal_end_unknown", [i.code for i in issues])
+            self.assertNotIn("%", text)
+        with self.assertRaises(core.IssueError):
+            source.text_value("prev:Data!A,B")
+        request, _origin, _issues = source.insight_request("insight:Data!A,B")
+        self.assertFalse(any(f.id == "read_ended" for f in request.facts))
+
+    def test_calculated_sentence_colors_only_its_current_source_value(self):
+        path = self.book("loss.xlsx", Data=[["월", "손익"], [dt.datetime(2024, 1, 1), 5], [dt.datetime(2024, 2, 1), -5]])
+        wb = openpyxl.load_workbook(path)
+        wb.active["B3"].number_format = "0;[Red]-0"
+        wb.save(path)
+        textbox_runs(self.slide, ["고정 -5 / {{해", "설:Data!A,B}} / {{Data!B3}}"], size=20, color=RGBColor(0x20, 0x20, 0x20))
+        _report, saved = self.go(path)
+        paragraph = saved.slides[0].shapes[0].text_frame.paragraphs[0]
+        red = [r.text for r in paragraph.runs if r.font.color.type is not None and str(r.font.color.rgb) == "FF0000"]
+        self.assertEqual(red, ["-5", "-5"])
+        self.assertEqual(paragraph.runs[0].text, "고정 -5 / 2024년 2월 손익 ")
+        self.assertEqual(str(paragraph.runs[0].font.color.rgb), "202020")
+        self.assertNotIn("{{", paragraph.text)
+
+    def test_chart_text_parser_keeps_invalid_and_boolean_gaps(self):
+        path = self.book("gaps.xlsx", Data=[["항목", "값"], ["가", "1,234"], ["나", True], ["다", "미집계"], ["라", "(500)"]])
+        add_chart(self.slide, "{{chart:Data!A1:B5}}")
+        report, saved = self.go(path)
+        made = next(s for s in saved.slides[0].shapes if s.has_chart).chart
+        self.assertEqual(tuple(made.series[0].values), (1234, None, None, -500))
+        codes = [i.code for item in report.items for i in item.issues]
+        self.assertEqual(codes.count("chart_not_number"), 2)
+        self.assertIn("chart_number_from_text", codes)
+
+    def test_merged_pivot_levels_use_one_explicit_tuple_per_year(self):
+        years = range(2020, 2026)
+        head = [["발생년"] + [cell for year in years for cell in (str(year), None, None, None)],
+                ["성별"] + ["남", None, "여", None] * 6,
+                ["측정"] + ["사망자수", "부상자수"] * 12]
+        path = self.book("pivot.xlsx", 사고=head + [["1세"] + [1, 2, 3, 4] * 6, ["2세"] + [2, 3, 4, 5] * 6, ["합계"] + [3, 5, 7, 9] * 6])
+        wb = openpyxl.load_workbook(path)
+        for col in range(2, 26, 4):
+            wb.active.merge_cells(start_row=1, start_column=col, end_row=1, end_column=col + 3)
+            for first in (col, col + 2):
+                wb.active.merge_cells(start_row=2, start_column=first, end_row=2, end_column=first + 1)
+        wb.save(path)
+        source = core.ExcelSource(path)
+        plan = suggest.plan_report(source)
+        self.assertIsNotNone(plan)
+        self.assertIn("header_levels", [code for code, _params in plan.doubts])
+        self.assertIn("2=남", plan.sections[0].table.key)
+        self.assertIn("3=사망자수", plan.sections[0].table.key)
+        suggest.make_report(self.pptx, "사고", plan.sections)
+        report = core.run(self.pptx, path, self.out)
+        self.assertEqual(report.count("error"), 0)
+        chart = next(s for s in Presentation(self.out).slides[0].shapes if s.has_chart).chart
+        self.assertEqual(tuple(chart.series[0].values), (3,) * 6)
+
+    def test_months_across_columns_keep_the_same_table_and_chart_values(self):
+        plan, slides, words, _report = self.planned("months.xlsx", **{"2024": [["월"] + [f"{m}월" for m in range(1, 13)], ["매출액"] + [100 + m for m in range(1, 13)]]})
+        made = next(s for s in slides[0].shapes if s.has_chart).chart
+        self.assertEqual(tuple(made.series[0].values), tuple(range(101, 113)))
+        self.assertIn("2024년 12월", words[0])
+
+    def test_financial_outline_excludes_child_rows_from_total(self):
+        path = self.book("outline.xlsx", 재정=[["항목", "금액"], ["I. 수익", 900], ["1. 판매", 600], ["2. 기타", 300], ["II. 비용", 500], ["1. 급여", 400], ["2. 임차", 100]])
+        source = core.ExcelSource(path)
+        found = source._comparison(source._parse_ref("재정!A,B", "x"))
+        self.assertEqual([(i.label, i.value) for i in found.items], [("I. 수익", 900), ("II. 비용", 500)])
+        self.assertIsNone(found.total)  # income and expenses are not one additive total
+        self.assertFalse(found.additive)
 
 
 if __name__ == "__main__":

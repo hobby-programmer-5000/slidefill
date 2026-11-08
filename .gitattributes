@@ -3,3 +3,6 @@
 *.cmd text eol=crlf
 *.png binary
 *.ico binary
+# Keep byte-hashed proof artifacts reproducible across Git checkouts.
+verification/verified_kernel.py text eol=lf
+verification/proofs/Kernel.dfy text eol=lf

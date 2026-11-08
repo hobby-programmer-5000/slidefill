@@ -10,6 +10,7 @@ data/
 # agent notes kept local (accounts, local paths, progress)
 CLAUDE.local.md
 PROGRESS.md
+.cache/
 
 # public files used to measure and try the app, and the scripts that fetch them: other people's data
 local/

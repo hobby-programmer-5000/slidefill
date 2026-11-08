@@ -241,7 +241,7 @@ def check(item, pack, lang):
         problems.append("item_value")
     if _borrowed_name(text, pack) or _made_up_measure(text, pack):
         problems.append("name")
-    if _reads_unfinished_as_finished(text, pack):
+    if _reads_unfinished_as_finished(text, pack, cited):
         problems.append("unfinished")
     if _misnames_figure(text, cited, pack):
         problems.append("scope")
@@ -276,10 +276,21 @@ def check(item, pack, lang):
     return problems
 
 
-def _reads_unfinished_as_finished(text, pack):
+def _reads_unfinished_as_finished(text, pack, cited=()):
     """A change, or a low, in a period the program said had not ended, with nothing to say so."""
     if not any(fact.id.endswith("read_lead") and UNFINISHED_LEAD.search(fact.text) for fact in pack) or SAYS_UNFINISHED.search(text):
         return False
+    ended = [fact.period for fact in cited if fact.id.endswith("read_ended") and fact.period]
+    def mentions(words, period):
+        return re.search(r"(?<!\d)" + re.escape(period).replace(r"\ ", r"\s*") + r"(?!\d)", words, re.I) is not None
+    current = [fact.period for fact in pack if fact.id.endswith("subject") and fact.period]
+    for period in ended:
+        if not mentions(text, period) or any(now != period and mentions(text, now) for now in current):
+            continue
+        changing = [clause for clause in re.split(r"\band\b|그리고|또한", text, flags=re.I)
+                    if PERCENT.search(clause) or FALLING_WORD.search(clause) or RISING_OR_RUN_WORD.search(clause)]
+        if changing and all(mentions(clause, period) for clause in changing):
+            return False
     return PERCENT.search(text) is not None or FALLING_WORD.search(text) is not None or RISING_OR_RUN_WORD.search(text) is not None
 
 

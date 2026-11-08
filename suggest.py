@@ -24,6 +24,7 @@ from pptx.util import Inches, Pt
 import core
 import documents
 import facts
+import layouts
 
 SAMPLE_ROWS = 3000  # enough to tell what a column holds; a sheet of a million rows need not be read twice for this
 SAMPLE_COLUMNS = 60
@@ -32,7 +33,7 @@ MAX_GROUP_VALUES = 200
 UNDER_ROWS = 12  # rows read under one merged date, as 서울, 부산 and 소계 under each month
 MAX_NAME_BASES = 6  # a sheet of many text columns need not be tried in full
 HEADING_LEVELS = 4  # rows of headings looked for under periods laid across
-NESTED = object()  # periods laid across with more than one level of headings under them
+NESTED = object()  # ambiguous or inconsistent multiple header levels beneath periods
 MIN_PERIODS = 3  # two dates are more likely two headings, 2025년 and 2024년 side by side, than a series
 MANY_ROWS = 0.7  # fewer distinct dates than this share of dated rows: several rows per date, not a stray repeat
 ID_NAME = re.compile(r"코드|번호|순번|연번|일련|시간|요일|좌표|(?:^|[\s_(])(?:위도|경도)(?:$|[\s_)(])|\bno\b(?!\.?\s*of\b)|\b(?:time|hour|weekday)\b"  # 위도, not 위도항, a harbor; No, not No of Units
@@ -47,8 +48,9 @@ ENDS_AS_TOTAL = re.compile(r"(?:총계|합계|소계|전체|\b(?:total|overall))
 AMOUNT_NAME = re.compile(r"금액|매출|수입|비용|수량|판매|사용량|공급량|인원|건수|면적|중량|\b(?:amount|sales|revenue|cost|income|quantity|qty|area|weight|number of)\b", re.I)
 LANGUAGE_SAMPLE = 2000
 # What find_doubts can say. Each has words as doubt_<code> in i18n.
-DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total", "people_across_kinds")
+DOUBTS = ("example_sheet", "count_only", "sum_of_levels", "first_table", "heading_below", "dates_sparse", "maybe_percent", "several_tables", "total_differs", "period_columns", "mixed_kinds", "figures_not_read", "parts_by_sum", "count_among_shares", "sparse_period", "merged_names", "nameless_total", "people_across_kinds", "header_levels")
 PERIOD_COLUMNS_MIN = 4
+DOUBTS += ("structured_layout",)
 EXAMPLE_SHEET = re.compile(r"example|sample|template|예시|예제|양식|서식|샘플", re.I)
 LEVEL_NAME = re.compile(r"평균|최대|최소|농도|온도|습도|밀도|발열량|수질|\b(?:average|mean|temperature|density|concentration)\b", re.I)
 MEAN_ROW = re.compile(r"평균|평균값|산술평균|mean|average|avg\.?", re.I)
@@ -591,7 +593,7 @@ def _read_date_base(source, ws, spec, by_row, codes):
     base.many_rows = many or groups_under
     if by_row and base.many_rows:
         levels = _levels_under(ws, ref, positions)
-        if len(levels) > 1:
+        if len(levels) > 1 and not _complete_header_levels(ws, ref, positions, levels):
             return NESTED
         base.groups = levels
     if by_row and len(base.values) > 3:
@@ -643,6 +645,32 @@ def _levels_under(ws, ref, positions):
         if len(words) >= 2:
             levels.append(Group(str(row), " / ".join(words[:2]), words))
     return levels
+
+
+def _complete_header_levels(ws, ref, positions, levels):
+    """Accept only repeated, fully named header tuples, one column per tuple per period.
+
+    Real merged labels count; blank headings without a merge do not imply a label.
+    No cross-level total is ever added. The first complete tuple becomes explicit
+    conditions and is shown for confirmation before generation.
+    """
+    if len(levels) > 3 or len(positions) < 2:
+        return False
+    step = positions[-1] - positions[-2]
+    expected = None
+    first_tuple = None
+    for index, start in enumerate(positions):
+        end = positions[index + 1] if index + 1 < len(positions) else min(start + step, ws.max_column + 1)
+        tuples = [tuple(str(core._merged_value(ws, int(level.spec), col) or "").strip() for level in levels) for col in range(start, end)]
+        if not tuples or any(not all(words) for words in tuples) or len(set(tuples)) != len(tuples):
+            return False
+        if expected is None:
+            expected, first_tuple = set(tuples), tuples[0]
+        elif set(tuples) != expected:
+            return False
+    for group, chosen in zip(levels, first_tuple):
+        group.values[:] = [chosen] + [word for word in group.values if word != chosen]
+    return True
 
 
 def _years_heading_row(ws, row, numeric):
@@ -853,7 +881,7 @@ def read_shape(source, title):
         if any(spec in re.split(r"[+:]", b.spec) for b in shape.bases if "+" in b.spec):
             continue
         base = _read_date_base(source, ws, spec, by_row, codes)
-        if base is NESTED:  # 남 and 여 over 사망자수 and 부상자수 over each year: any one column would be a guess, and every other reading of this sheet takes one too
+        if base is NESTED:  # unresolved header levels make other automatic readings of the same sheet unsafe too
             return Shape(ws.title)
         if base and base.values and not any(b.spec.split("+")[0] == base.spec.split("+")[0] for b in shape.bases):
             shape.bases.append(base)
@@ -1294,6 +1322,8 @@ def find_doubts(source, shape, base, value, found):
         add("several_tables")
     if _first_of_period_columns(base, value):
         add("period_columns")
+    if _across(base) and len(base.groups) > 1:
+        add("header_levels", chosen=" / ".join(word for _spec, word in conditions))
     if how == "sum" and _adds_unlike_kinds(source, ws, shape, base, value):
         add("mixed_kinds")
     over = _over_a_hundred_among_shares(ws, base, value, numbers)
@@ -1553,7 +1583,9 @@ def _period_words(ws, value):
         found = PERIOD_IN_TITLE.findall(filled[0]) if len(filled[0]) <= PERIOD_TITLE_LENGTH else []
         if len(found) == 1:
             return " ".join(found[0].split())
-    return ""
+    # A bare year is intentionally omitted as a generic sheet heading, but it is
+    # essential scope for otherwise indistinguishable annual reports.
+    return ws.title.strip() if re.fullmatch(r"(?:19|20)\d\d(?:\s*년)?", ws.title.strip()) else ""
 
 
 def _unit_words(ws):
@@ -1561,6 +1593,11 @@ def _unit_words(ws):
     note = core.unit_note(ws, UNIT_ROWS, UNIT_COLUMNS)[0]
     if note:
         return [note]
+    # Wide exports often place the note at their far right, beyond the figures.
+    # Read only existing top cells and accept a single, unambiguous unit.
+    notes = list(core._unit_notes(ws, UNIT_ROWS, ws.max_column))
+    if notes and len({unit.casefold() for _row, _text, unit in notes}) == 1:
+        return [notes[0][1]]
     columns = min(ws.max_column, UNIT_COLUMNS)
     for row in range(1, min(ws.max_row, UNIT_ROWS) + 1):
         for column in range(1, columns + 1):
@@ -1660,6 +1697,9 @@ def _same_layout(source, ws, base, value, lang):
 
 def plan_report(source, lang="ko"):
     """What a report made from the workbook alone should hold, or None when nothing can be read."""
+    structured = _layout_plan(source, lang)
+    if structured is not None:
+        return structured
     shape, base, found = first_choice(source, lang=lang)
     if shape is None:
         return None
@@ -1689,6 +1729,43 @@ def plan_report(source, lang="ko"):
     return Plan(sections, " / ".join(what), max(len(plain) - len(sections[0].figures), 0), len(rest) - added, doubts=find_doubts(source, shape, base, value, found))
 
 
+def _layout_plan(source, lang):
+    """Explicit rate/organization schemas take precedence over column guesses.
+
+    They keep source totals/parts in descriptive tables and require confirmation;
+    they never feed unlike rates or hierarchy levels to generic ranking/sums.
+    """
+    sections, sheets, chosen = [], [], []
+    preferred=data_sheets(source)
+    candidates=[(ws,layouts.discover(ws)) for ws in preferred]
+    # Explicit schemas can start below/right of the generic sample window.
+    for ws in source.wb.worksheets:
+        if ws not in preferred and ws.sheet_state=="visible" and not NOT_DATA_SHEET.search(ws.title):
+            views=layouts.discover(ws)
+            if views:candidates.append((ws,views))
+    for ws,views in candidates:
+        if not views:
+            continue
+        sheets.append(ws.title)
+        for view in views:
+            chosen.append(f"{ws.title}: {view.title}")
+            for start in range(0, len(view.rows), layouts.PAGE_ROWS):
+                stop = min(start + layouts.PAGE_ROWS, len(view.rows))
+                reference = layouts.page_key(view, start, stop, lang, ws.title)
+                table = _try(source, "table_layout", f"table:{reference}", "alt")
+                note = _try(source, "note", layouts.page_key(view, start, stop, lang, ws.title, "note"), "text")
+                if table.status == "error" or note.status == "error":
+                    continue
+                title = (view.title if view.kind == "rates" else ("원본 그룹 수준" if lang == "ko" else "Source grouping levels") if view.kind == "outline" else ("기관별 원본 값" if lang == "ko" else "Source values by organization"))
+                title += f" ({start + 1}–{stop}/{len(view.rows)})" if len(view.rows) > layouts.PAGE_ROWS else ""
+                sections.append(Section(view.scope, [note], table=table, sheet=ws.title, title=title, period=view.scope, wide=True))
+    if not sections:
+        return None
+    what = " / ".join(dict.fromkeys(chosen))
+    return Plan(sections, what, sheets_left=max(0, len(candidates) - len(set(sheets))),
+                doubts=[("structured_layout", {})])
+
+
 def _marked(key, number):
     """A key that says which file it reads: 해설:@1@시트!A,B. A sheet's name cannot hold a colon, so the last one before the ! is where the name starts."""
     head, bang, tail = key.partition("!")
@@ -1697,6 +1774,8 @@ def _marked(key, number):
 
 
 def _for_file(section, number, title):
+    if section.table and section.table.code == "table_layout" and section.title and section.title not in title:
+        title = f"{title} · {section.title}"
     section.file, section.title = number, title
     for item in section.items:
         item.key = _marked(item.key, number)
@@ -1983,13 +2062,15 @@ def _add_wide_table(slide, section, top):
         return
     frame = slide.shapes.add_table(2, section.table.columns, Inches(LEFT + 0.1), Inches(top), Inches(FULL_WIDTH - 0.2), Inches(WIDE_ROW * 2))
     frame._element.xpath(".//p:cNvPr")[0].set("descr", section.table.typed)
-    for column, width in zip(frame.table.columns, WIDE_COLUMNS):
+    structured = section.table.key.startswith("table:layout:")
+    widths = ([4.8] + [(FULL_WIDTH - 0.2 - 4.8) / (section.table.columns - 1)] * (section.table.columns - 1)) if structured else WIDE_COLUMNS
+    for column, width in zip(frame.table.columns, widths):
         column.width = Inches(width)
     for row in frame.table.rows:
         row.height = Inches(WIDE_ROW)
         for cell in row.cells:
             cell.margin_top = cell.margin_bottom = Inches(0.03)
-            cell.text_frame.paragraphs[0]._p.get_or_add_endParaRPr().set("sz", str(WIDE_POINTS * 100))
+            cell.text_frame.paragraphs[0]._p.get_or_add_endParaRPr().set("sz", str((14 if structured else WIDE_POINTS) * 100))
 
 
 def _use_font(prs):
