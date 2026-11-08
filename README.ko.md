@@ -42,7 +42,7 @@ SlideFill은 지원하는 표·차트의 값과 표현을 자동 검사하지만
 
 exe에 코드 서명이 없어 처음 실행할 때 Windows SmartScreen이 "Windows의 PC 보호"라고 할 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
-v0.3.0은 직접 만든 자료와 공개 자료로 시험한 사전 릴리스입니다. 배포하는 동일 EXE가 Office 없는 새 Windows 10 VM 시험과 호스트의 실제 PowerPoint 렌더링을 통과했습니다. Windows 11과 비공개 회사 파일의 호환성은 미시험입니다. [릴리즈 노트](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0)와 [개발·검증 이력](doc/development-history.ko.md)을 참고하세요.
+v0.3.0은 직접 만든 자료와 공개 자료로 시험한 정식 릴리스입니다. 배포하는 동일 EXE가 Office 없는 새 Windows 10 VM 시험과 호스트의 실제 PowerPoint 렌더링을 통과했습니다. Windows 11과 비공개 회사 파일의 호환성은 미시험입니다. [릴리즈 노트](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0)와 [개발·검증 이력](doc/development-history.ko.md)을 참고하세요.
 
 ## 소스에서 빌드
 

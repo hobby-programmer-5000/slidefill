@@ -42,7 +42,7 @@ Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-500
 
 The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
 
-v0.3.0 is a pre-release, tested with synthetic and public inputs. The exact executable passed a fresh Windows 10 VM without Office and native PowerPoint rendering on the host. Windows 11 and private-company compatibility are untested. See the [release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0) and [development and verification history](doc/development-history.md).
+v0.3.0 is the current release, tested with synthetic and public inputs. The exact executable passed a fresh Windows 10 VM without Office and native PowerPoint rendering on the host. Windows 11 and private-company compatibility are untested. See the [release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0) and [development and verification history](doc/development-history.md).
 
 ## Build from source
 

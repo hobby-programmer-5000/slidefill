@@ -37,3 +37,7 @@ Co-authored-by: Codex <noreply@openai.com>
 This is the identity used by [the official Codex source](https://github.com/openai/codex/blob/main/codex-rs/ext/git-attribution/src/world_state.rs). Follow [GitHub's co-author format](https://docs.github.com/en/pull-requests/how-tos/commit-changes/creating-a-commit-with-multiple-authors). Keep the human author and credit only tools that actually participated.
 
 The v0.3.0 commit `280af57` describes Codex assistance in prose but omitted this trailer. This documentation follow-up includes the structured credit and records the policy for future commits. The published v0.3.0 tag and tested executable stay at their original snapshot.
+
+## Release status — 2026-11-09
+
+v0.3.0 was promoted from a pre-release to a regular GitHub release after the existing acceptance checks were complete. The version, release tag, executable and eight assets are the same verified artifacts. The documented input, validation and environment limits continue to apply.

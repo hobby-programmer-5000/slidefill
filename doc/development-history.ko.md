@@ -37,3 +37,7 @@ Co-authored-by: Codex <noreply@openai.com>
 이는 [공식 Codex 소스](https://github.com/openai/codex/blob/main/codex-rs/ext/git-attribution/src/world_state.rs)의 표기입니다. [GitHub 공동작성자 형식](https://docs.github.com/en/pull-requests/how-tos/commit-changes/creating-a-commit-with-multiple-authors)을 따르고 사람의 작성자와 실제 참여한 도구를 사실대로 유지합니다.
 
 v0.3.0 커밋 `280af57`은 본문에 Codex 참여를 설명했지만 이 줄을 누락했습니다. 이번 후속 문서 커밋에는 정식 공동작성자 표기를 넣고 앞으로의 규칙을 기록합니다. 공개한 v0.3.0 태그와 검증한 EXE는 원래 스냅샷을 유지합니다.
+
+## 릴리즈 상태 — 2026-11-09
+
+기존 수용 검사가 완료된 v0.3.0을 사전 릴리즈에서 GitHub 정식 릴리즈로 전환했습니다. 버전·릴리즈 태그·EXE·배포 파일 8개는 검증한 동일 산출물입니다. 문서에 적은 입력·검증·환경의 지원 범위와 한계는 계속 적용됩니다.
