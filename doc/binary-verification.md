@@ -4,7 +4,7 @@
 
 These extensions run in the existing [automatic app guard](verification.md). They need no Office installation or user checker command. Excel is used only to produce independent test fixtures and compare display results during development.
 
-The strict formula/precision changes describe **unreleased development source**. Earlier native checks below remain evidence for their recorded snapshots, not for a new executable. See [the current reliability contract](reliability-hardening.md).
+v0.4.0 ships the strict formula and precision checks. The earlier native checks below apply to their recorded snapshots. [Current reliability contract](reliability-hardening.md) · [v0.4.0 experiments](reliability-history.md).
 
 ## Source formats
 

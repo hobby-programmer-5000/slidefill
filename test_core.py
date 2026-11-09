@@ -2124,6 +2124,15 @@ class Suggestions(Base):
         base = next(b for b in shape.bases if b.spec == "A")
         value = suggest.default_value(base)
         self.assertEqual(suggest.default_conditions(source, shape, base, value, "sum"), [("B", "국내선")])
+        for options, expected_key, expected_value in (
+            ({}, "순위값1:표!A,합계(C, B=국내선)", "10"),
+            ({"conditions": []}, "순위값1:표!A,합계(C)", "160"),
+            ({"conditions": [("B", "국제선")]}, "순위값1:표!A,합계(C, B=국제선)", "30"),
+        ):
+            with self.subTest(options=options):
+                found = suggest.suggestions(source, shape, base, value, "sum", **options)
+                top = next(item for item in found if item.code == "topvalue")
+                self.assertEqual((top.key, top.result), (expected_key, expected_value))
 
     def test_a_pivot_tables_indented_lines_are_parts(self):
         wb = openpyxl.Workbook()
@@ -4878,6 +4887,23 @@ class SentenceChecks(unittest.TestCase):
         pack = pack_of(("week", "대비 +11.0%"))
         self.assertEqual(insight.check(statement("11% 증가했습니다.", "week"), pack, "ko"), [])
 
+    def test_signed_percentage_cannot_reverse_the_comparison(self):
+        for sign, passed in (("+", False), ("−", True), ("-", True)):
+            with self.subTest(sign=sign):
+                item = statement(f"전주 같은 요일 대비 {sign}8.6%입니다.", "week")
+                self.assertEqual(self.problems(item), [] if passed else ["direction"])
+
+    def test_the_same_percent_in_another_period_cannot_back_the_wrong_direction(self):
+        pack = pack_of(("week", "-8.6% against the same weekday last week"),
+                       ("year", "+8.6% against the same month last year"))
+        for text, passed in (("It rose 8.6% from last week.", False),
+                             ("It fell 8.6% from last week.", True),
+                             ("It rose from last week.", False),
+                             ("It fell from last week.", True),
+                             ("Last week was higher than today.", True)):
+            with self.subTest(text=text):
+                self.assertEqual(insight.check(statement(text, "week", "year"), pack, "en"), [] if passed else ["direction"])
+
     def test_no_valid_citation_fails(self):
         self.assertIn("citation", self.problems(statement("감소했습니다.", "없는id")))
 
@@ -4955,6 +4981,31 @@ class Candidates(unittest.TestCase):
     def test_citation_text_leaked_into_the_sentence_is_removed(self):
         model = FakeModel([statement("8.6% 감소했습니다 (fact_ids: week).", "week")])
         self.assertEqual(self.make(model, runs=1).candidates[0].statement, "8.6% 감소했습니다.")
+
+    def test_the_explicit_sign_is_checked_before_redundant_signs_are_removed(self):
+        model = FakeModel([statement("+8.6% 감소했습니다.", "week"),
+                           statement("−8.6% 감소했습니다.", "week")])
+        result = self.make(model, runs=1)
+        self.assertEqual(result.rejected, 1)
+        self.assertEqual([candidate.statement for candidate in result.candidates], ["8.6% 감소했습니다."])
+
+    def test_candidate_carries_the_exact_citations_used_to_check_it(self):
+        text = "전주 같은 요일 대비 8.6% 감소했고 직전 7개 평균 대비 13.3% 증가했습니다."
+        model = FakeModel([statement(text, "week", "week")])
+        result = self.make(model, runs=1)
+        self.assertEqual(result.candidates, [insight.Candidate(text, ("week", "avg7"))])
+
+    def test_malformed_candidates_do_not_interrupt_a_valid_draft(self):
+        text = "전주 같은 요일 대비 8.6% 감소했습니다."
+        good = statement(text, "week", hypothesis=None)
+        malformed = [None, dict(good, statement=None), dict(good, statement=" (fact_ids: week) "),
+                     dict(good, fact_ids=None), dict(good, fact_ids="week"), dict(good, fact_ids=[{}]),
+                     dict(good, fact_ids=["week", "misspelled"])]
+        model = FakeModel('{"insights":null}', [*malformed, good])
+        result = self.make(model, runs=2)
+        self.assertEqual(result.rejected, len(malformed))
+        self.assertEqual(result.candidates, [insight.Candidate(text, ("week",))])
+        self.assertEqual(result.hypotheses, [])
 
     def test_no_server_and_no_model_are_explained(self):
         with mock.patch.object(insight, "post", side_effect=insight.InsightError("ollama_missing")):

@@ -35,6 +35,7 @@ import documents
 import facts
 import readers
 import layouts
+import native_vba_cases
 from verification import automatic
 from verification.kernel import sum_rationals
 
@@ -280,6 +281,7 @@ class Report:
     requests: dict = field(default_factory=dict)
     verification: dict = field(default_factory=dict)
     source_snapshot: object = field(default=None, repr=False)
+    vba_cases: native_vba_cases.VbaCases | None = field(default=None, repr=False)
 
     @property
     def blocked(self):
@@ -3862,12 +3864,13 @@ def _with_commas(rows):
     return done
 
 
-def run(template, excel, output=None, insights=None, source=None, thousands=False):
+def run(template, excel, output=None, insights=None, source=None, thousands=False, *, collect_vba=False):
     """Fill the template. Without output this is the preview: same work, nothing written.
 
     insights holds sentences a person chose earlier. No model is called here, so preview and report always agree.
     source is a workbook already read from excel, so a large one need not be read twice in a row.
     thousands writes plain large numbers in tables with commas, for a report SlideFill laid out itself.
+    collect_vba prepares optional native comparison inputs from verified numeric report cells.
     """
     if source is None:
         source = Sources(excel) if isinstance(excel, (list, tuple)) else ExcelSource(excel)
@@ -3890,6 +3893,8 @@ def run(template, excel, output=None, insights=None, source=None, thousands=Fals
             work.add_issues(target, [Issue("verification_failed", {"detail": detail})])
         if report.incomplete and report.items:
             work.add_issues(report.items[0],[Issue('verification_incomplete',{'detail':'; '.join(report.verification['reasons'][:3])})])
+    if collect_vba and not (report.blocked or report.incomplete):
+        report.vba_cases = native_vba_cases.collect(work.guard.bindings, work.guard.books)
     if output:
         if report.blocked:
             raise SlideFillError("verification_blocked", detail="; ".join(reason for _item, reason in report.verification["failures"][:3]))

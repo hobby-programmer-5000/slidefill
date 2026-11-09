@@ -2,6 +2,8 @@
 
 SlideFill itself is under the MIT License (see `LICENSE`). This file covers what the Windows executable `SlideFill.exe` bundles, each part under its own license.
 
+The packaged SlideFill VBA workbook and its launch script are project components under `LICENSE`. The check runs on an installed copy of Windows PowerShell and desktop Excel with VBA. Those programs are licensed separately and supplied by the host.
+
 | Component | Version | Files in `SlideFill.exe` | License |
 |---|---|---|---|
 | Python (CPython) | 3.14.7 | `python314.dll`, `_tkinter.pyd`, `_ctypes.pyd`, `_socket.pyd`, `select.pyd`, `_elementtree.pyd`, `_queue.pyd`, `unicodedata.pyd`, standard library | PSF License Agreement v2 |

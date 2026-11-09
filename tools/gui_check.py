@@ -115,6 +115,63 @@ def reports():
     return sorted(n for n in os.listdir(work) if n.endswith(".pptx") and n.startswith(("sample_template_", "issues_")))
 
 
+def reference_condition_checks(root, ui):
+    """The reference must use the conditions visible in the helper."""
+    path = os.path.join(work, "reference-conditions.xlsx")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "표"
+    sheet.append(["월", "지역", "병원", "측정항목", "값"])
+    for month in range(1, 7):
+        for region, hospital, value in (("All Regions", "All Hospitals", 30), ("동부", "가", 10), ("서부", "나", 20)):
+            sheet.append([f"2026-{month:02d}", region, hospital, "환자", value])
+            sheet.append([f"2026-{month:02d}", region, hospital, "진료", value * 10])
+    book.save(path)
+    book.close()
+    helper = app.HelperWindow(ui, path)
+
+    def latest():
+        limit = time.monotonic() + 20
+        while helper.working and time.monotonic() < limit:
+            root.update()
+            time.sleep(0.02)
+        root.update()
+        if helper.working:
+            raise TimeoutError("reference helper did not finish")
+        return next((item.result for item in helper.found if item.code == "latest"), None)
+
+    try:
+        result = latest()
+        defaults = [("B", "All Regions"), ("C", "All Hospitals"), ("D", "환자")]
+        group, word = (helper.boxes.get(name) for name in ("group3", "word3"))
+        visible = group is not None and word is not None and group.winfo_viewable() and word.winfo_viewable()
+        check("the helper shows all three default conditions", visible and helper.conditions() == defaults, str(helper.conditions()))
+        check("the three default conditions select the patient count", result == "30", str(result))
+        if not visible:
+            return
+        metric = group.current()
+        helper.recount()
+        result = latest()
+        check("recounting keeps the visible third condition", helper.conditions() == defaults and result == "30", str(result))
+        group.current(0)
+        helper.changed("group3")
+        result = latest()
+        check("all rows for the third condition include both metrics", helper.conditions() == defaults[:2] and result == "330", str(result))
+        group.current(metric)
+        helper.changed("group3")
+        root.update()
+        check("an unfinished condition clears the previous reference and actions",
+              not word.get() and not helper.found and not helper.tree.get_children() and not helper.key_var.get()
+              and all(button.instate(["disabled"]) for button in (helper.copy_button, helper.starter_button, helper.use_button)))
+        word.set("환자")
+        helper.changed("word3")
+        result = latest()
+        check("completing the condition restores the patient count", helper.conditions() == defaults and result == "30", str(result))
+        shot(helper.window, f"helper_three_conditions_{ui.lang}")
+    finally:
+        helper.window.destroy()
+
+
 def reliability_checks(root,ui):
     """Default UI must not bypass stale/incomplete checks, in either language."""
     template=os.path.join(work,'reliability-template.pptx')
@@ -780,6 +837,7 @@ def main():
     check("language survives a restart", ui.lang == "en")
     check("paths survive a restart", ui.vars["excel"].get() == EXCEL and ui.vars["template"].get() == TEMPLATE)
     shot(root, "restart_en")
+    reference_condition_checks(root, ui)
     reliability_checks(root,ui)
     owned_jobs=tuple(ui.timers.pending|ui.drop.timers.pending)
     root.destroy()

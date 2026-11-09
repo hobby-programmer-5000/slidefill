@@ -42,9 +42,9 @@ The v0.3.0 commit `280af57` describes Codex assistance in prose but omitted this
 
 v0.3.0 was promoted from a pre-release to a regular GitHub release after the existing acceptance checks were complete. The version, release tag, executable and eight assets are the same verified artifacts. The documented input, validation and environment limits continue to apply.
 
-## Unreleased numeric hardening — 2026-11-09
+## v0.4.0 reliability work — 2026-11-09
 
-Codex continued with the user on an isolated development branch based on `13dfc27`. This work does not change the published v0.3.0 executable. It adds bounded independent formula-cache/dependency checks, exact rational calculation intermediates, independently reconstructed numeric text and Word means, chart precision/format checks, and refusal to save when independent coverage is incomplete. See [the enforced contract and remaining limits](reliability-hardening.md).
+The user and Codex continued on a branch based on `13dfc27`. The work added bounded independent formula-cache and dependency checks, exact rational intermediates, independent reconstruction of numeric text and Word means, chart precision and format checks, and refusal to save when independent coverage is incomplete. The user proposed embedding a VBA comparison alongside the Python calculations. [Feedback, research, and experiments](reliability-history.md) · [Verification contract](reliability-hardening.md).
 
 The final source passed **675 core tests and 137 verifier tests** during `build.bat`. A fresh Dafny 4.11.0 run reported nine verified units and zero errors for the kernel's six executable contracts and supporting definitions; its generated class matched the packaged kernel. This proves the bounded kernel, not the complete application.
 

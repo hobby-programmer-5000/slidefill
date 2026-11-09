@@ -2,7 +2,7 @@
 
 # Feature principles, formulas and algorithms
 
-This is a feature-by-feature reference for the current development source. The numeric hardening described here is **unreleased** and is not included in the published v0.3.0 executable. This document explains the implementation; it is not a new accuracy measurement. The [research methods guide](research-methods.md) separates literature evidence, our implementation choices and their limits.
+This is a feature-by-feature implementation reference for v0.4.0. The research guide distinguishes literature evidence, our implementation choices and their limits. [Research methods](research-methods.md).
 
 The arithmetic, source selection, descriptive rules and optional model wording have different guarantees. Exact arithmetic establishes an answer to a declared calculation. It cannot establish that the chosen measure, source or business definition was appropriate.
 

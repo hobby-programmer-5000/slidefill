@@ -1,8 +1,8 @@
 [English](reliability-hardening.md) | **한국어**
 
-# 수치 신뢰성: 개발 소스
+# v0.4.0 수치 신뢰성 검사
 
-이 변경은 **아직 릴리스하지 않았습니다.** 현재 개발 소스의 동작이며 배포된 v0.3.0 EXE의 기능을 뜻하지 않습니다. [개발 이력](development-history.ko.md)의 이전 Windows·Office 검증은 각 기록에 명시한 산출물에만 적용됩니다.
+v0.4.0에 포함된 검사를 설명합니다. 이전 Windows와 Office 검증은 [개발 이력](development-history.ko.md)에 기록된 각 산출물에 적용됩니다. [피드백과 Excel VBA 실험](reliability-history.ko.md).
 
 원본·계산·저장한 PowerPoint를 각각 검사해 사람의 숫자 대조 부담을 줄이는 것이 목표입니다. 원본이 사실인지, 선택한 지표가 올바른 업무 질문에 답하는지는 확정할 수 없습니다.
 

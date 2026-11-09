@@ -2,6 +2,7 @@
 
 import atexit
 import ctypes
+import hashlib
 import os
 import queue
 import shutil
@@ -12,12 +13,15 @@ import tkinter as tk
 import tkinter.font as tkfont
 import traceback
 from dataclasses import dataclass, field
+from fractions import Fraction
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import contents
 import core
 import i18n
 import insight
+import native_vba
 import readers
 import suggest
 from ui_timers import WindowTimers
@@ -131,6 +135,7 @@ class App:
         self.insight_window = None
         self.helper_window = None
         self.doubt_window = None
+        self.vba_window = None
         saved = core.load_settings(self.settings_file)
         self.lang = saved.get("lang") if saved.get("lang") in i18n.STRINGS else system_language()
         self.vars = {key: tk.StringVar(value=str(saved.get(key) or "")) for key in ("template", "excel", "output")}
@@ -192,10 +197,12 @@ class App:
         ttk.Label(head, text="SlideFill", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         self.tagline = ttk.Label(head, style="Muted.TLabel")
         self.tagline.grid(row=1, column=0, sticky="w")
+        self.vba_button = ttk.Button(head, command=self.check_vba)
+        self.vba_button.grid(row=0, column=1, rowspan=2, padx=(0, self.px(6)))
         self.help_button = ttk.Button(head, command=self.show_help)
-        self.help_button.grid(row=0, column=1, rowspan=2, padx=(0, self.px(6)))
+        self.help_button.grid(row=0, column=2, rowspan=2, padx=(0, self.px(6)))
         self.lang_button = ttk.Button(head, command=self.toggle_language)
-        self.lang_button.grid(row=0, column=2, rowspan=2)
+        self.lang_button.grid(row=0, column=3, rowspan=2)
 
         files = ttk.Frame(main)
         files.grid(row=1, column=0, sticky="ew")
@@ -305,6 +312,7 @@ class App:
         self.generate_button.configure(text=self.t("generate"))
         self.preview_button.configure(text=self.t("preview"))
         self.insight_button.configure(text=self.t("insight_button"))
+        self.vba_button.configure(text=self.t("vba_button"))
         self.show_template_row()
         self.open_button.configure(text=self.t("open_result"))
         self.folder_button.configure(text=self.t("open_folder"))
@@ -565,6 +573,7 @@ class App:
         state = "disabled" if busy else "normal"
         self.generate_button.configure(state=state)
         self.preview_button.configure(state=state)
+        self.vba_button.configure(state=state)
         self.insight_button.configure(state="normal" if not busy and self.insight_requests() else "disabled")
 
     @staticmethod
@@ -648,6 +657,106 @@ class App:
             return core.run(path, excel, insights=insights, source=source, thousands=not template)
 
         self.start(work, self.preview_done, "working" if template else "helper_working")
+
+    def check_vba(self):
+        if self.busy:
+            return
+        if not self.ready():
+            self.set_status("missing_inputs")
+            return
+        template, files, lang = self.template_path(), self.inputs(), self.lang
+        excel = first_workbook(files) if template or is_one_workbook(files) else files
+        insights = dict(self.insights)
+
+        def work():
+            path, source = (template, None) if template else self.auto_template(files, lang)
+            report = core.run(path, excel, insights=insights, source=source, thousands=not template,
+                              collect_vba=True)
+            coverage = report.vba_cases
+            if not coverage or not coverage.cases:
+                return coverage, None, None
+            digest = native_vba.ENGINE_SHA256
+            engine = Path(self.settings_file).parent / f"SlideFill-VBA-{digest[:12]}.xlsm"
+            if not engine.exists():
+                payload = native_vba.bundled_engine_path().read_bytes()
+                if hashlib.sha256(payload).hexdigest() != digest:
+                    return coverage, None, {"status": "invalid"}
+                try:
+                    with engine.open("xb") as handle:
+                        handle.write(payload)
+                except FileExistsError:
+                    pass  # another app instance prepared the same engine
+            requests = [{"id": case["id"], "operation": case["operation"], "operands": case["operands"]}
+                        for case in coverage.cases]
+            return coverage, engine, native_vba.run(engine, digest, requests)
+
+        self.start(work, self.vba_done, "vba_working")
+
+    def vba_done(self, result, error):
+        self.set_status("vba_ready")
+        if error:
+            self.show_error(error)
+            return
+        coverage, engine, response = result
+        title = self.t("vba_check")
+        if coverage is None:
+            messagebox.showinfo(title, self.t("vba_unverified"), parent=self.root)
+        elif not coverage.cases:
+            messagebox.showinfo(title, self.t("vba_empty", count=coverage.skipped), parent=self.root)
+        elif response["status"] == "executed":
+            self.show_vba_results(coverage, response["cases"])
+        elif response["status"] == "blocked":
+            if messagebox.askyesno(title, self.t("vba_blocked"), parent=self.root):
+                try:
+                    if hashlib.sha256(engine.read_bytes()).hexdigest() != native_vba.ENGINE_SHA256:
+                        messagebox.showerror(title, self.t("vba_invalid"), parent=self.root)
+                    else:
+                        self.open_path(engine)
+                except OSError as exc:
+                    self.show_error(("err_unexpected", {"detail": str(exc)}))
+        else:
+            messagebox.showerror(title, self.t("vba_" + response["status"]), parent=self.root)
+
+    def show_vba_results(self, coverage, values):
+        if self.vba_window is not None and self.vba_window.winfo_exists():
+            self.vba_window.destroy()
+        window = self.vba_window = tk.Toplevel(self.root)
+        window.title(self.t("vba_check"))
+        window.geometry(f"{self.px(650)}x{self.px(420)}")
+        window.transient(self.root)
+        body = ttk.Frame(window, padding=self.px(12))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        report = tk.Text(body, wrap="word", font=(FONT_FAMILY, 10))
+        report.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(body, orient="vertical", command=report.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        report.configure(yscrollcommand=bar.set)
+        by_id = {value["id"]: value for value in values}
+        lines = [self.t("vba_summary", count=len(values), skipped=coverage.skipped)]
+        for case in coverage.cases:
+            expected = case["expected"]
+            value = by_id[case["id"]]
+            if value["kind"] == "error":
+                verdict = "vba_excel_error"
+                actual = str(value["error_code"])
+            else:
+                actual = value["decimal"]
+                number = value["value"]
+                if Fraction.from_float(number) == expected:
+                    verdict = "vba_exact"
+                else:
+                    try:
+                        same_double = float(expected) == number
+                    except OverflowError:
+                        same_double = False
+                    verdict = "vba_same_double" if same_double else "vba_different"
+            lines.append(f"{case['label']} · {self.t(verdict)}\nPython  {expected}\nExcel VBA  {actual}")
+        report.insert("1.0", "\n\n".join(lines))
+        report.configure(state="disabled")
+        window.bind("<Escape>", lambda _e: window.destroy())
+        window.focus_set()
 
     def preview_done(self, report, error):
         if error:
@@ -1119,13 +1228,24 @@ class HelperWindow:
         for column in (1, 3, 5):
             picks.columnconfigure(column, weight=1)
         self.boxes = {}
-        layout = (("sheet", 0, 0), ("base", 0, 2), ("value", 0, 4), ("how", 1, 0), ("group1", 1, 2), ("word1", 1, 4), ("group2", 2, 2), ("word2", 2, 4))
-        for name, row, column in layout:
-            ttk.Label(picks, text=app.t("helper_" + name)).grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else app.px(10), small), pady=2)
-            box = ttk.Combobox(picks, state="readonly", width=24)
-            box.grid(row=row, column=column + 1, sticky="ew", pady=2)
-            box.bind("<<ComboboxSelected>>", lambda _e, n=name: self.changed(n))
-            self.boxes[name] = box
+        for name, row, column in (("sheet", 0, 0), ("base", 0, 2), ("value", 0, 4), ("how", 1, 0)):
+            self.add_choice(picks, name, row, column)
+        self.condition_count = 0
+        filters = ttk.Frame(picks)
+        filters.grid(row=1, column=2, columnspan=4, sticky="ew")
+        filters.columnconfigure(0, weight=1)
+        self.condition_canvas = tk.Canvas(filters, width=1, height=1, highlightthickness=0,
+                                          background=ttk.Style(window).lookup("TFrame", "background"))
+        self.condition_canvas.grid(row=0, column=0, sticky="ew", padx=(app.px(10), 0))
+        self.condition_bar = ttk.Scrollbar(filters, orient="vertical", command=self.condition_canvas.yview)
+        self.condition_bar.grid(row=0, column=1, sticky="ns")
+        self.condition_canvas.configure(yscrollcommand=self.condition_bar.set)
+        self.condition_picks = ttk.Frame(self.condition_canvas)
+        self.condition_picks.columnconfigure(1, weight=1)
+        self.condition_picks.columnconfigure(3, weight=1)
+        area = self.condition_canvas.create_window(0, 0, anchor="nw", window=self.condition_picks)
+        self.condition_canvas.bind("<Configure>", lambda event: self.condition_canvas.itemconfigure(area, width=event.width))
+        self.condition_picks.bind("<Configure>", self.fit_conditions)
 
         self.shape_line = ttk.Label(body, style="Summary.TLabel", wraplength=app.px(920), justify="left")
         self.shape_line.grid(row=2, column=0, sticky="w", pady=(small, small))
@@ -1172,12 +1292,37 @@ class HelperWindow:
         self.timers.after(50, self.poll)
         self.run(self.load, self.loaded)
 
+    def add_choice(self, parent, name, row, column, label=None):
+        padx = (0 if column == 0 else self.app.px(10), self.app.px(4))
+        ttk.Label(parent, text=self.app.t("helper_" + (label or name))).grid(
+            row=row, column=column, sticky="w", padx=padx, pady=2)
+        box = ttk.Combobox(parent, state="readonly", width=24)
+        box.grid(row=row, column=column + 1, sticky="ew", pady=2)
+        box.bind("<<ComboboxSelected>>", lambda _e: self.changed(name))
+        self.boxes[name] = box
+        return box
+
+    def fit_conditions(self, event):
+        height = min(event.height, self.app.px(112))
+        self.condition_canvas.configure(height=height, scrollregion=(0, 0, event.width, event.height))
+        if event.height > height:
+            self.condition_bar.grid()
+        else:
+            self.condition_bar.grid_remove()
+
+    def reveal_condition(self, event):
+        top = self.condition_canvas.canvasy(0)
+        y = event.widget.winfo_y()
+        if y < top or y + event.widget.winfo_height() > top + self.condition_canvas.winfo_height():
+            self.condition_canvas.yview_moveto(y / max(1, self.condition_picks.winfo_height()))
+
     # ---- background work: a large workbook takes a while, and the window should stay alive
 
     def run(self, work, done):
         self.job += 1
         job = self.job
         self.working = True
+        self.show_found([])
         self.detail.configure(text=self.app.t("helper_working"))
         for box in self.boxes.values():
             box.configure(state="disabled")
@@ -1260,18 +1405,7 @@ class HelperWindow:
         how = suggest.default_how(base, value)
         self.boxes["how"]["values"] = [self.app.t("helper_how_" + name) for name in self.HOWS]
         self.boxes["how"].current(self.HOWS.index(how))
-        none = self.app.t("helper_none")
-        names = [none] + [self.choice(g.spec, g.name, [o.name for o in base.groups]) for g in base.groups]
-        for number, group_box in (("1", "group1"), ("2", "group2")):
-            self.boxes[group_box]["values"] = names
-            self.boxes[group_box].current(0)
-            self.boxes["word" + number]["values"] = []
-            self.boxes["word" + number].set("")
-        for number, (spec, text) in enumerate(suggest.default_conditions(self.source, self.shape, base, value, how)[:2], start=1):
-            at = next(i for i, g in enumerate(base.groups) if g.spec == spec)
-            self.boxes[f"group{number}"].current(at + 1)
-            self.boxes[f"word{number}"]["values"] = base.groups[at].values
-            self.boxes[f"word{number}"].set(text)
+        self.fill_conditions(base, suggest.default_conditions(self.source, self.shape, base, value, how))
         line = self.app.t("helper_shape_dates" if base.kind == "date" else "helper_shape_names", sheet=self.shape.sheet, spec=base.name if self.plain and base.name else base.spec, first=base.first, last=base.last, count=base.count)
         if self.shape.glob and base.kind == "date":
             line += " " + self.app.t("helper_shape_joined", pattern=self.shape.glob)
@@ -1279,15 +1413,42 @@ class HelperWindow:
             line += " " + self.app.t("helper_" + code, **params)
         self.shape_line.configure(text=line)
 
+    def fill_conditions(self, base, defaults):
+        for number in range(1, self.condition_count + 1):
+            del self.boxes[f"group{number}"], self.boxes[f"word{number}"]
+        for child in self.condition_picks.winfo_children():
+            child.destroy()
+        self.condition_count = max(2, len(defaults))
+        headings = [group.name for group in base.groups]
+        names = [self.app.t("helper_none")] + [self.choice(group.spec, group.name, headings) for group in base.groups]
+        positions = {group.spec: i for i, group in enumerate(base.groups)}
+        for number in range(1, self.condition_count + 1):
+            label = min(number, 2)
+            group = self.add_choice(self.condition_picks, f"group{number}", number - 1, 0, f"group{label}")
+            word = self.add_choice(self.condition_picks, f"word{number}", number - 1, 2, f"word{label}")
+            group["values"] = names
+            group.current(0)
+            if number <= len(defaults):
+                spec, value = defaults[number - 1]
+                index = positions[spec]
+                group.current(index + 1)
+                word["values"] = base.groups[index].values
+                word.set(value)
+            for box in (group, word):
+                box.bind("<FocusIn>", self.reveal_condition)
+        self.condition_canvas.yview_moveto(0)
+
     def base(self):
         return self.bases[self.boxes["base"].current()]
 
     def conditions(self):
         base, chosen = self.base(), []
-        for number in ("1", "2"):
-            at = self.boxes["group" + number].current()
-            text = self.boxes["word" + number].get()
-            if at > 0 and text:
+        for number in range(1, self.condition_count + 1):
+            at = self.boxes[f"group{number}"].current()
+            if at > 0:
+                text = self.boxes[f"word{number}"].get()
+                if not text:
+                    return None
                 chosen.append((base.groups[at - 1].spec, text))
         return chosen
 
@@ -1296,18 +1457,19 @@ class HelperWindow:
             return
         if name == "sheet":
             title = self.boxes["sheet"].get()
+            self.shape = None
             self.run(lambda: self.read_sheet(title), lambda result: self.show_shape(*result))
+            return
+        if self.shape is None:
             return
         if name == "base":
             self.fill_base(self.base())
-        if name in ("group1", "group2"):
+        if name.startswith("group"):
             at = self.boxes[name].current()
-            number = name[-1]
+            number = name.removeprefix("group")
             base = self.base()
             self.boxes["word" + number]["values"] = base.groups[at - 1].values if at > 0 else []
             self.boxes["word" + number].set("")
-            if at > 0:
-                return  # wait for the value, which is what makes the condition
         self.recount()
 
     def read_sheet(self, title):
@@ -1324,8 +1486,10 @@ class HelperWindow:
         value = base.values[self.boxes["value"].current()]
         how = self.HOWS[self.boxes["how"].current()]
         conditions = self.conditions()
-        if how == "rate" and not conditions:
-            self.detail.configure(text=self.app.t("helper_rate_needs_condition"))
+        if conditions is None or (how == "rate" and not conditions):
+            self.show_found([])
+            message = "helper_condition_needs_value" if conditions is None else "helper_rate_needs_condition"
+            self.detail.configure(text=self.app.t(message))
             return
         lang = self.app.lang
         self.run(lambda: suggest.suggestions(self.source, shape, base, value, how, conditions, lang), self.show_found)
@@ -1418,6 +1582,9 @@ def smoke_insight(template, excel, output):
 def smoke(template, excel, output):
     """Build check for the frozen exe: GUI toolkit starts, and a real fill and save work. Exit code 0 means fine."""
     try:
+        if (hashlib.sha256(native_vba.bundled_engine_path().read_bytes()).hexdigest() != native_vba.ENGINE_SHA256
+                or not os.path.isfile(resource("native_vba_host.ps1"))):
+            raise RuntimeError("VBA comparison resources are missing or damaged.")
         root = tk.Tk()
         root.withdraw()
         root.destroy()

@@ -1,8 +1,8 @@
 **English** | [한국어](reliability-hardening.ko.md)
 
-# Numeric reliability: development source
+# Numeric reliability in v0.4.0
 
-These changes are **unreleased**. They describe this development source tree, not the published v0.3.0 executable. Earlier Windows/Office checks in the [development history](development-history.md) apply to their recorded artifacts.
+This guide describes the checks shipped in v0.4.0. Earlier Windows and Office checks apply to the artifacts recorded in the [development history](development-history.md). [Feedback and Excel VBA experiments](reliability-history.md).
 
 The objective is to reduce manual number checking by checking the source, calculation and saved PowerPoint separately. It cannot establish whether a source is true or a selected business measure is the right one.
 

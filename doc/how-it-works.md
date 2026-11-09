@@ -8,7 +8,7 @@ For a feature-by-feature reference with inputs, formulas, defaults, failure beha
 
 Preview and Generate both call `core.run`. Preview fills a copy in memory and throws it away. So the list you check is what the report will hold, not an estimate.
 
-The unreleased development source checks filled text/tables/charts on serialized preview and final output. Saving reuses the preview source snapshot, checks source fingerprints and refuses both a known mismatch and incomplete independent coverage. Supported formula caches and numeric text calculations have separate source checks; this does not certify all prose or Office layout. See [the current reliability contract](reliability-hardening.md), [user behavior](verification.md) and [algorithms and code structure](verification-design.md). These extensions are not part of the published v0.3.0 executable.
+v0.4.0 checks filled text, tables and charts on serialized preview and final output. Saving reuses the preview source snapshot, checks source fingerprints and refuses a known mismatch or incomplete independent coverage. Supported formula caches and numeric text calculations have separate source checks. [Reliability contract](reliability-hardening.md) · [User behavior](verification.md) · [Algorithms and code structure](verification-design.md).
 
 ## Placeholders split across runs
 

@@ -4,7 +4,7 @@
 
 Automatic selection is a suggestion. Check the sheet, measure, period, conditions and unit shown before generating. An absent warning does not prove that the chosen figure matches your business question.
 
-The [formula/text/precision hardening](reliability-hardening.md) is unreleased development source. It refuses saving when coverage is partial as well as when a mismatch is known. The Windows/Office evidence below describes the published v0.3.0 artifact, not this changed source or a new executable.
+v0.4.0 checks supported formulas, numeric text and precision, and refuses saving on a mismatch or incomplete coverage. The Windows and Office evidence below applies to v0.3.0. [v0.4.0 verification scope](reliability-hardening.md).
 
 ## Supported boundaries
 
@@ -30,7 +30,7 @@ Explicit XLSX row-outline levels can be preserved as descriptive tables without 
 
 The eighth measurement used eight previously unseen public files on frozen v0.2.0 code. It generated six reports and refused two complex layouts, and found an empty chart, missing years/units and excess sentence filtering. Once used to fix these defects, those inputs are regression data; rerunning them is not a new fair accuracy score.
 
-Those two refused layouts now have bounded source-table support and independent regression checks. Tables and category/date/XY charts are checked automatically before saving; the app distinguishes passed, partial and blocked. The unreleased source extends the guard to text and supported formulas and refuses saving for partial coverage. The actual app uses a small Dafny-proved sum/equality/tolerance kernel, not a universal whole-app proof. See [exact boundaries](verification.md).
+Those two refused layouts now have bounded source-table support and independent regression checks. The app distinguishes passed, partial and blocked for tables and category/date/XY charts. v0.4.0 extends the guard to numeric text and supported formulas and refuses saving for partial coverage. The app uses a small Dafny-proved kernel for sum, equality and tolerance. [Exact boundaries](verification.md).
 
 Existing sample use and automated checks are sufficient for the current scope by project decision. A separate human trial remains excluded. The later clean-Windows request was completed with the exact v0.3.0 EXE: 19 cases passed in a fresh offline Windows 10 Pro 19045.3803 VM with no Office or separate Python. Native PowerPoint 16.0.20326.20232 rendered 18 host and 18 actual guest reports (44 slides total); the guest's 22 slide images matched the inspected host images byte for byte. This does not establish Windows 11, another physical PC, private-company compatibility or an independent human trial.
 

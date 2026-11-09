@@ -4,7 +4,7 @@
 
 This guide explains the automatic checks in the source tree: why the extra code exists, what mathematics it uses and where its guarantees stop. For the app's states and special-case report notes, start with [the user guide](verification.md). For current unsupported layouts and evidence gaps, see [limits](limits.md).
 
-The formula/text/exact-intermediate hardening described here is **unreleased development source**, not a feature or new validation claim for the published v0.3.0 executable. See [the current contract](reliability-hardening.md).
+v0.4.0 ships the formula, text and exact-intermediate checks described here. [Verification contract](reliability-hardening.md).
 
 ## Why check more than the calculated number?
 

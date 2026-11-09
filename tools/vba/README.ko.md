@@ -4,6 +4,8 @@
 
 기존 SlideFill의 Python/Fraction 계산을 유지하면서, 설치된 데스크톱 Excel이 실행하는 자체 VBA 모듈과 비교합니다. 앱의 기본 계산 경로는 바꾸지 않습니다. [SlideFillOracle.bas](SlideFillOracle.bas)에는 파일·네트워크 접근이나 통합 문서 자동 실행 이벤트가 없습니다.
 
+앱의 **Excel VBA 검산**에서도 지원하는 보고서 집계에 같은 `SFCalc` 모듈을 사용합니다. [내장 통합 문서](../../assets/slidefill-vba.xlsm)에는 빈 시트 두 장과 실험에 사용한 VBA 프로젝트가 들어 있습니다. 재현하려면 검증을 마친 단일 모듈 통합 문서를 입력으로 `python tools/vba/make_runtime_engine.py TESTED.xlsm NEW.xlsm`을 실행합니다. 이 도구는 VBA 프로젝트 해시를 확인한 뒤 원본 시트 데이터를 복사하지 않고 새 파일을 만들며, 기존 파일을 덮어쓰지 않습니다.
+
 비교할 경로는 세 가지입니다.
 
 1. Excel 시트 수식이 지정한 셀에 대해 VBA `SFCalc` 사용자 함수를 호출합니다.
@@ -95,10 +97,10 @@ Excel 16.0(빌드 20326)에서 21개 사례의 원본 통합 문서, 엔진 사�
 
 명시적 입력에 대한 위 연산만 다룹니다. 자동 선택, 모든 수식, 날짜·달력, 임의의 사용자 매크로, 보고서 렌더링을 다시 구현하지 않습니다. Double 반복 합이나 제한된 Decimal 중간값은 Python/Fraction이 정확하게 계산하는 경우에도 정보를 잃거나 범위를 넘을 수 있습니다. Excel 숫자 셀에서 이미 사라진 자릿수는 VBA로 복원되지 않습니다. 상쇄, 반올림 경계, 음수·0 기준, 빈칸·오류, 미세한 변화를 시험 자료에 포함해야 합니다.
 
-기존 [Python 산술](../../facts.py), [core](../../core.py), 수치 보호 장치와 테스트를 유지합니다. 실제 통합 검사에는 시험 자료·모듈 해시, 선택 셀, Excel 버전/빌드, 두 VBA 호출 경로, Python 기대값, 원본 해시 보존을 기록해야 합니다. 실험 준비만으로 새 빌드·릴리스·기본 계산 경로 교체를 뜻하지 않습니다.
+보고서 값은 기존 [Python 산술](../../facts.py), [core](../../core.py), 수치 보호 장치로 계산합니다. 앱 검산은 독립 검증을 통과한 표·차트의 단일 열 합계·평균·개수를 대상으로 합니다. 숫자 형태의 텍스트, 날짜, 수식, 필터나 여러 열을 쓰는 집계는 첫 검산 범위에서 제외합니다.
 
 ## 1차 출처와 라이선스
 
 Microsoft 문서의 [Application.Run](https://learn.microsoft.com/en-us/office/vba/api/excel.application.run), [VBA Round](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/round-function), [Double](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/double-data-type), [Decimal](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/decimal-data-type), [Value2](https://learn.microsoft.com/en-us/office/vba/api/excel.range.value2), [Text](https://learn.microsoft.com/en-us/office/vba/api/excel.range.text), [매크로 보안](https://support.microsoft.com/en-us/excel/change-macro-security-settings-in-excel)을 확인했습니다. [VBA는 Office에 통합](https://learn.microsoft.com/en-us/visualstudio/vsto/vba-and-office-solutions-in-visual-studio-compared?view=visualstudio)되어 있습니다. 소스 모듈을 앱에 넣는 것만으로 독립 실행 엔진이나 Microsoft 바이너리 재배포 권한이 생기지 않습니다.
 
-직접 작성한 모듈·도구는 기존 프로젝트의 [MIT 라이선스](../../LICENSE)를 따르며 고지문을 보존합니다. 타사 매크로 소스, 출처가 불명확한 `vbaProject.bin`, 새 라이브러리, Microsoft 런타임 바이너리를 포함하지 않습니다. 설치된 Office/VBA에는 자체 라이선스와 정책이 적용됩니다. Office의 구체적인 재배포 권리는 확인하지 않았으며, 새 라이선스 체계도 적용하지 않습니다.
+직접 작성한 모듈과 이를 컴파일한 VBA 프로젝트, 도구는 기존 [MIT 라이선스](../../LICENSE)를 따릅니다. 설치된 Office/VBA에는 호스트의 라이선스와 정책이 적용됩니다.

@@ -2,7 +2,7 @@
 
 # 정보 손실을 줄이기 위한 연구 방법
 
-이 문서는 아직 릴리스하지 않은 신뢰성 개선의 연구 근거를 기록한다. [기능별 알고리즘](feature-algorithms.ko.md)과 [검증 한계](verification.ko.md)를 함께 읽을 수 있다. 아래 논문은 SlideFill을 평가하지 않았다. 앱에 적용하는 선택은 우리의 공학적 추론이며, 실제 저장된 코드와 실행 파일을 검사해 성립 여부를 확인해야 한다.
+v0.4.0 신뢰성 개선에 참고한 연구를 기록한다. 앱에 적용한 선택은 공학적 추론이며 SlideFill 자체를 시험한 결과는 별도로 기록한다. [기능별 알고리즘](feature-algorithms.ko.md) · [검증 한계](verification.ko.md) · [프로젝트 실험](reliability-history.ko.md).
 
 ## 검색과 근거
 

@@ -2,7 +2,7 @@
 
 # CPU verification
 
-This guide describes the **unreleased development source**, including [numeric reliability hardening](reliability-hardening.md). It does not add those changes to the published v0.3.0 executable. Historical validation applies to the artifact recorded with it.
+This guide describes the verification shipped in v0.4.0. Each historical result applies to its recorded artifact. [Numeric reliability changes](reliability-hardening.md).
 
 Verification runs **automatically inside the app** for filled text, tables and charts, including structured rate/organization reports. No local model, GPU, separate checker window or user command is needed. Preview and generation use the same `core.run` guard.
 

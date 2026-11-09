@@ -51,7 +51,7 @@ COMPARISONS = ((SAME_PERIOD_LAST_YEAR, SAME_PERIOD_LAST_YEAR), (LAST_WEEK, LAST_
 CURRENT_PERIOD_WORD = re.compile(r"이번\s*기간|current\s+period|this\s+period", re.I)
 PART_OF_A_YEAR = re.compile(r"(까지|\s*year\s*to\s*date)$", re.I)
 SAYS_LENGTHS_DIFFER = re.compile(r"기간이\s*달|개월치|그대로\s*읽|cannot be read|months of|lengths? differ", re.I)
-PERCENT = re.compile(r"[+-]?(\d[\d,]*(?:\.\d+)?)\s*%")
+PERCENT = re.compile(r"[+−-]?(\d[\d,]*(?:\.\d+)?)\s*%")
 COMPARED_WITH_NOW = re.compile(r"(?:^|_)(?:prev|year|week|avg\d*|read_prev_year|read_year)$")
 ABOUT_NAMED_ITEMS = re.compile(r"(?:^|_)(?:item_\d+|read_top|read_gap|read_top_three|read_range)$")  # 서울 23.9%, or the top 3: the name of the thing compared is in the sentence, and the slide says what was counted
 MONTHLY_BASE = re.compile(r"\S*\s*월평균\s*(?:\d[\d,.]*\s*)?(?:대비|보다|에\s*비해)")  # what it is compared with; the thing compared must be a monthly mean as well
@@ -68,7 +68,7 @@ PLAIN_MEASURE = re.compile(r"항목|items?|rows?|sheet|all|값", re.I)
 UNFINISHED_LEAD = re.compile(r"끝나지 않은|had not ended")
 SAYS_UNFINISHED = re.compile(r"끝나지 않|아직|덜 쌓|잠정|현재까지|not ended|not over|incomplete|so far|to date|partial", re.I)
 RISING_OR_RUN_WORD = re.compile(r"연속|최고|가장 높|증가|상승|늘었|\b(?:in a row|highest|above|higher|rose|risen|rises|rise|up|increased?)\b", re.I)
-SIGN_BEFORE_WORD = re.compile(r"[+-](\d[\d,]*(?:\.\d+)?\s*%)(?=\s*(?:above|below|higher|lower|more|less|up\b|down\b|높|낮|많|적|증가|감소|상승|하락))", re.I)
+SIGN_BEFORE_WORD = re.compile(r"[+−-](\d[\d,]*(?:\.\d+)?\s*%)(?=\s*(?:above|below|higher|lower|more|less|up\b|down\b|높|낮|많|적|증가|감소|상승|하락))", re.I)
 FALLING_WORD = re.compile(r"최저|가장 낮|감소|하락|낮습|줄었|\b(?:lowest|below|lower|fell|fallen|falls|fall|down|decreased?)\b", re.I)
 ITEM_FACT = re.compile(r"(?:^|_)item_\d+$")
 ITEM_NAME = re.compile(r"(?:(?:\d+위|number \d+)\s+)?(.+?)\s+(?:실적\s+|came to\s+)?[\d,.-]+(?:,|$|\s)")  # 1위 연구소 19,468, or against a budget 연구소 실적 19,468
@@ -223,13 +223,21 @@ def _with_missing_citations(cited, pack, text):
 
 def check(item, pack, lang):
     """Reasons to leave a sentence out. This catches wrong citations and known misreadings, not every error of meaning."""
+    if not isinstance(item, dict):
+        return ["statement"]
+    return _check(item.get("statement"), item.get("fact_ids"), pack, lang)[0]
+
+
+def _check(text, fact_ids, pack, lang):
+    """Return rejection reasons and the exact facts used by the checks."""
+    if not isinstance(text, str) or not text.strip():
+        return ["statement"], ()
     known = {fact.id: fact for fact in pack}
-    text = item.get("statement", "")
+    if (not isinstance(fact_ids, (list, tuple)) or not fact_ids
+            or any(not isinstance(name, str) or name not in known for name in fact_ids)):
+        return ["citation"], ()
+    cited = _with_missing_citations([known[name] for name in dict.fromkeys(fact_ids)], pack, text)
     problems = []
-    cited = [known[name] for name in item.get("fact_ids", []) if name in known]
-    if not cited:
-        problems.append("citation")
-    cited = _with_missing_citations(cited, pack, text)
     if unbacked_numbers(text, (n for fact in cited for n in fact.numbers)):
         problems.append("number")
     if CAUSE.search(text):
@@ -272,7 +280,7 @@ def check(item, pack, lang):
         low_in_fact = any(RANK_LOW.search(fact.text) for fact in cited)
         if any(pattern.search(text) for pattern in MISREADINGS) or (RANK_LOW.search(text) and not low_in_fact):
             problems.append("meaning")
-    return problems
+    return problems, tuple(fact.id for fact in cited)
 
 
 def _reads_unfinished_as_finished(text, pack, cited=()):
@@ -294,7 +302,7 @@ def _reads_unfinished_as_finished(text, pack, cited=()):
 
 
 def _plain_sign(text):
-    """-2.6% below says the fall twice, and read strictly it is a rise. The word says which way, and the checks still hold the word against the fact."""
+    """Remove a redundant sign after both it and the direction word have been checked."""
     return SIGN_BEFORE_WORD.sub(r"\1", text)
 
 
@@ -413,35 +421,52 @@ def _old_value_as_current(text, cited, pack):
 
 def _direction_of(fact, value):
     """Which way a fact says a percentage went: 1, -1, or 0 when it gives no direction, as with a share of a total."""
-    for raw in re.findall(r"([+-]?)(\d[\d,.]*)%", fact.text):
-        if _number(raw[1]) == value:
-            if raw[0]:
-                return 1 if raw[0] == "+" else -1
-            before = fact.text
-            up, down = bool(UP_WORD.search(before)), bool(DOWN_WORD.search(before))
+    for match in PERCENT.finditer(fact.text):
+        if _number(match[1]) == value:
+            sign = match[0][0]
+            if sign in "+−-":
+                return 1 if sign == "+" else -1
+            up, down = bool(UP_WORD.search(fact.text)), bool(DOWN_WORD.search(fact.text))
             return 1 if up and not down else -1 if down and not up else 0
     return None
 
 
+def _comparison_direction(fact):
+    if fact.relative_change is not None:
+        return (fact.relative_change > 0) - (fact.relative_change < 0)
+    matches = list(PERCENT.finditer(fact.text))
+    if len(matches) == 1 and (value := _number(matches[0][1])) and value[1] != "0":
+        return _direction_of(fact, value)
+    return None
+
+
 def _wrong_way(text, cited):
-    """+6.8% written as below, a share written as a fall, or 420,651 (a count) written as a percentage."""
+    """Match percentage signs and verbal directions to the stated comparison."""
     for clause in CLAUSES.split(text):
-        percents = re.findall(r"[+-]?(\d[\d,]*(?:\.\d+)?)\s*%", clause)
-        if not percents or RESPECTIVELY.search(clause):
+        if RESPECTIVELY.search(clause):
             continue
         up, down = bool(UP_WORD.search(clause)), bool(DOWN_WORD.search(clause))
-        for raw in percents:
-            value = _number(raw)
-            ways = [_direction_of(fact, value) for fact in cited if not fact.id.startswith("cross_")]
-            ways = [way for way in ways if way is not None]
-            if any(fact.id.startswith("cross_") and value in {_number(n) for n in fact.numbers} for fact in cited):
+        said = 0 if up == down else 1 if up else -1
+        bases = [(match, backed) for named, backed in COMPARISONS if (match := named.search(clause))]
+        matching = [fact for fact in cited if all(basis.search(fact.text) for _, basis in bases)]
+        relevant = matching or cited
+        percents = list(PERCENT.finditer(clause))
+        if not percents and said and any(COMPARING.search(clause[:match.start()]) or
+                                         re.search(r"대비|보다|비해", clause[match.end():]) for match, _ in bases):
+            ways = {_comparison_direction(fact) for fact in matching if COMPARED_WITH_NOW.search(fact.id)} - {None}
+            if len(ways) == 1 and said not in ways:
+                return True
+        for match in percents:
+            value = _number(match[1])
+            ways = {_direction_of(fact, value) for fact in relevant if not fact.id.startswith("cross_")} - {None}
+            if any(fact.id.startswith("cross_") and value in {_number(n) for n in fact.numbers} for fact in relevant):
                 continue
             if not ways:
-                return True  # no cited fact gives this as a percentage
-            if up == down:
-                continue
-            said = 1 if up else -1
-            if said not in ways:
+                return True
+            sign = match[0][0]
+            if value and value[1] != "0" and sign in "+−-" and (1 if sign == "+" else -1) not in ways:
+                return True
+            if said and said not in ways:
                 return True
     return False
 
@@ -567,20 +592,27 @@ def make_candidates(pack, lang, runs=RUNS, first_seed=0, on_run=None):
                                   "keep_alive": "5m", "options": {"seed": seed, "num_ctx": 4096, "num_predict": 900, "temperature": TEMPERATURE}}, TIMEOUT)
         try:
             items = json.loads(reply.get("response", "")).get("insights", [])
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
+            items = []
+        if not isinstance(items, list):
             items = []
         for item in items:
             if not isinstance(item, dict):
-                continue
-            item["statement"] = _plain_sign(CITATION_TEXT.sub("", str(item.get("statement", ""))).strip())
-            if check(item, pack, lang):
                 result.rejected += 1
                 continue
-            if item["statement"] not in seen:
-                seen.add(item["statement"])
-                result.candidates.append(Candidate(item["statement"], tuple(item.get("fact_ids", []))))
-            hypothesis = str(item.get("hypothesis", "")).strip()
-            if hypothesis and hypothesis not in result.hypotheses:
+            text = item.get("statement")
+            if isinstance(text, str):
+                text = CITATION_TEXT.sub("", text).strip()
+            problems, cited = _check(text, item.get("fact_ids"), pack, lang)
+            if problems:
+                result.rejected += 1
+                continue
+            text = _plain_sign(text)
+            if text not in seen:
+                seen.add(text)
+                result.candidates.append(Candidate(text, cited))
+            hypothesis = item.get("hypothesis")
+            if isinstance(hypothesis, str) and (hypothesis := hypothesis.strip()) and hypothesis not in result.hypotheses:
                 result.hypotheses.append(hypothesis)
         if on_run:
             on_run(done, runs, Candidates(model, list(result.candidates), list(result.hypotheses), result.rejected))

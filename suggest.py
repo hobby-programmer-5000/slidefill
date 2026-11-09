@@ -1250,13 +1250,17 @@ def _try(source, code, key, place):
     return found
 
 
-def suggestions(source, shape, base, value=None, how=None, conditions=(), lang="ko", joined=True):
-    """Everything that works for this choice, with its real result. What fails is left out, except when all of it fails, so the reason can be seen."""
+def suggestions(source, shape, base, value=None, how=None, conditions=None, lang="ko", joined=True):
+    """Everything that works for this choice, with its real result.
+
+    Omitted conditions use the defaults. An empty selection uses all rows.
+    Keep the first failure when no result works, so the reason can be seen.
+    """
     value = value or default_value(base)
     if value is None:
         return []
     how = how or default_how(base, value)
-    conditions = list(conditions) or default_conditions(source, shape, base, value, how)
+    conditions = default_conditions(source, shape, base, value, how) if conditions is None else list(conditions)
     reference = body(shape, base, value, how, conditions, lang, joined)
     made = [_try(source, code, key, place) for code, key, place in _plan(base, lang, reference)]
     change = two_periods(source, shape, base) or actual_and_budget(base, value)

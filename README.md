@@ -7,11 +7,11 @@ Choose an Excel workbook and get a PowerPoint report, or fill your own company t
 > [!IMPORTANT]
 > **Review reports before sharing.** SlideFill uses explicit calculation rules and checks supported values and saved output. Optional AI suggests wording. A passed check does not certify source accuracy, business meaning or every Office layout.
 >
-> Confirm the selected sheets, measures, aggregation, periods, units and warnings; inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. Use a recalculated, saved workbook. The [unreleased reliability changes](doc/reliability-hardening.md) add bounded formula-cache and text checks and refuse saving when independent coverage is incomplete; they are not part of the published v0.3.0 executable.
+> Confirm the selected sheets, measures, aggregation, periods, units and warnings, then inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. Use a recalculated, saved workbook. [v0.4.0's reliability checks](doc/reliability-hardening.md) cover supported formula caches and numeric text and block saving when independent coverage is incomplete.
 
-[![SlideFill demo: preview values and create a report](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4)
+[![SlideFill demo showing the reporting workflow](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4)
 
-[Watch the demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.3.0/SlideFill-demo.mp4). Original synthetic data; a scripted UI demo from the release source on Windows 10. The finished report is rendered by PowerPoint on the host.
+The demo uses synthetic data and a scripted UI session from the v0.4.0 source on Windows 10. PowerPoint renders the saved report on the host. [Watch the demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4).
 
 ## Why I made this
 
@@ -33,13 +33,13 @@ Regular reports are the same slides with new numbers. Copying them by hand is sl
 - **No silent blanks**: anything that cannot be filled stays as a visible `{{placeholder}}`, is listed as a problem, and the app asks before continuing.
 - **Your files stay as they are**: the template and workbook are only read. Each report is a new dated file that never overwrites another.
 - **Insight sentences you choose from** (optional): one sentence that says what a figure means, so whoever reads the report gets the point without working it out from the table. A model on your own PC reads the calculated results and suggests them. They pass checks, but nothing goes in the report until you pick it.
-- **Nothing leaves your PC**: no account, no Office needed to run it, no internet connections. The optional insight step talks only to Ollama on this PC. English and Korean.
+- **Runs locally**: SlideFill works on your PC without an account. The optional VBA check uses desktop Excel and insight suggestions talk only to Ollama on this PC. English and Korean.
 
 ## Accuracy and supported scope
 
 SlideFill checks supported values and saved representations automatically, but does not certify that the source data is true, the selected measure answers your business question, or every input format and Office layout is correct. Review the sheet, period, unit, conditions and warnings before using a report.
 
-The development source retains exact rational calculation intermediates, independently checks a bounded set of saved formulas and numeric text placeholders, and blocks known mismatches **and partial coverage**. It still reads saved workbooks rather than recalculating them in Excel, and does not certify all prose or layouts. See [the exact contract and remaining limits](doc/reliability-hardening.md). These changes are unreleased; v0.3.0 has the earlier table/chart checks described in its release notes.
+v0.4.0 retains exact rational calculation intermediates, independently checks a bounded set of saved formulas and numeric text placeholders, and blocks saving for known mismatches or incomplete coverage. It reads the workbook's saved values. The optional Excel VBA check compares supported aggregates in desktop Excel. [Exact checks and scope](doc/reliability-hardening.md) · [Feedback, research and VBA experiments](doc/reliability-history.md).
 
 See [feature-by-feature principles and formulas](doc/feature-algorithms.md), [automatic checks and what to do](doc/verification.md), [research methods and their limits](doc/research-methods.md), [supported layouts](doc/limits.md), and [code map and proof boundaries](doc/verification-design.md). These guides describe the source tree; check a downloaded executable's release notes for its included features.
 
@@ -49,7 +49,7 @@ Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-500
 
 The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
 
-v0.3.0 is the current release, tested with synthetic and public inputs. The exact executable passed a fresh Windows 10 VM without Office and native PowerPoint rendering on the host. Windows 11 and private-company compatibility are untested. See the [release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.3.0) and [development and verification history](doc/development-history.md).
+v0.4.0 was tested on Windows 10 using synthetic inputs and the installed desktop Office. The earlier clean Windows 10 VM test applies to v0.3.0. [Release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.4.0) · [Development and verification history](doc/development-history.md).
 
 ## Build from source
 
@@ -63,9 +63,21 @@ build.bat
 
 `build.bat` runs the unit tests, builds `dist\SlideFill.exe`, then runs that exe on the sample files. Any failure stops it.
 
-The separate [native VBA comparison experiment](tools/vba/README.md) keeps the app's Python engine and requires installed desktop Excel; it is a developer tool, not part of normal report generation.
-
 ## Usage
+
+### From workbook to report
+
+1. **Choose your files.** Click **Add files…** or drop an Excel workbook into the window. If you have a `.pptx` template, enable **Use my own PowerPoint template (optional)** and select it.
+2. **Check the preview.** Click **Preview (F5)**. Select a row to check its value and source, including the sheet, period and unit. Resolve any warnings and preview again after making changes.
+3. **Compare with Excel if needed.** Click **VBA Check** to compare supported sums, means and counts in report tables and charts with desktop Excel. The report uses the exact Python values. See [Compare with Excel VBA](#compare-with-excel-vba).
+4. **Review an insight draft if needed.** With Ollama running and the model installed, select a figure or an insight row and click **Suggest insights (Ctrl+I)**. For your own template, add an `insight` placeholder first. Select a sentence to see its calculated basis. To use it, click **Add to sentence**, review or edit it, and click **Use in report**. You can keep the calculated sentence.
+5. **Generate and inspect the report.** Click **Generate report (Ctrl+G)** and then **Open report** to check the saved PowerPoint.
+
+### Compare with Excel VBA
+
+After choosing your input and any template, click **VBA Check**. It compares supported single-column sums, means, and counts in report tables and charts with the same operations in desktop Excel. The results distinguish exact equality, equality after rounding to a Double, and differences. Report generation uses the exact Python values.
+
+This check requires desktop Excel with VBA on Windows. If Excel blocks the macro, use the app's prompt to open the included SlideFill workbook. If Excel offers **Enable Content**, allow it for that file, close it without saving, and retry. SlideFill opens only its own verified macro workbook in Excel. The [native VBA experiment](tools/vba/README.md) describes the original comparison and how to reproduce the bundled workbook.
 
 ### With a workbook alone
 
@@ -73,7 +85,7 @@ The separate [native VBA comparison experiment](tools/vba/README.md) keeps the a
 
 **2. Check the values.** The bottom of the window says which sheet and figure it took. To show something else, press **Ctrl+R** and change the sheet, figure or conditions.
 
-**3. Press Ctrl+G.** A new `<workbook name>_<date>.pptx` appears beside the workbook. Next month: open the app, press Ctrl+G.
+**3. Press Ctrl+G.** A new `<workbook name>_<date>.pptx` appears beside the workbook. When your data changes, preview it again before creating the next report.
 
 If there are signs it chose wrongly, it shows why and asks first. If you choose **Create it as it is**, the slide says the value was not confirmed.
 
@@ -182,7 +194,7 @@ For a sentence that reads the figures, type `{{insight:Daily!A,C}}` in text, the
 4. Checks leave out sentences with numbers their cited facts do not hold, stated causes, and known misreadings.
 5. You read the rest against their basis, then add and edit what you want.
 
-Until you choose, the report uses the calculated sentence and the list says so. When the figures change, a sentence chosen for the old ones is not reused. **The checks do not catch every error of meaning. In testing, about 1 in 6 Korean sentences from the best model was wrong, so read them before you use them.**
+Until you choose, the report uses the calculated sentence and the list says so. When the figures change, a sentence chosen for the old ones is not reused. **In an earlier evaluation, about 1 in 6 Korean sentences from the best model tested was wrong. Review each draft against its calculated basis before using it.**
 
 This step needs [Ollama](https://ollama.com) with up to 8GB of video memory. Everything else works without it. To set it up:
 
@@ -193,7 +205,7 @@ ollama pull qwen3.5:4b
 
 **2. Choose the template and workbook.** The list shows what will go where. Press F5 to refresh it.
 
-**3. Press Ctrl+G.** The app remembers your files, so next month: open it, press Ctrl+G.
+**3. Press Ctrl+G.** The app remembers your files. Preview them again when you update your data or template.
 
 Try it with `samples/sample_template.pptx` and `samples/sample_data.xlsx`.
 
@@ -233,7 +245,7 @@ The Excel and PowerPoint checks need Office installed, and the format comparison
 
 See [supported layouts and remaining verification](doc/limits.md). Public-file regression checks do not establish compatibility with your company's files or replace a person's trial of the executable.
 
-Automatic CPU verification runs inside preview and saving for filled tables and category/date/XY charts. The unreleased source also checks text inputs and supported formula caches, and blocks incomplete coverage. No local model or separate user command is required. See the [verification guide](doc/verification.md) for the exact coverage.
+Automatic CPU verification runs during preview and saving for filled tables, category/date/XY charts, supported numeric text and formula caches. It blocks saving if coverage is incomplete. [Verification guide](doc/verification.md).
 
 ## Project layout
 
@@ -260,7 +272,7 @@ samples/            made-up example files
 
 - [@hobby-programmer-5000](https://github.com/hobby-programmer-5000): idea, requirements, testing
 - **Claude** (Anthropic): design and implementation, pair-programmed in [Claude Code](https://claude.com/claude-code)
-- **Codex** (OpenAI): participated from the eighth measurement on v0.2.0 onward, including v0.3.0 and the current unreleased numeric hardening: measurement, regression fixes, bounded layout support, automatic CPU verification and proof integration, build/privacy checks, Windows 10/Office validation, documentation and release preparation. See [the work history](doc/development-history.md).
+- **Codex** (OpenAI) contributed from the eighth v0.2.0 measurement through v0.4.0, including measurement, regression fixes, CPU verification, native Excel experiments, Windows and Office testing, documentation and release preparation. [Work history](doc/development-history.md).
 
 ## License
 

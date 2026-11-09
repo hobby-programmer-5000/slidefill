@@ -4,6 +4,8 @@
 
 This experiment keeps SlideFill's existing Python/Fraction calculations and compares them with one original VBA module hosted by installed desktop Excel. It does not change the normal app calculation backend. [SlideFillOracle.bas](SlideFillOracle.bas) has no file/network access or automatic workbook events.
 
+The app's optional **Excel VBA Check** now uses the same `SFCalc` module for supported report aggregates. The bundled [engine workbook](../../assets/slidefill-vba.xlsm) contains two empty sheets and the exact VBA project from the native experiment. To reproduce it, run `python tools/vba/make_runtime_engine.py TESTED.xlsm NEW.xlsm` with the tested single-module workbook as input. The generator verifies the VBA project hash, writes a fresh workbook with no copied worksheet data, and refuses to overwrite a file.
+
 The intended comparison has three paths:
 
 1. Excel worksheet formulas call the VBA `SFCalc` UDF over declared cells.
@@ -95,10 +97,10 @@ Use separate comparisons for contributing cells, status, raw numeric value, decl
 
 This spike covers only the listed operations over explicit inputs. It does not reimplement automatic source selection, every formula, dates/calendars, arbitrary workbook macros or report rendering. A Double loop or bounded Decimal intermediate can lose information or overflow where Python/Fraction remains exact. Numeric cells already limited by Excel storage cannot regain missing digits in VBA. Cancellation, rounding ties, negative/zero bases, blank/error inputs and tiny changes belong in the comparison fixture.
 
-Production [Python arithmetic](../../facts.py), [core](../../core.py), current numeric guards and existing tests remain in place. An actual integration result must record fixture/module hashes, cell selections, Excel version/build, both invocation routes, Python expectation and input hash preservation. No new build, release or production-backend replacement is implied by preparing this spike.
+Production [Python arithmetic](../../facts.py), [core](../../core.py) and numeric guards supply the report's values. The app check compares independently verified table and chart outputs for supported single-column sums, means and counts. Numeric text, dates, formulas and filtered or multi-column aggregates are outside this first comparison scope.
 
 ## Primary sources and licensing
 
 Microsoft documents [Application.Run](https://learn.microsoft.com/en-us/office/vba/api/excel.application.run), [VBA Round](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/round-function), [Double](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/double-data-type), [Decimal](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/decimal-data-type), [Value2](https://learn.microsoft.com/en-us/office/vba/api/excel.range.value2), [Text](https://learn.microsoft.com/en-us/office/vba/api/excel.range.text) and [macro security](https://support.microsoft.com/en-us/excel/change-macro-security-settings-in-excel). [VBA is integrated with Office](https://learn.microsoft.com/en-us/visualstudio/vsto/vba-and-office-solutions-in-visual-studio-compared?view=visualstudio); bundling a source module does not establish a standalone runtime or redistribution entitlement.
 
-Original module/tooling follows the existing project [MIT license](../../LICENSE); retain its notice. No third-party macro source, opaque `vbaProject.bin`, new library or Microsoft runtime binary is incorporated. Installed Office/VBA remains subject to its own applicable license and policy; exact Office redistribution rights are unverified. No new license scheme is applied.
+The original module, its compiled VBA project and the tooling follow the existing project [MIT license](../../LICENSE). Installed Office/VBA remains subject to the host's applicable license and policy.

@@ -79,6 +79,22 @@ STRINGS = {
         "output": "Save to folder",
         "browse": "Browse…",
         "preview": "Preview (F5)",
+        "vba_button": "VBA Check",
+        "vba_check": "Excel VBA Check",
+        "vba_working": "Checking report calculations in Excel…",
+        "vba_ready": "Excel VBA check finished.",
+        "vba_unverified": "This report needs to pass verification before it can be checked in Excel.",
+        "vba_empty": "This report has no supported single-column sums, means, or counts to check. Skipped aggregate outputs: {count}.",
+        "vba_blocked": "Excel did not allow the bundled macro to run. Open the SlideFill VBA workbook now? If Excel offers Enable Content for this file, allow it, close the workbook without saving, and retry the check.",
+        "vba_unavailable": "This check requires desktop Microsoft Excel with VBA on Windows.",
+        "vba_invalid": "SlideFill could not verify the VBA workbook. If you previously opened or edited the SlideFill-VBA workbook next to the settings file, move that copy aside and retry.",
+        "vba_timeout": "The Excel VBA check took too long. Close any SlideFill VBA workbook in Excel and retry.",
+        "vba_failed": "The Excel VBA check could not finish. Close any SlideFill VBA workbook in Excel and retry.",
+        "vba_summary": "Checked {count} table or chart calculations. Skipped {skipped} aggregate outputs. The report uses the exact Python values.",
+        "vba_exact": "Exact match",
+        "vba_same_double": "Same rounded Double",
+        "vba_different": "Different value",
+        "vba_excel_error": "Excel error code",
         "generate": "Generate report (Ctrl+G)",
         "open_result": "Open report",
         "open_folder": "Open folder",
@@ -118,7 +134,13 @@ STRINGS = {
         "error_title": "SlideFill",
         "missing_inputs": "Choose a workbook first.",
         "help_title": "How SlideFill works",
-        "help_body": """Choosing a workbook is enough. SlideFill reads it, chooses the contents, and shows every value before you create the report. If it took the wrong figure, press Ctrl+R to change it.
+        "help_body": """From input to report
+
+1. Add an Excel file. To fill an existing PowerPoint, enable Use my own PowerPoint template and choose a .pptx.
+2. Click Preview (F5). Check the figures and their sources. Use Suggest references (Ctrl+R) to change a reference.
+3. If needed, click VBA Check to compare supported sums, means and counts with desktop Excel.
+4. If needed, select a figure and click Suggest insights (Ctrl+I). Choose a draft, read its calculated basis, and click Add to sentence, then Use in report. The calculated sentence is available without Ollama.
+5. Click Generate report (Ctrl+G), then Open report to check the saved PowerPoint.
 
 The rest of this page is for your own company template. Tick "Use my own PowerPoint template" and mark in it what goes where.
 
@@ -301,6 +323,7 @@ Shortcuts
         "helper_pick_row": "Select a row to see where it goes.",
         "helper_nothing": "No dates or named figures could be read from this sheet. Try another sheet, or press F1 to write references by hand.",
         "helper_rate_needs_condition": "A share needs a condition. Choose which rows count under Only where.",
+        "helper_condition_needs_value": "Choose a value for each selected condition, or select (all rows) to remove it.",
         "helper_shape_dates": "\"{sheet}\": dates in {spec}, {first} to {last}, {count} periods.",
         "helper_shape_names": "\"{sheet}\": named items in {spec}, {count} names, no dates.",
         "helper_shape_joined": "Continues across the sheets {pattern}.",
@@ -431,6 +454,22 @@ Shortcuts
         "output": "저장 폴더",
         "browse": "찾아보기…",
         "preview": "미리보기 (F5)",
+        "vba_button": "Excel VBA 검산",
+        "vba_check": "Excel VBA 검산",
+        "vba_working": "Excel에서 보고서 계산을 검산하는 중…",
+        "vba_ready": "Excel VBA 검산 작업이 끝났습니다.",
+        "vba_unverified": "보고서가 검증을 통과한 뒤 Excel에서 검산할 수 있습니다.",
+        "vba_empty": "이 보고서에는 검산 가능한 단일 열 합계·평균·개수가 없습니다. 건너뛴 집계 결과 {count}건.",
+        "vba_blocked": "Excel에서 내장 매크로 실행을 허용하지 않았습니다. SlideFill VBA 통합 문서를 여시겠습니까? Excel에 ‘콘텐츠 사용’이 표시되면 이 파일에서 사용을 누르고, 저장하지 않고 닫은 뒤 다시 검산하세요.",
+        "vba_unavailable": "검산하려면 Windows 데스크톱 Microsoft Excel과 VBA가 필요합니다.",
+        "vba_invalid": "VBA 통합 문서를 확인할 수 없습니다. 설정 파일 옆의 SlideFill-VBA 통합 문서를 열어 수정한 적이 있다면 그 복사본을 다른 곳으로 옮기고 다시 시도하세요.",
+        "vba_timeout": "Excel VBA 검산 시간이 초과됐습니다. Excel에 SlideFill VBA 통합 문서가 열려 있으면 닫고 다시 시도하세요.",
+        "vba_failed": "Excel VBA 검산을 마치지 못했습니다. Excel에 SlideFill VBA 통합 문서가 열려 있으면 닫고 다시 시도하세요.",
+        "vba_summary": "표·차트 계산 {count}건을 검산했고 집계 결과 {skipped}건을 건너뛰었습니다. 보고서에는 Python의 정확한 값을 사용합니다.",
+        "vba_exact": "정확히 일치",
+        "vba_same_double": "Double로 반올림하면 일치",
+        "vba_different": "값이 다름",
+        "vba_excel_error": "Excel 오류 코드",
         "generate": "보고서 만들기 (Ctrl+G)",
         "open_result": "보고서 열기",
         "open_folder": "폴더 열기",
@@ -470,7 +509,13 @@ Shortcuts
         "error_title": "SlideFill",
         "missing_inputs": "엑셀을 먼저 고르세요.",
         "help_title": "SlideFill 사용법",
-        "help_body": """엑셀만 고르면 됩니다. SlideFill이 파일을 읽고 내용을 골라, 보고서를 만들기 전에 모든 값을 보여 줍니다. 수치를 잘못 골랐다면 Ctrl+R을 눌러 바꾸세요.
+        "help_body": """파일 선택부터 보고서 확인까지
+
+1. 엑셀 파일을 추가합니다. 기존 PowerPoint를 채우려면 내 PowerPoint 템플릿 사용을 켜고 .pptx를 고릅니다.
+2. 미리보기 (F5)를 눌러 값과 출처를 확인합니다. 바꿀 참조가 있으면 참조 추천 (Ctrl+R)을 누릅니다.
+3. 필요하면 Excel VBA 검산을 눌러 지원하는 합계·평균·개수를 데스크톱 Excel 계산값과 대조합니다.
+4. 필요하면 수치를 고르고 통찰 문장 제안 (Ctrl+I)을 누릅니다. 후보의 계산 근거를 확인하고 문장에 추가를 누른 뒤 보고서에 사용을 누릅니다. Ollama 없이도 계산 해설 문장을 쓸 수 있습니다.
+5. 보고서 만들기 (Ctrl+G)를 누른 뒤 보고서 열기로 저장된 PowerPoint를 확인합니다.
 
 이 아래는 회사 템플릿을 쓸 때의 설명입니다. "내 PowerPoint 템플릿 사용"을 켜고, 템플릿에 무엇을 어디에 넣을지 표시합니다.
 
@@ -653,6 +698,7 @@ SlideFill이 날짜 열과 값 열 하나로 직접 계산합니다:
         "helper_pick_row": "행을 고르면 넣는 곳을 알려 줍니다.",
         "helper_nothing": "이 시트에서 날짜나 이름 붙은 수치를 읽지 못했습니다. 다른 시트를 고르거나, F1을 눌러 직접 적으세요.",
         "helper_rate_needs_condition": "비율에는 조건이 필요합니다. \"이 열이\"에서 어떤 행을 셀지 고르세요.",
+        "helper_condition_needs_value": "선택한 조건의 값을 고르거나 (모든 행)을 선택해 조건을 해제하세요.",
         "helper_shape_dates": "\"{sheet}\": {spec}에 날짜, {first} ~ {last}, {count}개 기간.",
         "helper_shape_names": "\"{sheet}\": {spec}에 항목 이름 {count}개, 날짜 없음.",
         "helper_shape_joined": "{pattern} 시트를 이어서 읽습니다.",

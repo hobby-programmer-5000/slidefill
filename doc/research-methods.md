@@ -2,7 +2,7 @@
 
 # Research methods for reducing information loss
 
-This guide records the research rationale for the current, unreleased reliability changes. It complements the [feature algorithms](feature-algorithms.md) and [verification limits](verification.md). The papers did not evaluate SlideFill. The application choices below are our engineering inferences, and their success must be established by tests of the actual saved code and executable.
+This guide records the research behind the v0.4.0 reliability changes. The implementation choices are our engineering inferences, with tests on SlideFill scoped separately. [Feature algorithms](feature-algorithms.md) · [Verification limits](verification.md) · [Project experiments](reliability-history.md).
 
 ## Search and evidence
 

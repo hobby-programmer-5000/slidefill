@@ -9,9 +9,11 @@ rem socket and select must stay: python-pptx imports xml.sax.saxutils, which imp
 rem The only network call in the app is insight.py, to the local model server on 127.0.0.1.
 cd /d "%~dp0"
 .venv\Scripts\python.exe -X utf8 test_core.py || exit /b 1
+.venv\Scripts\python.exe -X utf8 -m unittest test_native_vba test_native_vba_cases || exit /b 1
 .venv\Scripts\python.exe -X utf8 -m verification selftest || exit /b 1
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name SlideFill ^
   --icon app.ico --add-data "app.ico;." ^
+  --add-data "native_vba_host.ps1;." --add-data "assets\slidefill-vba.xlsm;assets" ^
   --exclude-module unittest --exclude-module pydoc --exclude-module test ^
   --exclude-module ssl --exclude-module _ssl --exclude-module _hashlib ^
   --exclude-module multiprocessing --exclude-module asyncio --exclude-module concurrent ^
