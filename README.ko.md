@@ -9,9 +9,9 @@
 >
 > 선택한 시트·지표·집계 방식·기간·단위와 경고를 확인하고 완성된 보고서를 살펴보세요. **내용 바꾸기(Ctrl+R)**로 엑셀만으로 만든 보고서의 선택을 조정할 수 있습니다. 수식을 재계산해 저장한 파일을 사용하세요. [v0.4.0의 신뢰성 검사](doc/reliability-hardening.ko.md)는 지원하는 수식 캐시와 수치 텍스트를 검사하고 독립 검증이 불완전하면 저장을 막습니다.
 
-[![SlideFill의 보고서 작성 흐름 데모](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4)
+[![SlideFill의 보고서 작성 흐름 한국어 데모](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.1/SlideFill-demo-ko.mp4)
 
-Windows 10에서 v0.4.0 소스의 화면을 합성 자료로 자동 실행해 데모를 촬영했습니다. 저장된 보고서는 호스트의 PowerPoint로 렌더링했습니다. [데모 영상 보기(MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4).
+Windows 10에서 합성 자료를 사용해 한국어 앱 화면과 자막을 담았습니다. 저장된 보고서는 PowerPoint로 렌더링했습니다. [한국어 데모 영상 보기(MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.1/SlideFill-demo-ko.mp4).
 
 ## 왜 만들었나
 
@@ -49,7 +49,7 @@ v0.4.0은 계산 중간값을 정확한 유리수로 유지하고, 저장된 수
 
 exe에 코드 서명이 없어 처음 실행할 때 Windows SmartScreen이 "Windows의 PC 보호"라고 할 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
-v0.4.0은 Windows 10에서 합성 자료와 설치된 데스크톱 Office로 시험했습니다. Office 없는 새 Windows 10 VM 시험은 이전 v0.3.0의 검증 기록입니다. [릴리스 노트](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.4.0) · [개발·검증 이력](doc/development-history.ko.md).
+v0.4.1은 v0.4.0 실행 파일에 영어와 한국어 데모를 함께 제공합니다. 실행 파일은 Windows 10에서 합성 자료와 설치된 데스크톱 Office로 시험했습니다. Office 없는 새 Windows 10 VM 시험은 이전 v0.3.0의 검증 기록입니다. [릴리스 노트](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.4.1) · [개발·검증 이력](doc/development-history.ko.md).
 
 ## 소스에서 빌드
 

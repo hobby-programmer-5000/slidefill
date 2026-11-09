@@ -9,9 +9,9 @@ Choose an Excel workbook and get a PowerPoint report, or fill your own company t
 >
 > Confirm the selected sheets, measures, aggregation, periods, units and warnings, then inspect the final report. **Change contents (Ctrl+R)** adjusts workbook-only selections. Use a recalculated, saved workbook. [v0.4.0's reliability checks](doc/reliability-hardening.md) cover supported formula caches and numeric text and block saving when independent coverage is incomplete.
 
-[![SlideFill demo showing the reporting workflow](doc/images/demo.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4)
+[![English SlideFill demo showing the reporting workflow](doc/images/demo-en.gif)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.1/SlideFill-demo-en.mp4)
 
-The demo uses synthetic data and a scripted UI session from the v0.4.0 source on Windows 10. PowerPoint renders the saved report on the host. [Watch the demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.0/SlideFill-demo.mp4).
+The demo uses English app screens, captions and synthetic data from a scripted session on Windows 10. PowerPoint renders the saved report. [Watch the English demo (MP4)](https://github.com/hobby-programmer-5000/slidefill/releases/download/v0.4.1/SlideFill-demo-en.mp4).
 
 ## Why I made this
 
@@ -49,7 +49,7 @@ Download `SlideFill.exe` from [Releases](https://github.com/hobby-programmer-500
 
 The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Choose **More info → Run anyway**.
 
-v0.4.0 was tested on Windows 10 using synthetic inputs and the installed desktop Office. The earlier clean Windows 10 VM test applies to v0.3.0. [Release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.4.0) · [Development and verification history](doc/development-history.md).
+v0.4.1 pairs the v0.4.0 executable with English and Korean demos. The executable was tested on Windows 10 with synthetic inputs and installed desktop Office. The earlier clean Windows 10 VM test applies to v0.3.0. [Release notes](https://github.com/hobby-programmer-5000/slidefill/releases/tag/v0.4.1) · [Development and verification history](doc/development-history.md).
 
 ## Build from source
 
